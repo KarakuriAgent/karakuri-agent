@@ -28,7 +28,10 @@ interface IAgent {
         ↓
 2. ユーザーメッセージ追加
         ↓
-3. 要約チェック（トークン予算）  needsSummarization() が true
+3. 要約チェック（トークン予算）
+   a. coreMemory, recentDiaries を取得
+   b. additionalTokens = tokens("<memory>...</memory>") + tokens("<diary>...</diary>")
+   c. needsSummarization(session, additionalTokens) が true
         │                              ↓
         │                        summarizeSession() で LLM 要約
         │                        sessionManager.applySummary() で圧縮
@@ -44,6 +47,12 @@ interface IAgent {
         ↓
 6. result.response.messages を sessionManager に保存して応答文字列を返す
 ```
+
+> **注**: `coreMemory` / `recentDiaries` のトークン数は Session 層のスコープ外のため、
+> Agent 層がステップ 3b で `src/utils/token-counter.ts` を使って計算し `additionalTokens` として渡す。
+> トークン数は **プロンプトに埋め込む最終形**（`<memory>...</memory>`, `<diary>...</diary>` タグを含む文字列）に対してカウントする。
+> `additionalTokens` の対象は **可変長の外部コンテキスト**（coreMemory, recentDiaries）のみ。
+> エージェント基本指示やツール使用説明など固定長部分はトークン予算の設定値側で吸収する。
 
 ## ツール
 
@@ -95,6 +104,19 @@ interface IAgent {
 
 `<memory>` / `<diary>` / `<summary>` タグで untrusted data を明示し、
 instruction 部分と明確に分離することで prompt injection を防ぐ。
+
+## テスト方針
+
+Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` をモックしてテストする。
+
+| テストケース | 検証内容 |
+| --- | --- |
+| additionalTokens の計算 | coreMemory + recentDiaries のプロンプト埋め込み最終形に対してトークン数が計算される |
+| 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
+| 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
+| システムプロンプト構築 | memory / diary / summary がタグ付きで正しく組み立てられる |
+| ツール実行 | saveMemory / recallDiary が memoryStore の対応メソッドを呼ぶ |
+| 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 
 ## セキュリティ
 

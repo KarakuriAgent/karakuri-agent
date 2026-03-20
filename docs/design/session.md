@@ -37,9 +37,15 @@ interface ISessionManager {
 
   /**
    * トークン予算ベースで要約が必要か判定
-   * memory + diary + summary + messages の合計が予算を超えたら true
+   * session 外部のコンテキスト（coreMemory や recentDiaries）のトークン数は
+   * 呼び出し側（Agent 層）が計算して `additionalTokens` として渡す。
+   * summary + messages + additionalTokens の合計が予算を超えたら true を返す。
+   *
+   * @param session         判定対象のセッションデータ
+   * @param additionalTokens session の外側に注入されるトークン数（coreMemory + recentDiaries）。
+   *                         渡す外部コンテキストがない場合は明示的に 0 を指定する。
    */
-  needsSummarization(session: SessionData): boolean;
+  needsSummarization(session: SessionData, additionalTokens: number): boolean;
 
   /**
    * 要約適用: 古いメッセージを削除し直近 N turns を保持
@@ -70,13 +76,24 @@ interface ISessionManager {
 メッセージ**件数**ではなく**トークン予算（概算）**で要約トリガーを判定する:
 
 ```
-使用トークン ≈ tokens(coreMemory)
-             + tokens(recentDiaries)
-             + tokens(session.summary)
+使用トークン ≈ tokens(session.summary)
              + tokens(session.messages)
+             + additionalTokens            // 呼び出し側が渡す: tokens(coreMemory) + tokens(recentDiaries)
 ```
 
 合計が設定値（例: モデルのコンテキスト上限の 70%）を超えたら `needsSummarization()` が `true` を返す。
+
+`coreMemory` と `recentDiaries` は Session 層のスコープ外（Memory 層）のため、
+それらのトークン数は Agent 層で計算し `additionalTokens` として渡す。
+渡す外部コンテキストがない場合は明示的に `0` を指定する。
+
+> **注**: エージェント基本指示やツール使用説明など固定長のプロンプト部分は
+> `additionalTokens` の対象外とする。これらは変動しないため、
+> トークン予算の設定値側（例: コンテキスト上限の 70%）で余裕を持たせて吸収する。
+> `additionalTokens` が対象とするのは **可変長の外部コンテキスト**（coreMemory, recentDiaries）のみ。
+
+トークン数の計算には Agent 層・Session 層ともに共通の `src/utils/token-counter.ts` を使用し、
+計算方法のずれを防ぐ。
 
 ### turn 単位の要約 (`applySummary`)
 
@@ -93,4 +110,6 @@ interface ISessionManager {
 | addMessages                      | メッセージが追加される                                 |
 | needsSummarization（予算以下）   | false を返す                                           |
 | needsSummarization（予算超過）   | true を返す                                            |
+| needsSummarization（session 単体は予算以下、additionalTokens で超過） | additionalTokens が判定に反映され true を返す |
+| needsSummarization（additionalTokens = 0） | 外部コンテキストなしで正しく判定される         |
 | applySummary                     | 指定 turn 数が保持され、tool ペアが壊れていないことを確認 |
