@@ -1,0 +1,110 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { FileMemoryStore } from '../src/memory/store.js';
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, { recursive: true, force: true }),
+    ),
+  );
+});
+
+async function createStore() {
+  const dataDir = await mkdtemp(join(tmpdir(), 'karakuri-memory-'));
+  temporaryDirectories.push(dataDir);
+  return new FileMemoryStore({ dataDir, timezone: 'UTC' });
+}
+
+function toDateString(date: Date): string {
+  const y = String(date.getUTCFullYear());
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+describe('FileMemoryStore', () => {
+  it('returns an empty string when core memory does not exist yet', async () => {
+    const store = await createStore();
+
+    await expect(store.readCoreMemory()).resolves.toBe('');
+  });
+
+  it('appends core memory without dropping concurrent writes', async () => {
+    const store = await createStore();
+
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        store.writeCoreMemory(`entry ${index}`, 'append'),
+      ),
+    );
+
+    const content = await store.readCoreMemory();
+    for (let index = 0; index < 8; index += 1) {
+      expect(content).toContain(`entry ${index}`);
+    }
+  });
+
+  it('stores diary entries and returns recent diary dates in reverse chronological order', async () => {
+    const store = await createStore();
+
+    const today = new Date();
+    const todayStr = toDateString(today);
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = toDateString(yesterday);
+
+    await store.writeDiary(yesterdayStr, 'older note');
+    await store.writeDiary(todayStr, 'newer note');
+    await store.writeDiary(todayStr, 'follow-up note');
+
+    await expect(store.listDiaryDates()).resolves.toEqual([yesterdayStr, todayStr].sort());
+
+    const diary = await store.readDiary(todayStr);
+    expect(diary).toContain('newer note');
+    expect(diary).toContain('follow-up note');
+
+    const recent = await store.getRecentDiaries(2);
+    expect(recent).toEqual([
+      {
+        date: yesterdayStr,
+        content: expect.stringContaining('older note'),
+      },
+      {
+        date: todayStr,
+        content: expect.stringContaining('newer note'),
+      },
+    ]);
+  });
+
+  it('excludes diary entries older than the calendar window', async () => {
+    const store = await createStore();
+
+    await store.writeDiary('2020-01-01', 'ancient note');
+
+    const recent = await store.getRecentDiaries(3);
+    expect(recent).toEqual([]);
+
+    await expect(store.listDiaryDates()).resolves.toEqual(['2020-01-01']);
+  });
+
+  it('excludes future-dated diary entries from recent diaries', async () => {
+    const store = await createStore();
+
+    const today = new Date();
+    const todayStr = toDateString(today);
+    await store.writeDiary(todayStr, 'today note');
+    await store.writeDiary('2099-01-01', 'future note');
+
+    const recent = await store.getRecentDiaries(3);
+    expect(recent).toHaveLength(1);
+    expect(recent[0]!.date).toBe(todayStr);
+    expect(recent[0]!.content).toContain('today note');
+  });
+});

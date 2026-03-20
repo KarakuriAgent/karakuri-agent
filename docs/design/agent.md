@@ -24,11 +24,10 @@ interface IAgent {
 ## メッセージ処理フロー (`Agent.handleMessage`)
 
 ```
-1. セッション読み込み           sessionManager.loadSession(sessionId)
+1. ユーザーメッセージ追加         sessionManager.addMessages(sessionId, [...])
+   （セッション読み込み＋追加を一括処理）
         ↓
-2. ユーザーメッセージ追加
-        ↓
-3. 要約チェック（トークン予算）
+2. 要約チェック（トークン予算）
    a. coreMemory, recentDiaries を取得
    b. additionalTokens = tokens("<memory>...</memory>") + tokens("<diary>...</diary>")
    c. needsSummarization(session, additionalTokens) が true
@@ -36,16 +35,16 @@ interface IAgent {
         │                        summarizeSession() で LLM 要約
         │                        sessionManager.applySummary() で圧縮
         ↓
-4. システムプロンプト構築
+3. システムプロンプト構築
    ├── エージェント基本指示（初期はハードコード、後のフェーズで設定ファイル化）
    ├── <memory> ... </memory>          memory.md の内容（常時注入）
    ├── <diary> ... </diary>            直近3日分の diary（自動注入）
    ├── session.summary（あれば注入）
    └── ツール使用説明
         ↓
-5. generateText() + tools + stopWhen: stepCountIs(n)
+4. generateText() + tools + stopWhen: stepCountIs(n)
         ↓
-6. result.response.messages を sessionManager に保存して応答文字列を返す
+5. result.response.messages を sessionManager に保存して応答文字列を返す
 ```
 
 > **注**: `coreMemory` / `recentDiaries` のトークン数は Session 層のスコープ外のため、

@@ -11,27 +11,31 @@
 
 | 変数名              | 必須 | デフォルト      | 説明                                             |
 | ------------------- | ---- | --------------- | ------------------------------------------------ |
-| `DISCORD_TOKEN`     | ✅   | -               | Discord Bot トークン                             |
+| `DISCORD_BOT_TOKEN` | ✅   | -               | Discord Bot トークン                             |
+| `DISCORD_PUBLIC_KEY` | ✅  | -               | Discord Interactions 用の公開鍵                  |
+| `DISCORD_APPLICATION_ID` | ✅ | -            | Discord Application ID                           |
 | `OPENAI_API_KEY`    | ✅   | -               | OpenAI API キー                                  |
-| `DATABASE_URL`      | ✅   | -               | 永続 state 用 PostgreSQL 接続文字列              |
-| `DATA_DIR`          |      | `./data`        | memory / session ファイルの保存ディレクトリ      |
+| `DATA_DIR`          |      | `./data`        | memory / session / bot state ファイルの保存ディレクトリ |
 | `TIMEZONE`          |      | `Asia/Tokyo`    | diary 日付の基準タイムゾーン                     |
 | `OPENAI_MODEL`      |      | `gpt-4o`        | 使用する OpenAI モデル名                         |
 | `MAX_STEPS`         |      | `10`            | ツールループの最大ステップ数                     |
-| `TOKEN_BUDGET`      |      | モデル依存      | 要約トリガーのトークン予算（コンテキスト上限の割合） |
+| `TOKEN_BUDGET`      |      | `8000`          | 要約トリガーのトークン予算                           |
+| `PORT`              |      | `3000`          | Webhook / healthcheck HTTP サーバーの待受ポート  |
 
 ## 設定オブジェクト
 
 ```typescript
 interface Config {
-  discordToken: string;
+  discordApplicationId: string;
+  discordPublicKey: string;
+  discordBotToken: string;
   openaiApiKey: string;
-  databaseUrl: string;
   dataDir: string;
   timezone: string;
   openaiModel: string;
   maxSteps: number;
   tokenBudget: number;
+  port: number;
 }
 ```
 
@@ -48,7 +52,16 @@ function loadConfig(): Config {
 ## セキュリティ
 
 - `.env` は `.gitignore` に含め、リポジトリにコミットしない
-- `DISCORD_TOKEN` / `OPENAI_API_KEY` などのシークレットをログに出力しない
+- `DISCORD_BOT_TOKEN` / `OPENAI_API_KEY` などのシークレットをログに出力しない
+
+## 互換用エイリアス
+
+実装では既存設定との互換性のため、以下のエイリアスも受け付ける:
+
+- `DISCORD_TOKEN` → `DISCORD_BOT_TOKEN`
+- `AGENT_MODEL` → `OPENAI_MODEL`
+- `AGENT_MAX_STEPS` → `MAX_STEPS`
+- `AGENT_TOKEN_BUDGET` → `TOKEN_BUDGET`
 
 ## 将来の拡張
 

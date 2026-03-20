@@ -16,7 +16,7 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                 │                      ├── Memory (file-based, mutex付き)
                 │                      └── Session (file-based, turn単位管理)
                 │
-                └── State (永続化必須: state-pg/state-redis/custom)
+                └── State (JSON file-backed custom adapter)
                     └── thread subscriptionの永続化
 ```
 
@@ -26,8 +26,8 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
 | ------- | ------------------ | --------------------------- | ----------------------- |
 | Channel | Chat SDK adapters  | Discord                     | Slack, Web 等            |
 | Agent   | `IAgent`           | generateText + OpenAI       | モデル切替、スキル追加  |
-| Memory  | `IMemoryStore`     | ファイルベース (mutex 付き)  | SQLite, PostgreSQL      |
-| Session | `ISessionManager`  | JSON ファイル               | Redis, DB               |
+| Memory  | `IMemoryStore`     | ファイルベース (mutex 付き)  | SQLite, object storage |
+| Session | `ISessionManager`  | JSON ファイル               | Redis, DB              |
 
 ## プロジェクト構造
 
@@ -48,21 +48,27 @@ karakuri-agent/
 │   ├── session/
 │   │   ├── manager.ts          # ISessionManager + FileSessionManager
 │   │   └── types.ts
+│   ├── state/
+│   │   └── file-state.ts       # Chat SDK StateAdapter の JSON ファイル実装
 │   ├── utils/
 │   │   ├── mutex.ts            # ファイルI/O用の簡易mutex
 │   │   ├── message-splitter.ts # Discord 2000文字分割（コードフェンス維持）
 │   │   └── token-counter.ts    # トークン予算管理
 │   ├── config.ts               # 設定読み込み
 │   └── index.ts                # エントリポイント
+├── tests/                      # Memory / Session / Agent / utility unit test
 ├── data/                       # .gitignoreで全体を除外
 │   ├── memory/
 │   │   ├── core/
 │   │   │   └── memory.md       # 重要な記憶（常時システムプロンプトに注入）
 │   │   └── diary/
 │   │       └── YYYY-MM-DD.md   # 日記（直近3日分は自動注入）
+│   ├── state/
+│   │   └── chat-state.json     # Chat SDK の subscription / cache / history state
 │   └── sessions/
 │       └── {hashedSessionId}.json
 ├── .env
+├── .env.example
 ├── .gitignore                  # data/ 全体を除外
 ├── package.json
 ├── package-lock.json           # lockfileをコミット
@@ -74,19 +80,18 @@ karakuri-agent/
 ```json
 {
   "dependencies": {
-    "chat": "実装時にexact versionを固定",
-    "@chat-adapter/discord": "実装時にexact versionを固定",
-    "@chat-adapter/state-pg": "実装時にexact versionを固定（永続state）",
-    "ai": "^6",
-    "@ai-sdk/openai": "実装時にexact versionを固定",
-    "zod": "^3.23.0",
-    "dotenv": "^16.4.0"
+    "chat": "4.20.2",
+    "@chat-adapter/discord": "4.20.2",
+    "ai": "6.0.116",
+    "@ai-sdk/openai": "3.0.41",
+    "zod": "3.25.76",
+    "dotenv": "17.3.1"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "vitest": "latest"
+    "typescript": "5.9.3",
+    "@types/node": "25.5.0",
+    "tsx": "4.21.0",
+    "vitest": "4.1.0"
   }
 }
 ```
@@ -98,8 +103,8 @@ karakuri-agent/
 ### Phase 0: Discord Gateway + 永続 state 検証（最優先）
 
 - Chat SDK + `@chat-adapter/discord` で Discord Gateway 接続
-- 永続 state の設定（`state-pg` or カスタム）
-- echo bot で動作確認（メンション → 応答 → 再起動 → follow-up 継続）
+- 永続 state の設定（`src/state/file-state.ts` による JSON file-backed custom state）
+- echo bot で動作確認（メッセージ → 応答 → 再起動 → follow-up 継続）
 - **ここで Chat SDK が長時間稼働で安定するか検証。問題あれば discord.js にフォールバック判断**
 
 ### Phase 1: プロジェクトスキャフォールド
@@ -143,7 +148,7 @@ karakuri-agent/
 
 - Discord Bot アプリケーション作成・トークン取得
 - `npm run dev` で起動
-- Discord でメンション → 応答確認
+- Discord でメッセージ送信 → 応答確認（メンション不要）
 - 再起動後の follow-up 継続確認（永続 state）
 - メモリ保存・読み込み確認（memory.md, diary）
 - ボット再起動後のメモリ永続化確認
@@ -160,7 +165,7 @@ karakuri-agent/
 6. **コンテキスト予算**: メッセージ件数ではなくトークン予算ベースで要約トリガー管理
 7. **Timezone**: diary 日付は `config.timezone`（デフォルト `Asia/Tokyo`）基準
 8. **セッション ID**: raw thread ID ではなく hash/base64url 化してファイル名安全性を確保
-9. **State 永続化**: `state-memory` は開発用。本番は `state-pg` 等の永続 state が必須
+9. **State 永続化**: v1 は JSON file-backed custom state を使う。単一プロセス前提なので、複数インスタンス化や外部ストレージが必要になったら `StateAdapter` 実装を差し替える
 
 ## 詳細設計
 

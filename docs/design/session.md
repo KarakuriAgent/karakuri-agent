@@ -11,12 +11,14 @@ turn 単位（user → assistant の往復）で管理することで tool-call/
 interface SessionData {
   /** スキーマバージョン（破壊的変更時に移行処理を行うため） */
   schemaVersion: number;
-  /** セッション識別子（hashed thread ID） */
-  id: string;
+  /** 元のセッション識別子（Discord thread ID 等） */
+  sessionId: string;
   /** 会話メッセージ列（tool-call/tool-result を含む） */
   messages: ModelMessage[];
-  /** 要約済みの古いコンテキスト（なければ undefined） */
-  summary?: string;
+  /** 要約済みの古いコンテキスト（なければ null） */
+  summary: string | null;
+  /** 作成日時（ISO 8601） */
+  createdAt: string;
   /** 最終更新日時（ISO 8601） */
   updatedAt: string;
 }
@@ -33,7 +35,7 @@ interface ISessionManager {
   saveSession(session: SessionData): Promise<void>;
 
   /** 複数メッセージを一括追加 */
-  addMessages(sessionId: string, messages: ModelMessage[]): Promise<void>;
+  addMessages(sessionId: string, messages: ModelMessage[]): Promise<SessionData>;
 
   /**
    * トークン予算ベースで要約が必要か判定
@@ -55,7 +57,7 @@ interface ISessionManager {
     sessionId: string,
     summary: string,
     keepRecentTurns: number,
-  ): Promise<void>;
+  ): Promise<SessionData>;
 }
 ```
 
@@ -69,7 +71,9 @@ interface ISessionManager {
     └── {hashedSessionId}.json
 ```
 
-- セッション ID は raw thread ID を hash/base64url 化したものをファイル名に使用
+- セッション ID は raw thread ID を hash/base64url 化したものを**ファイル名**に使用し、
+  JSON 本体には元の `sessionId` を保持する
+- 未対応の `schemaVersion` を読み込んだ場合は、将来の migration 実装まで明示的にエラーとする
 
 ### トークン予算判定 (`needsSummarization`)
 
@@ -81,7 +85,7 @@ interface ISessionManager {
              + additionalTokens            // 呼び出し側が渡す: tokens(coreMemory) + tokens(recentDiaries)
 ```
 
-合計が設定値（例: モデルのコンテキスト上限の 70%）を超えたら `needsSummarization()` が `true` を返す。
+合計が設定値（デフォルト: 8000 トークン）を超えたら `needsSummarization()` が `true` を返す。
 
 `coreMemory` と `recentDiaries` は Session 層のスコープ外（Memory 層）のため、
 それらのトークン数は Agent 層で計算し `additionalTokens` として渡す。

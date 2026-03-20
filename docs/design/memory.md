@@ -18,10 +18,10 @@ interface IMemoryStore {
    */
   writeCoreMemory(content: string, mode: 'append'): Promise<void>;
 
-  /** 指定日の diary 読み込み */
-  readDiary(date: string): Promise<string>;
+  /** 指定日の diary 読み込み（存在しなければ null） */
+  readDiary(date: string): Promise<string | null>;
 
-  /** 指定日の diary 書き込み */
+  /** 指定日の diary に追記 */
   writeDiary(date: string, content: string): Promise<void>;
 
   /** 直近 N 日分の diary を取得 */
@@ -51,6 +51,7 @@ interface IMemoryStore {
 - ディレクトリは `{ recursive: true }` で遅延作成
 - **mutex + atomic write**: memory.md と当日 diary は全スレッドから共有アクセスされるため、
   書き込み時は mutex 取得 → temp ファイル書き込み → `rename`（atomic）で更新ロスト防止
+- diary は日付ごとの追記型ファイルとし、同じ日付への複数回の書き込みを保持する
 
 ### mutex の適用範囲
 
@@ -75,6 +76,6 @@ interface IMemoryStore {
 | read core（存在なし）    | 空文字列 or デフォルト値を返す                |
 | write + read core        | append した内容が読み込める                   |
 | concurrent write core    | mutex により内容が失われないことを確認         |
-| write + read diary       | 指定日の内容が読み込める                      |
-| getRecentDiaries         | 直近 N 日分が降順で返る                       |
+| write + read diary       | 指定日の内容が追記され、読み込める            |
+| getRecentDiaries         | 直近 N 日分が昇順（時系列順）で返る            |
 | listDiaryDates           | 保存済み日付が一覧で返る                      |
