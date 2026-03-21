@@ -93,6 +93,7 @@ export class KarakuriAgent implements IAgent {
       agentInstructions: promptContext.agentInstructions,
       rules: promptContext.rules,
       skills,
+      hasWebSearch: this.config.braveApiKey != null,
     });
 
     if (this.sessionManager.needsSummarization(session, additionalTokens)) {
@@ -113,6 +114,7 @@ export class KarakuriAgent implements IAgent {
       recentDiaries,
       summary: session.summary,
       skills,
+      hasWebSearch: this.config.braveApiKey != null,
     });
     logger.debug('Calling LLM', { sessionId, model: this.config.openaiModel, messageCount: session.messages.length });
     logger.debug(`System prompt:\n${systemPrompt}`);
@@ -123,6 +125,7 @@ export class KarakuriAgent implements IAgent {
       tools: createAgentTools({
         memoryStore: this.memoryStore,
         timezone: this.config.timezone,
+        braveApiKey: this.config.braveApiKey,
         ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
         skills,
       }),
@@ -132,10 +135,10 @@ export class KarakuriAgent implements IAgent {
     logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });
     for (const [i, step] of result.steps.entries()) {
       for (const toolCall of step.toolCalls) {
-        logger.debug('Tool call', { step: i, toolName: toolCall?.toolName, input: toolCall?.input });
+        logger.debug('Tool call', { step: i, toolName: toolCall?.toolName, input: JSON.stringify(toolCall?.input) });
       }
       for (const toolResult of step.toolResults) {
-        logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: toolResult?.output });
+        logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: JSON.stringify(toolResult?.output) });
       }
     }
     logger.debug(`Response text:\n${result.text}`);

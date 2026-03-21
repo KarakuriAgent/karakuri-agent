@@ -15,6 +15,7 @@
 | `DISCORD_PUBLIC_KEY` | ✅  | -               | Discord Interactions 用の公開鍵                  |
 | `DISCORD_APPLICATION_ID` | ✅ | -            | Discord Application ID                           |
 | `OPENAI_API_KEY`    | ✅   | -               | OpenAI API キー                                  |
+| `BRAVE_API_KEY`     |      | -               | Brave Search API キー（設定時のみ `webSearch` を有効化） |
 | `DATA_DIR`          |      | `./data`        | memory / session / bot state ファイルの保存ディレクトリ |
 | `TIMEZONE`          |      | `Asia/Tokyo`    | diary 日付の基準タイムゾーン                     |
 | `OPENAI_MODEL`      |      | `gpt-4o`        | 使用する OpenAI モデル名                         |
@@ -30,6 +31,7 @@ interface Config {
   discordPublicKey: string;
   discordBotToken: string;
   openaiApiKey: string;
+  braveApiKey?: string | undefined;
   dataDir: string;
   timezone: string;
   openaiModel: string;
