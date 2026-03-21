@@ -13,6 +13,7 @@ function createMemoryStoreStub(
     async writeDiary() {},
     async getRecentDiaries() { return []; },
     async listDiaryDates() { return Object.keys(diaries); },
+    async close() {},
   };
 }
 

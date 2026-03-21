@@ -18,6 +18,7 @@ function createMemoryStoreStub(): IMemoryStore & {
     async writeDiary(date: string, content: string) { stub.diaryWrites.push({ date, content }); },
     async getRecentDiaries() { return []; },
     async listDiaryDates() { return []; },
+    async close() {},
   };
   return stub;
 }

@@ -49,8 +49,10 @@ interface IMemoryStore {
 
 - `node:fs/promises` で読み書き
 - ディレクトリは `{ recursive: true }` で遅延作成
-- **write-through cache**: `memory.md` / diary 本文 / diary 日付一覧は初回 read 時にメモリへ載せ、
-  同一プロセス内の後続 read はキャッシュから返す。write 後はディスク保存と同時にキャッシュも更新する
+- **write-through cache + watcher**:
+  - `memory.md` は初回 read 時にメモリへ載せ、同一プロセス内の後続 read はキャッシュから返す。`fs.watch()` で親ディレクトリを監視し、外部変更も eager reload する
+  - diary 本文は date 単位の lazy cache を維持し、外部変更時は watcher でキャッシュを無効化して次回 read で再ロードする
+  - diary 日付一覧はキャッシュし、watcher で外部変更を検知したら無効化する
 - **mutex + atomic write**: memory.md と当日 diary は全スレッドから共有アクセスされるため、
   書き込み時は mutex 取得 → temp ファイル書き込み → `rename`（atomic）で更新ロスト防止
 - diary は日付ごとの追記型ファイルとし、同じ日付への複数回の書き込みを保持する
@@ -71,6 +73,7 @@ interface IMemoryStore {
 - memory / diary の内容はシステムプロンプトの instruction 部分と明確に区切る
 - `<memory>` / `<diary>` タグ等で **untrusted data** であることを明示
 - `saveMemory` の `mode: replace` は開放しない（append のみ）
+- watcher 監視は親ディレクトリ単位で行い、atomic rename と整合するようにする
 
 ## テスト方針
 
@@ -84,3 +87,4 @@ interface IMemoryStore {
 | listDiaryDates           | 保存済み日付が一覧で返る                      |
 | cached diary date update | cache 温存中に古い日付を後から追加しても sort 順が壊れない |
 | defensive copy           | `listDiaryDates()` の返り値を mutate しても内部 cache が壊れない |
+| external change reload   | 外部から memory / diary を更新しても watcher 経由で反映される |

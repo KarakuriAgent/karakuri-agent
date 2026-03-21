@@ -3,6 +3,10 @@ import { resolve } from 'node:path';
 import { config as loadDotEnv } from 'dotenv';
 import { ZodError, z } from 'zod';
 
+import { createLogger } from './utils/logger.js';
+
+const logger = createLogger('Config');
+
 const configSchema = z.object({
   discordApplicationId: z.string().trim().min(1, 'DISCORD_APPLICATION_ID is required'),
   discordBotToken: z.string().trim().min(1, 'DISCORD_BOT_TOKEN is required'),
@@ -57,10 +61,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const parsed = configSchema.parse(rawConfig);
     assertValidTimezone(parsed.timezone);
 
-    return {
+    const config = {
       ...parsed,
       dataDir: resolve(parsed.dataDir),
     };
+    logger.debug('Config parsed', { dataDir: config.dataDir, timezone: config.timezone, model: config.openaiModel, port: config.port });
+    return config;
   } catch (error) {
     if (error instanceof ZodError) {
       const message = error.issues.map((issue) => issue.message).join('; ');

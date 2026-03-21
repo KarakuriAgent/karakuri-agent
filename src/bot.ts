@@ -4,8 +4,11 @@ import { Chat, type Message, type Thread } from 'chat';
 import type { Config } from './config.js';
 import type { IAgent } from './agent/core.js';
 import { createFileStateAdapter } from './state/file-state.js';
+import { createLogger } from './utils/logger.js';
 import { splitMessageForDiscord } from './utils/message-splitter.js';
 import { KeyedMutex } from './utils/mutex.js';
+
+const logger = createLogger('Bot');
 
 const GATEWAY_LISTENER_DURATION_MS = 10 * 60 * 1_000;
 const GATEWAY_RESTART_DELAY_MS = 1_000;
@@ -66,12 +69,14 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
   const handleNewThread = async (thread: Thread, message: Message): Promise<void> => {
     await threadMutex.runExclusive(message.threadId, async () => {
       try {
+        logger.info('Handling new message', { threadId: message.threadId });
         if (message.text.trim().length > 0) {
           await thread.subscribe();
+          logger.debug('Subscribed to thread', { threadId: message.threadId });
         }
         await handleThreadMessage(agent, thread, message);
       } catch (error) {
-        console.error('Failed to handle new message', error);
+        logger.error('Failed to handle new message', error);
         await safePost(thread, ERROR_MESSAGE);
       }
     });
@@ -84,9 +89,10 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
   chat.onSubscribedMessage(async (thread, message) => {
     await trackHandler(threadMutex.runExclusive(message.threadId, async () => {
       try {
+        logger.info('Handling subscribed message', { threadId: message.threadId });
         await handleThreadMessage(agent, thread, message);
       } catch (error) {
-        console.error('Failed to handle subscribed message', error);
+        logger.error('Failed to handle subscribed message', error);
         await safePost(thread, ERROR_MESSAGE);
       }
     }));
@@ -118,6 +124,7 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
     },
     async startGatewayLoop(): Promise<void> {
       await initialize();
+      logger.debug('Starting gateway listener');
 
       if (gatewayLoopPromise != null) {
         return;
@@ -133,10 +140,12 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
       });
     },
     async shutdown(): Promise<void> {
+      logger.info('Shutting down bot...');
       gatewayAbortController?.abort();
       await gatewayLoopPromise;
       await Promise.allSettled([...inFlightHandlers]);
       await chat.shutdown();
+      logger.info('Bot shutdown complete');
     },
   };
 }
@@ -163,7 +172,7 @@ async function runGatewayLoop(chat: KarakuriChat, signal: AbortSignal): Promise<
           break;
         }
 
-        console.error(
+        logger.error(
           'Discord gateway listener failed to start',
           new Error(`Discord gateway listener failed: ${await response.text()}`),
         );
@@ -172,18 +181,19 @@ async function runGatewayLoop(chat: KarakuriChat, signal: AbortSignal): Promise<
       }
 
       if (listenerTask == null) {
-        console.error('Discord gateway listener did not return a background task');
+        logger.error('Discord gateway listener did not return a background task');
         await delay(GATEWAY_RESTART_DELAY_MS, signal);
         continue;
       }
 
       await listenerTask;
+      logger.debug('Gateway listener session ended normally');
     } catch (error) {
       if (signal.aborted) {
         break;
       }
 
-      console.error('Discord gateway listener crashed', error);
+      logger.error('Discord gateway listener crashed', error);
       await delay(GATEWAY_RESTART_DELAY_MS, signal);
     }
   }
@@ -195,16 +205,19 @@ async function handleThreadMessage(
   message: Message,
 ): Promise<void> {
   if (message.attachments.length > 0 && message.text.trim().length === 0) {
+    logger.debug('Skipped attachment-only message', { threadId: message.threadId });
     await safePost(thread, ATTACHMENT_ONLY_MESSAGE);
     return;
   }
 
   const text = message.text.trim();
   if (text.length === 0) {
+    logger.debug('Skipped empty message', { threadId: message.threadId });
     return;
   }
 
   await thread.startTyping();
+  logger.debug('Calling agent.handleMessage', { threadId: message.threadId, textLength: text.length });
   const responseText = await agent.handleMessage(
     message.threadId,
     text,
@@ -216,6 +229,7 @@ async function handleThreadMessage(
   }
 
   const chunks = splitMessageForDiscord(responseText);
+  logger.debug('Agent responded', { threadId: message.threadId, responseLength: responseText.length, chunks: chunks.length });
   for (const chunk of chunks) {
     await safePost(thread, chunk);
   }

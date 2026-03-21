@@ -1,28 +1,42 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { KarakuriAgent } from './agent/core.js';
+import { FilePromptContextStore } from './agent/prompt-context.js';
 import { createBot } from './bot.js';
 import { loadConfig } from './config.js';
 import { FileMemoryStore } from './memory/store.js';
 import { FileSessionManager } from './session/manager.js';
+import { FileSkillStore } from './skill/store.js';
+import { createLogger } from './utils/logger.js';
+
+const logger = createLogger('Server');
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function main(): Promise<void> {
+  logger.info('Starting karakuri-agent...');
   const config = loadConfig();
+  logger.info('Config loaded', { dataDir: config.dataDir, model: config.openaiModel, port: config.port });
   const memoryStore = new FileMemoryStore({ dataDir: config.dataDir, timezone: config.timezone });
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
     tokenBudget: config.tokenBudget,
   });
+  const [promptContextStore, skillStore] = await Promise.all([
+    FilePromptContextStore.create({ dataDir: config.dataDir }),
+    FileSkillStore.create({ dataDir: config.dataDir }),
+  ]);
   const agent = new KarakuriAgent({
     config,
     memoryStore,
     sessionManager,
+    promptContextStore,
+    skillStore,
   });
   const bot = createBot(config, agent);
 
   await bot.initialize();
+  logger.debug('Bot initialized');
 
   const server = createServer((request, response) => {
     void handleRequest(bot, config.port, request, response);
@@ -30,24 +44,40 @@ async function main(): Promise<void> {
 
   await listen(server, config.port);
   await bot.startGatewayLoop();
+  logger.debug('Gateway loop started');
 
-  console.log(`Karakuri-Agent listening on http://127.0.0.1:${config.port}`);
+  logger.info(`Karakuri-Agent listening on http://127.0.0.1:${config.port}`);
 
   const shutdown = async (signal: NodeJS.Signals) => {
-    console.log(`${signal} received, shutting down...`);
+    logger.info(`${signal} received, shutting down...`);
     const timeout = setTimeout(() => {
-      console.error('Graceful shutdown timed out');
+      logger.error('Graceful shutdown timed out');
       process.exitCode = 1;
       process.exit();
     }, SHUTDOWN_TIMEOUT_MS);
 
     try {
-      await Promise.allSettled([closeServer(server), bot.shutdown()]);
+      const results = await Promise.allSettled([
+        closeServer(server),
+        bot.shutdown(),
+        memoryStore.close(),
+        promptContextStore.close(),
+        skillStore.close(),
+      ]);
       clearTimeout(timeout);
+      const failures = results.filter((r) => r.status === 'rejected');
+      if (failures.length > 0) {
+        for (const failure of failures) {
+          logger.warn('Shutdown task failed', (failure as PromiseRejectedResult).reason);
+        }
+        logger.warn('Shutdown completed with errors');
+      } else {
+        logger.info('Shutdown complete');
+      }
       process.exit();
     } catch (error) {
       clearTimeout(timeout);
-      console.error('Shutdown failed', error);
+      logger.error('Shutdown failed', error);
       process.exitCode = 1;
       process.exit();
     }
@@ -70,6 +100,7 @@ async function handleRequest(
   try {
     const webRequest = await toWebRequest(port, request);
     const url = new URL(webRequest.url);
+    logger.debug('Request received', { method: request.method, pathname: url.pathname });
 
     let webResponse: Response;
     if (request.method === 'GET' && url.pathname === '/healthz') {
@@ -84,13 +115,14 @@ async function handleRequest(
     await sendWebResponse(response, webResponse);
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
+      logger.warn('Request body too large');
       response.statusCode = 413;
       response.setHeader('Content-Type', 'text/plain; charset=utf-8');
       response.end('Request body too large');
       return;
     }
 
-    console.error('Request handling failed', error);
+    logger.error('Request handling failed', error);
     response.statusCode = 500;
     response.setHeader('Content-Type', 'text/plain; charset=utf-8');
     response.end('Internal Server Error');
@@ -197,6 +229,6 @@ function closeServer(server: Server): Promise<void> {
 }
 
 void main().catch((error) => {
-  console.error(error);
+  logger.error('Fatal error', error);
   process.exit(1);
 });

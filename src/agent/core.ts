@@ -4,12 +4,17 @@ import { generateText, stepCountIs, type LanguageModel, type ModelMessage } from
 import type { Config } from '../config.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { ISessionManager } from '../session/types.js';
+import type { ISkillStore } from '../skill/types.js';
+import { createLogger } from '../utils/logger.js';
 import { createAgentTools } from './tools/index.js';
+import type { IPromptContextStore } from './prompt-context.js';
 import {
   buildSystemPrompt,
   countAdditionalContextTokens,
   sanitizeTagContent,
 } from './prompt.js';
+
+const logger = createLogger('Agent');
 
 const DEFAULT_RECENT_DIARY_COUNT = 3;
 const DEFAULT_RECENT_TURN_COUNT = 4;
@@ -23,6 +28,8 @@ export interface KarakuriAgentOptions {
   config: Config;
   memoryStore: IMemoryStore;
   sessionManager: ISessionManager;
+  skillStore?: ISkillStore;
+  promptContextStore?: IPromptContextStore;
   generateTextFn?: typeof generateText;
   modelFactory?: (modelId: string) => LanguageModel;
   keepRecentTurns?: number;
@@ -33,6 +40,8 @@ export class KarakuriAgent implements IAgent {
   private readonly config: Config;
   private readonly memoryStore: IMemoryStore;
   private readonly sessionManager: ISessionManager;
+  private readonly skillStore: ISkillStore | undefined;
+  private readonly promptContextStore: IPromptContextStore | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (modelId: string) => LanguageModel;
   private readonly keepRecentTurns: number;
@@ -42,6 +51,8 @@ export class KarakuriAgent implements IAgent {
     config,
     memoryStore,
     sessionManager,
+    skillStore,
+    promptContextStore,
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
@@ -50,6 +61,8 @@ export class KarakuriAgent implements IAgent {
     this.config = config;
     this.memoryStore = memoryStore;
     this.sessionManager = sessionManager;
+    this.skillStore = skillStore;
+    this.promptContextStore = promptContextStore;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
@@ -61,6 +74,7 @@ export class KarakuriAgent implements IAgent {
   }
 
   async handleMessage(sessionId: string, userMessage: string, userName: string): Promise<string> {
+    logger.info('handleMessage', { sessionId, userMessageLength: userMessage.length });
     let session = await this.sessionManager.addMessages(sessionId, [
       {
         role: 'user',
@@ -68,15 +82,23 @@ export class KarakuriAgent implements IAgent {
       },
     ]);
 
-    const [coreMemory, recentDiaries] = await Promise.all([
+    const [coreMemory, recentDiaries, promptContext, skills] = await Promise.all([
       this.memoryStore.readCoreMemory(),
       this.memoryStore.getRecentDiaries(this.recentDiaryCount),
+      this.promptContextStore?.read() ?? Promise.resolve({ agentInstructions: null, rules: null }),
+      this.skillStore?.listSkills() ?? Promise.resolve([]),
     ]);
 
-    const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries);
+    const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
+      agentInstructions: promptContext.agentInstructions,
+      rules: promptContext.rules,
+      skills,
+    });
 
     if (this.sessionManager.needsSummarization(session, additionalTokens)) {
+      logger.info('Session needs summarization', { sessionId });
       const summary = await this.summarizeSession(sessionId);
+      logger.info('Session summarized', { sessionId, summaryLength: summary.length });
       session = await this.sessionManager.applySummary(
         sessionId,
         summary,
@@ -84,22 +106,41 @@ export class KarakuriAgent implements IAgent {
       );
     }
 
+    const systemPrompt = buildSystemPrompt({
+      agentInstructions: promptContext.agentInstructions,
+      rules: promptContext.rules,
+      coreMemory,
+      recentDiaries,
+      summary: session.summary,
+      skills,
+    });
+    logger.debug('Calling LLM', { sessionId, model: this.config.openaiModel, messageCount: session.messages.length });
+    logger.debug(`System prompt:\n${systemPrompt}`);
     const result = await this.generateTextFn({
       model: this.modelFactory(this.config.openaiModel),
-      system: buildSystemPrompt({
-        coreMemory,
-        recentDiaries,
-        summary: session.summary,
-      }),
+      system: systemPrompt,
       messages: session.messages,
       tools: createAgentTools({
         memoryStore: this.memoryStore,
         timezone: this.config.timezone,
+        ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
+        skills,
       }),
       stopWhen: stepCountIs(this.config.maxSteps),
     });
 
+    logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });
+    for (const [i, step] of result.steps.entries()) {
+      for (const toolCall of step.toolCalls) {
+        logger.debug('Tool call', { step: i, toolName: toolCall?.toolName, input: toolCall?.input });
+      }
+      for (const toolResult of step.toolResults) {
+        logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: toolResult?.output });
+      }
+    }
+    logger.debug(`Response text:\n${result.text}`);
     await this.sessionManager.addMessages(sessionId, result.response.messages);
+    logger.info('handleMessage complete', { sessionId, responseLength: result.text.length });
     return result.text;
   }
 

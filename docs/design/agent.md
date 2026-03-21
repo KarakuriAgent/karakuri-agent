@@ -28,18 +28,21 @@ interface IAgent {
    （セッション読み込み＋追加を一括処理）
         ↓
 2. 要約チェック（トークン予算）
-   a. coreMemory, recentDiaries を取得
-   b. additionalTokens = tokens("<memory>...</memory>") + tokens("<diary>...</diary>")
+   a. coreMemory, recentDiaries, AGENT.md / RULES.md, enabled skills を取得
+   b. additionalTokens = tokens(可変長の trusted prompt context + "<memory>...</memory>" + "<diary>...</diary>" + skill list)
    c. needsSummarization(session, additionalTokens) が true
         │                              ↓
         │                        summarizeSession() で LLM 要約
         │                        sessionManager.applySummary() で圧縮
         ↓
 3. システムプロンプト構築
-   ├── エージェント基本指示（初期はハードコード、後のフェーズで設定ファイル化）
+   ├── AGENT.md（なければデフォルト指示）
+   ├── CORE_SAFETY_INSTRUCTIONS（不変）
+   ├── RULES.md（あれば trusted に追加）
    ├── <memory> ... </memory>          memory.md の内容（常時注入）
    ├── <diary> ... </diary>            直近3日分の diary（自動注入）
    ├── session.summary（あれば注入）
+   ├── Available skills（enabled skill の一覧）
    └── ツール使用説明
         ↓
 4. generateText() + tools + stopWhen: stepCountIs(n)
@@ -47,11 +50,12 @@ interface IAgent {
 5. result.response.messages を sessionManager に保存して応答文字列を返す
 ```
 
-> **注**: `coreMemory` / `recentDiaries` のトークン数は Session 層のスコープ外のため、
+> **注**: trusted prompt context（AGENT.md / RULES.md / skills 一覧）と
+> `coreMemory` / `recentDiaries` のトークン数は Session 層のスコープ外のため、
 > Agent 層がステップ 3b で `src/utils/token-counter.ts` を使って計算し `additionalTokens` として渡す。
 > トークン数は **プロンプトに埋め込む最終形**（`<memory>...</memory>`, `<diary>...</diary>` タグを含む文字列）に対してカウントする。
-> `additionalTokens` の対象は **可変長の外部コンテキスト**（coreMemory, recentDiaries）のみ。
-> エージェント基本指示やツール使用説明など固定長部分はトークン予算の設定値側で吸収する。
+> `additionalTokens` の対象は **可変長の外部コンテキスト**（AGENT.md / RULES.md / skills 一覧 / coreMemory / recentDiaries）。
+> 将来さらに可変長の trusted prompt context を追加した場合もここへ含める。
 
 ## ツール
 
@@ -74,6 +78,15 @@ interface IAgent {
 
 - 直近 3 日は自動注入されるため、それより古い日付の取得に使用する
 
+### `loadSkill` (`src/agent/tools/load-skill.ts`)
+
+| パラメータ | 型       | 説明                     |
+| ---------- | -------- | ------------------------ |
+| `name`     | `string` | 取得する skill の名前    |
+
+- enabled な skill が 1 つ以上あるときのみ公開
+- 本文の全文は必要になったときだけロードさせ、システムプロンプトには skill 一覧のみ注入する
+
 ## 要約処理 (`Agent.summarizeSession`)
 
 - 別途 `generateText()` で要約専用の LLM 呼び出しを行う
@@ -83,7 +96,11 @@ interface IAgent {
 ## システムプロンプト構築 (`src/agent/prompt.ts`)
 
 ```
-[エージェント基本指示]
+[AGENT.md またはデフォルト指示]
+
+[CORE_SAFETY_INSTRUCTIONS]
+
+[RULES.md がある場合]
 
 <memory>
 {coreMemory の内容}
@@ -98,11 +115,16 @@ interface IAgent {
 {summary の内容}
 </summary>
 
+[enabled skills がある場合]
+Available skills:
+- ...
+
 [ツール使用説明]
 ```
 
 `<memory>` / `<diary>` / `<summary>` タグで untrusted data を明示し、
 instruction 部分と明確に分離することで prompt injection を防ぐ。
+AGENT.md / RULES.md / skills は trusted ファイルとして扱い、`fs.watch()` で eager reload する。
 
 ## テスト方針
 
@@ -110,11 +132,11 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 
 | テストケース | 検証内容 |
 | --- | --- |
-| additionalTokens の計算 | coreMemory + recentDiaries のプロンプト埋め込み最終形に対してトークン数が計算される |
+| additionalTokens の計算 | AGENT/RULES/skills 一覧 + coreMemory + recentDiaries のプロンプト埋め込み最終形に対してトークン数が計算される |
 | 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
 | システムプロンプト構築 | memory / diary / summary がタグ付きで正しく組み立てられる |
-| ツール実行 | saveMemory / recallDiary が memoryStore の対応メソッドを呼ぶ |
+| ツール実行 | saveMemory / recallDiary / loadSkill が対応ストアを呼ぶ |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 
 ## セキュリティ
