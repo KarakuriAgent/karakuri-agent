@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CORE_SAFETY_INSTRUCTIONS,
   buildDiarySection,
   buildMemorySection,
+  buildRulesSection,
+  buildSkillListSection,
   buildSummarySection,
   buildSystemPrompt,
+  buildToolGuidance,
   countAdditionalContextTokens,
+  resolveAgentInstructions,
   sanitizeTagContent,
 } from '../src/agent/prompt.js';
 
@@ -57,22 +62,51 @@ describe('buildSummarySection', () => {
 });
 
 describe('buildSystemPrompt', () => {
+  it('falls back to the original default agent instructions', () => {
+    const result = buildSystemPrompt({
+      coreMemory: '',
+      recentDiaries: [],
+      summary: null,
+    });
+
+    expect(result).toContain('You are Karakuri-Agent, a helpful Discord assistant.');
+    expect(result).toContain(CORE_SAFETY_INSTRUCTIONS);
+  });
+
   it('composes all sections in order', () => {
     const result = buildSystemPrompt({
+      agentInstructions: 'Custom agent',
+      rules: 'Ask before guessing',
       coreMemory: 'fact',
       recentDiaries: [{ date: '2025-01-01', content: 'note' }],
       summary: 'prev summary',
+      skills: [
+        {
+          name: 'code-review',
+          description: 'Review code',
+          instructions: 'Check security first.',
+          enabled: true,
+        },
+      ],
     });
 
-    const memoryIndex = result.indexOf('<memory>');
-    const diaryIndex = result.indexOf('<diary>');
-    const summaryIndex = result.indexOf('<summary>');
+    const agentIndex = result.indexOf('Custom agent');
+    const safetyIndex = result.indexOf(CORE_SAFETY_INSTRUCTIONS);
+    const rulesIndex = result.indexOf('Ask before guessing');
+    const memoryIndex = result.indexOf('\n\n<memory>');
+    const diaryIndex = result.indexOf('\n\n<diary>');
+    const summaryIndex = result.indexOf('\n\n<summary>');
+    const skillIndex = result.indexOf('Available skills:');
     const toolIndex = result.indexOf('Available tools:');
 
-    expect(memoryIndex).toBeGreaterThan(0);
+    expect(agentIndex).toBe(0);
+    expect(safetyIndex).toBeGreaterThan(agentIndex);
+    expect(rulesIndex).toBeGreaterThan(safetyIndex);
+    expect(memoryIndex).toBeGreaterThan(rulesIndex);
     expect(diaryIndex).toBeGreaterThan(memoryIndex);
     expect(summaryIndex).toBeGreaterThan(diaryIndex);
-    expect(toolIndex).toBeGreaterThan(summaryIndex);
+    expect(skillIndex).toBeGreaterThan(summaryIndex);
+    expect(toolIndex).toBeGreaterThan(skillIndex);
   });
 
   it('omits summary section when summary is null', () => {
@@ -85,6 +119,29 @@ describe('buildSystemPrompt', () => {
     expect(result).not.toContain('<summary>\n');
     expect(result).toContain('<memory>');
     expect(result).toContain('<diary>');
+  });
+});
+
+describe('prompt helper sections', () => {
+  it('resolves custom agent instructions when present', () => {
+    expect(resolveAgentInstructions('Custom')).toBe('Custom');
+  });
+
+  it('returns an empty rules section for blank rules', () => {
+    expect(buildRulesSection('   ')).toBe('');
+  });
+
+  it('lists skills sorted by name', () => {
+    expect(buildSkillListSection([
+      { name: 'b', description: 'B', instructions: 'B', enabled: true },
+      { name: 'a', description: 'A', instructions: 'A', enabled: true },
+    ])).toBe('Available skills:\n- a: A\n- b: B');
+  });
+
+  it('adds loadSkill guidance when skills are enabled', () => {
+    expect(buildToolGuidance([
+      { name: 'b', description: 'B', instructions: 'B', enabled: true },
+    ])).toContain('- loadSkill: load the full content of a skill by name.');
   });
 });
 
@@ -123,7 +180,11 @@ describe('countAdditionalContextTokens', () => {
   it('returns a positive count for non-empty memory and diary', () => {
     const tokens = countAdditionalContextTokens('some fact', [
       { date: '2025-01-01', content: 'diary entry' },
-    ]);
+    ], {
+      agentInstructions: 'Custom',
+      rules: 'Rule',
+      skills: [{ name: 'code-review', description: 'Review code', instructions: 'Check security first.', enabled: true }],
+    });
     expect(tokens).toBeGreaterThan(0);
   });
 

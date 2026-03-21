@@ -10,4 +10,5 @@ export interface IMemoryStore {
   writeDiary(date: string, content: string): Promise<void>;
   getRecentDiaries(days: number): Promise<DiaryEntry[]>;
   listDiaryDates(): Promise<string[]>;
+  close(): Promise<void>;
 }
