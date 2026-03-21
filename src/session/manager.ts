@@ -20,6 +20,7 @@ export class FileSessionManager implements ISessionManager {
   private readonly sessionsDir: string;
   private readonly tokenBudget: number;
   private readonly mutex: KeyedMutex;
+  private readonly sessionCache = new Map<string, SessionData>();
 
   constructor({ dataDir, tokenBudget, mutex = new KeyedMutex() }: FileSessionManagerOptions) {
     this.sessionsDir = join(dataDir, 'sessions');
@@ -28,6 +29,11 @@ export class FileSessionManager implements ISessionManager {
   }
 
   async loadSession(sessionId: string): Promise<SessionData> {
+    const cached = this.sessionCache.get(sessionId);
+    if (cached != null) {
+      return structuredClone(cached);
+    }
+
     const sessionPath = this.getSessionPath(sessionId);
     const stored = await readFileIfExists(sessionPath);
 
@@ -37,7 +43,9 @@ export class FileSessionManager implements ISessionManager {
 
     const parsed = JSON.parse(stored) as Partial<SessionData>;
     assertSupportedSchemaVersion(parsed.schemaVersion);
-    return normalizeSession(parsed, sessionId);
+    const normalized = normalizeSession(parsed, sessionId);
+    this.sessionCache.set(sessionId, normalized);
+    return structuredClone(normalized);
   }
 
   async saveSession(session: SessionData): Promise<void> {
@@ -104,6 +112,7 @@ export class FileSessionManager implements ISessionManager {
     const sessionPath = this.getSessionPath(session.sessionId);
     const normalized = normalizeSession(session, session.sessionId);
     await writeFileAtomically(sessionPath, `${JSON.stringify(normalized, null, 2)}\n`);
+    this.sessionCache.set(session.sessionId, structuredClone(normalized));
   }
 }
 

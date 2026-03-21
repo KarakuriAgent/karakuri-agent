@@ -51,6 +51,22 @@ describe('FileMemoryStore', () => {
     }
   });
 
+  it('keeps cached diary dates sorted and returns defensive copies', async () => {
+    const store = await createStore();
+
+    await expect(store.listDiaryDates()).resolves.toEqual([]);
+
+    await store.writeDiary('2025-01-02', 'newer note');
+    await store.writeDiary('2025-01-01', 'older note');
+
+    const diaryDates = await store.listDiaryDates();
+    expect(diaryDates).toEqual(['2025-01-01', '2025-01-02']);
+
+    diaryDates.push('2099-01-01');
+
+    await expect(store.listDiaryDates()).resolves.toEqual(['2025-01-01', '2025-01-02']);
+  });
+
   it('stores diary entries and returns recent diary dates in reverse chronological order', async () => {
     const store = await createStore();
 
