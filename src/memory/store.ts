@@ -3,8 +3,12 @@ import { join } from 'node:path';
 
 import { formatDateInTimezone } from '../utils/date.js';
 import { isMissingFileError, readFileIfExists, writeFileAtomically } from '../utils/file.js';
+import { FileWatcher } from '../utils/file-watcher.js';
+import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
 import type { DiaryEntry, IMemoryStore } from './types.js';
+
+const logger = createLogger('MemoryStore');
 
 const DIARY_FILE_PATTERN = /^(\d{4}-\d{2}-\d{2})\.md$/;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -13,22 +17,48 @@ export interface FileMemoryStoreOptions {
   dataDir: string;
   timezone?: string;
   mutex?: KeyedMutex;
+  watcher?: FileWatcher;
 }
 
 export class FileMemoryStore implements IMemoryStore {
+  private readonly coreDir: string;
   private readonly coreMemoryPath: string;
   private readonly diaryDir: string;
   private readonly timezone: string;
   private readonly mutex: KeyedMutex;
+  private readonly watcher: FileWatcher;
+  private readonly ownsWatcher: boolean;
   private coreMemoryCache: string | undefined;
   private readonly diaryContentCache = new Map<string, string | null>();
   private diaryDatesCache: string[] | undefined;
+  private readonly coreWatchDisposable;
+  private readonly diaryWatchDisposable;
+  private coreReloadGeneration = 0;
 
-  constructor({ dataDir, timezone = 'Asia/Tokyo', mutex = new KeyedMutex() }: FileMemoryStoreOptions) {
-    this.coreMemoryPath = join(dataDir, 'memory', 'core', 'memory.md');
+  constructor({
+    dataDir,
+    timezone = 'Asia/Tokyo',
+    mutex = new KeyedMutex(),
+    watcher,
+  }: FileMemoryStoreOptions) {
+    this.coreDir = join(dataDir, 'memory', 'core');
+    this.coreMemoryPath = join(this.coreDir, 'memory.md');
     this.diaryDir = join(dataDir, 'memory', 'diary');
     this.timezone = timezone;
     this.mutex = mutex;
+    this.watcher = watcher ?? new FileWatcher();
+    this.ownsWatcher = watcher == null;
+    this.coreWatchDisposable = this.watcher.watch(this.coreDir, () => this.reloadCoreMemory(), {
+      filenameFilter: /^memory\.md$/,
+      debounceMs: 50,
+    });
+    this.diaryWatchDisposable = this.watcher.watch(this.diaryDir, async () => {
+      this.diaryContentCache.clear();
+      this.diaryDatesCache = undefined;
+    }, {
+      filenameFilter: DIARY_FILE_PATTERN,
+      debounceMs: 50,
+    });
   }
 
   async readCoreMemory(): Promise<string> {
@@ -56,6 +86,7 @@ export class FileMemoryStore implements IMemoryStore {
       const next = appendContent(current, normalizedContent);
       await writeFileAtomically(this.coreMemoryPath, next);
       this.coreMemoryCache = next;
+      logger.debug('Core memory appended', { contentLength: normalizedContent.length });
     });
   }
 
@@ -84,6 +115,7 @@ export class FileMemoryStore implements IMemoryStore {
       const next = appendContent(current, normalizedContent);
       await writeFileAtomically(diaryPath, next);
       this.diaryContentCache.set(date, next);
+      logger.debug('Diary written', { date, contentLength: normalizedContent.length });
 
       if (this.diaryDatesCache != null && !this.diaryDatesCache.includes(date)) {
         this.diaryDatesCache = [...this.diaryDatesCache, date].sort();
@@ -107,7 +139,9 @@ export class FileMemoryStore implements IMemoryStore {
       })),
     );
 
-    return diaries.filter((entry) => entry.content.length > 0);
+    const result = diaries.filter((entry) => entry.content.length > 0);
+    logger.debug('getRecentDiaries', { days, matchedCount: result.length });
+    return result;
   }
 
   async listDiaryDates(): Promise<string[]> {
@@ -132,6 +166,29 @@ export class FileMemoryStore implements IMemoryStore {
 
       throw error;
     }
+  }
+
+  async close(): Promise<void> {
+    this.coreWatchDisposable.unsubscribe();
+    this.diaryWatchDisposable.unsubscribe();
+
+    if (this.ownsWatcher) {
+      await this.watcher.close();
+    }
+    logger.debug('MemoryStore closed');
+  }
+
+  private async reloadCoreMemory(): Promise<void> {
+    const generation = ++this.coreReloadGeneration;
+    await this.mutex.runExclusive(this.coreMemoryPath, async () => {
+      if (generation !== this.coreReloadGeneration) {
+        return;
+      }
+
+      const content = (await readFileIfExists(this.coreMemoryPath)) ?? '';
+      this.coreMemoryCache = content;
+      logger.debug('Core memory reloaded from disk');
+    });
   }
 
   private getDiaryPath(date: string): string {

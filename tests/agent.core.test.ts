@@ -3,9 +3,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { KarakuriAgent } from '../src/agent/core.js';
 import { countAdditionalContextTokens } from '../src/agent/prompt.js';
+import type { PromptContext } from '../src/agent/prompt-context.js';
 import type { Config } from '../src/config.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
 import type { ISessionManager, SessionData } from '../src/session/types.js';
+import type { ISkillStore, SkillDefinition } from '../src/skill/types.js';
 
 const baseConfig: Config = {
   discordApplicationId: 'app',
@@ -49,6 +51,32 @@ class MemoryStoreStub implements IMemoryStore {
   async listDiaryDates(): Promise<string[]> {
     return this.diaries.map((entry) => entry.date);
   }
+
+  async close(): Promise<void> {}
+}
+
+class PromptContextStoreStub {
+  constructor(private readonly context: PromptContext = { agentInstructions: null, rules: null }) {}
+
+  async read(): Promise<PromptContext> {
+    return { ...this.context };
+  }
+
+  async close(): Promise<void> {}
+}
+
+class SkillStoreStub implements ISkillStore {
+  constructor(private readonly skills: SkillDefinition[] = []) {}
+
+  async listSkills(): Promise<SkillDefinition[]> {
+    return this.skills.map((skill) => ({ ...skill }));
+  }
+
+  async getSkill(name: string): Promise<SkillDefinition | null> {
+    return this.skills.find((skill) => skill.name === name) ?? null;
+  }
+
+  async close(): Promise<void> {}
 }
 
 class SessionManagerStub implements ISessionManager {
@@ -107,6 +135,7 @@ function assistantMessage(content: string): ModelMessage {
 function makeGenerateTextResult(text: string, messages: ModelMessage[]) {
   return {
     text,
+    steps: [],
     response: {
       id: 'response-id',
       modelId: 'gpt-4o',
@@ -125,11 +154,25 @@ describe('KarakuriAgent', () => {
     const generateTextFn = vi.fn(async () =>
       makeGenerateTextResult('reply', [assistantMessage('reply')]),
     ) as unknown as typeof import('ai').generateText;
+    const promptContextStore = new PromptContextStoreStub({
+      agentInstructions: 'Custom agent',
+      rules: 'Ask before guessing.',
+    });
+    const skillStore = new SkillStoreStub([
+      {
+        name: 'code-review',
+        description: 'Review code',
+        instructions: 'Check security first.',
+        enabled: true,
+      },
+    ]);
 
     const agent = new KarakuriAgent({
       config: baseConfig,
       memoryStore,
       sessionManager,
+      promptContextStore,
+      skillStore,
       generateTextFn,
       modelFactory: () => ({}) as LanguageModel,
     });
@@ -137,7 +180,18 @@ describe('KarakuriAgent', () => {
     await agent.handleMessage('session-1', 'hello', 'Alice');
 
     expect(sessionManager.lastAdditionalTokens).toBe(
-      countAdditionalContextTokens('core memory', [{ date: '2025-01-02', content: 'diary note' }]),
+      countAdditionalContextTokens('core memory', [{ date: '2025-01-02', content: 'diary note' }], {
+        agentInstructions: 'Custom agent',
+        rules: 'Ask before guessing.',
+        skills: [
+          {
+            name: 'code-review',
+            description: 'Review code',
+            instructions: 'Check security first.',
+            enabled: true,
+          },
+        ],
+      }),
     );
   });
 
@@ -194,5 +248,46 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('<diary>');
     expect(capturedSystem).toContain('<summary>');
     expect(sessionManager.session.messages).toContainEqual(assistantMessage('reply'));
+  });
+
+  it('injects prompt context, skill listings, and the loadSkill tool when skills are available', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      promptContextStore: new PromptContextStoreStub({
+        agentInstructions: 'You are custom.',
+        rules: 'Be precise.',
+      }),
+      skillStore: new SkillStoreStub([
+        {
+          name: 'code-review',
+          description: 'Review code',
+          instructions: 'Check security first.',
+          enabled: true,
+        },
+      ]),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(capturedSystem).toContain('You are custom.');
+    expect(capturedSystem).toContain('Be precise.');
+    expect(capturedSystem).toContain('Available skills:\n- code-review: Review code');
+    expect(capturedSystem).toContain('- loadSkill: load the full content of a skill by name.');
+    expect(capturedTools).toHaveProperty('loadSkill');
   });
 });

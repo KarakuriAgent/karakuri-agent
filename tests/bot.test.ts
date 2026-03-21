@@ -133,7 +133,7 @@ describe('createBot', () => {
 
     expect(startGatewayListenerMock).toHaveBeenCalledTimes(2);
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      'Discord gateway listener failed to start',
+      expect.stringContaining('Discord gateway listener failed to start'),
       expect.any(Error),
     );
 

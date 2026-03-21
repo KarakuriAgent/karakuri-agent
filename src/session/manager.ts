@@ -4,9 +4,12 @@ import { join } from 'node:path';
 import type { ModelMessage } from 'ai';
 
 import { readFileIfExists, writeFileAtomically } from '../utils/file.js';
+import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
 import { estimateMessageTokens, estimateTokenCount } from '../utils/token-counter.js';
 import type { ISessionManager, SessionData } from './types.js';
+
+const logger = createLogger('SessionManager');
 
 const SESSION_SCHEMA_VERSION = 1 as const;
 
@@ -31,6 +34,7 @@ export class FileSessionManager implements ISessionManager {
   async loadSession(sessionId: string): Promise<SessionData> {
     const cached = this.sessionCache.get(sessionId);
     if (cached != null) {
+      logger.debug('Session cache hit', { sessionId });
       return structuredClone(cached);
     }
 
@@ -38,6 +42,7 @@ export class FileSessionManager implements ISessionManager {
     const stored = await readFileIfExists(sessionPath);
 
     if (stored == null) {
+      logger.debug('New session created', { sessionId });
       return createEmptySession(sessionId);
     }
 
@@ -45,6 +50,7 @@ export class FileSessionManager implements ISessionManager {
     assertSupportedSchemaVersion(parsed.schemaVersion);
     const normalized = normalizeSession(parsed, sessionId);
     this.sessionCache.set(sessionId, normalized);
+    logger.debug('Session loaded from disk', { sessionId });
     return structuredClone(normalized);
   }
 
@@ -71,6 +77,7 @@ export class FileSessionManager implements ISessionManager {
       };
 
       await this.writeSessionFile(updated);
+      logger.debug('Messages added to session', { sessionId, count: messages.length });
       return updated;
     });
   }
@@ -78,7 +85,9 @@ export class FileSessionManager implements ISessionManager {
   needsSummarization(session: SessionData, additionalTokens: number): boolean {
     const summaryTokens = estimateTokenCount(session.summary ?? '');
     const messageTokens = estimateMessageTokens(session.messages);
-    return summaryTokens + messageTokens + Math.max(additionalTokens, 0) > this.tokenBudget;
+    const result = summaryTokens + messageTokens + Math.max(additionalTokens, 0) > this.tokenBudget;
+    logger.debug('needsSummarization', { sessionId: session.sessionId, summaryTokens, messageTokens, additionalTokens, budget: this.tokenBudget, result });
+    return result;
   }
 
   async applySummary(
@@ -100,6 +109,7 @@ export class FileSessionManager implements ISessionManager {
       };
 
       await this.writeSessionFile(updated);
+      logger.debug('Summary applied', { sessionId, retainedMessages: retainedMessages.length, summaryLength: summary.length });
       return updated;
     });
   }

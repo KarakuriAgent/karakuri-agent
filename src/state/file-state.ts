@@ -4,7 +4,10 @@ import { join } from 'node:path';
 import type { Lock, StateAdapter } from 'chat';
 
 import { readFileIfExists, writeFileAtomically } from '../utils/file.js';
+import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
+
+const logger = createLogger('FileState');
 
 const STATE_FILE_SCHEMA_VERSION = 1 as const;
 const DEFAULT_KEY_PREFIX = 'chat-sdk';
@@ -85,6 +88,7 @@ export class FileStateAdapter implements StateAdapter {
       }
 
       this.connected = true;
+      logger.debug('FileStateAdapter connected');
     }).catch((error) => {
       this.connectPromise = null;
       throw error;
@@ -102,6 +106,7 @@ export class FileStateAdapter implements StateAdapter {
   async disconnect(): Promise<void> {
     this.connected = false;
     this.connectPromise = null;
+    logger.debug('FileStateAdapter disconnected');
   }
 
   async subscribe(threadId: string): Promise<void> {
@@ -369,7 +374,7 @@ function createEmptyNamespace(): FileStateNamespace {
 
 function normalizeStateFile(raw: unknown): FileStateFile {
   if (!isRecord(raw)) {
-    console.warn('Bot state file has invalid structure, resetting to empty state');
+    logger.warn('Bot state file has invalid structure, resetting to empty state');
     return createEmptyStateFile();
   }
 
@@ -395,7 +400,7 @@ function normalizeStateFile(raw: unknown): FileStateFile {
 
 function normalizeNamespace(raw: unknown): FileStateNamespace {
   if (!isRecord(raw)) {
-    console.warn('Bot state namespace has invalid structure, resetting to empty namespace');
+    logger.warn('Bot state namespace has invalid structure, resetting to empty namespace');
     return createEmptyNamespace();
   }
 
