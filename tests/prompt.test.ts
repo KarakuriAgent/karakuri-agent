@@ -143,6 +143,12 @@ describe('prompt helper sections', () => {
       { name: 'b', description: 'B', instructions: 'B', enabled: true },
     ])).toContain('- loadSkill: load the full content of a skill by name.');
   });
+
+  it('always includes webFetch guidance and only includes webSearch when enabled', () => {
+    expect(buildToolGuidance()).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
+    expect(buildToolGuidance()).not.toContain('- webSearch: search the web via Brave Search.');
+    expect(buildToolGuidance([], { hasWebSearch: true })).toContain('- webSearch: search the web via Brave Search.');
+  });
 });
 
 describe('tag sanitization', () => {

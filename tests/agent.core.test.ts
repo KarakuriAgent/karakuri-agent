@@ -290,4 +290,46 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('- loadSkill: load the full content of a skill by name.');
     expect(capturedTools).toHaveProperty('loadSkill');
   });
+
+  it('always exposes webFetch and only enables webSearch when BRAVE_API_KEY is configured', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agentWithoutSearch = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agentWithoutSearch.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(capturedTools).toHaveProperty('webFetch');
+    expect(capturedTools).not.toHaveProperty('webSearch');
+    expect(capturedSystem).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
+    expect(capturedSystem).not.toContain('- webSearch: search the web via Brave Search.');
+
+    const agentWithSearch = new KarakuriAgent({
+      config: { ...baseConfig, braveApiKey: 'brave-key' },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agentWithSearch.handleMessage('session-2', 'hi', 'Alice');
+
+    expect(capturedTools).toHaveProperty('webFetch');
+    expect(capturedTools).toHaveProperty('webSearch');
+    expect(capturedSystem).toContain('- webSearch: search the web via Brave Search.');
+  });
 });

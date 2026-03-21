@@ -12,6 +12,7 @@ const configSchema = z.object({
   discordBotToken: z.string().trim().min(1, 'DISCORD_BOT_TOKEN is required'),
   discordPublicKey: z.string().trim().min(1, 'DISCORD_PUBLIC_KEY is required'),
   openaiApiKey: z.string().trim().min(1, 'OPENAI_API_KEY is required'),
+  braveApiKey: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
   openaiModel: z.string().trim().default('gpt-4o'),
@@ -25,6 +26,7 @@ export interface Config {
   discordBotToken: string;
   discordPublicKey: string;
   openaiApiKey: string;
+  braveApiKey?: string | undefined;
   dataDir: string;
   timezone: string;
   openaiModel: string;
@@ -49,6 +51,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     discordBotToken: env.DISCORD_BOT_TOKEN ?? env.DISCORD_TOKEN,
     discordPublicKey: env.DISCORD_PUBLIC_KEY,
     openaiApiKey: env.OPENAI_API_KEY,
+    braveApiKey: env.BRAVE_API_KEY || undefined,
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
     openaiModel: env.OPENAI_MODEL ?? env.AGENT_MODEL,

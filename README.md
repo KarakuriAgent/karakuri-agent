@@ -7,13 +7,14 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI + Disc
 - ファイルベースのメモリ・セッション管理（write-through キャッシュ付き）
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
+- `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
 - 各層をインターフェースで抽象化し、実装の差し替えが容易
 - v1 はテキストメッセージのみ対応
 
 ## セットアップ
 
 1. `cp .env.example .env`
-2. `.env` に Discord / OpenAI の設定を入力
+2. `.env` に Discord / OpenAI の設定を入力（`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能）
 3. `cp -r data.example data`
 4. `npm install`
 5. `npm run dev`
@@ -37,6 +38,9 @@ Discord Gateway listener を同時に起動する。
 
 - `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は追加スキル定義
 - スキルが有効なときだけ `loadSkill` ツールが公開され、一覧だけをシステムプロンプトへ注入する
+- `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
+- `webFetch` は private / loopback / link-local 宛てや、そこへ向かう redirect を拒否して SSRF を抑止する
+- `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う
 - Chat SDK の state は `DATA_DIR/state/chat-state.json` に保存するカスタム JSON アダプターを使用
 - Memory / Session も `data/` 配下にファイル保存
 - 添付ファイルは未対応。添付付きメッセージはテキスト部分のみ処理し、注意メッセージを返す

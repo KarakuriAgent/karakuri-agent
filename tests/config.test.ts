@@ -24,6 +24,7 @@ describe('loadConfig', () => {
     expect(config.maxSteps).toBe(10);
     expect(config.tokenBudget).toBe(8_000);
     expect(config.port).toBe(3_000);
+    expect(config.braveApiKey).toBeUndefined();
   });
 
   it('accepts DISCORD_TOKEN as alias for DISCORD_BOT_TOKEN', () => {
@@ -62,6 +63,24 @@ describe('loadConfig', () => {
     });
 
     expect(config.tokenBudget).toBe(4_000);
+  });
+
+  it('accepts BRAVE_API_KEY as an optional setting', () => {
+    const config = loadConfig({
+      ...validEnv,
+      BRAVE_API_KEY: 'brave-key',
+    });
+
+    expect(config.braveApiKey).toBe('brave-key');
+  });
+
+  it('treats empty BRAVE_API_KEY as undefined', () => {
+    const config = loadConfig({
+      ...validEnv,
+      BRAVE_API_KEY: '',
+    });
+
+    expect(config.braveApiKey).toBeUndefined();
   });
 
   it('throws when a required field is missing', () => {

@@ -29,10 +29,10 @@ interface IAgent {
         ↓
 2. 要約チェック（トークン予算）
    a. coreMemory, recentDiaries, AGENT.md / RULES.md, enabled skills を取得
-   b. additionalTokens = tokens(可変長の trusted prompt context + "<memory>...</memory>" + "<diary>...</diary>" + skill list)
+   b. additionalTokens = tokens(可変長の trusted prompt context + "<memory>...</memory>" + "<diary>...</diary>" + skill list + 利用可能ツール説明)
    c. needsSummarization(session, additionalTokens) が true
-        │                              ↓
-        │                        summarizeSession() で LLM 要約
+         │                              ↓
+         │                        summarizeSession() で LLM 要約
         │                        sessionManager.applySummary() で圧縮
         ↓
 3. システムプロンプト構築
@@ -77,6 +77,28 @@ interface IAgent {
 | `date`     | `string` | 取得する日記の日付（YYYY-MM-DD）   |
 
 - 直近 3 日は自動注入されるため、それより古い日付の取得に使用する
+
+### `webFetch` (`src/agent/tools/web-fetch.ts`)
+
+| パラメータ | 型       | 説明                                       |
+| ---------- | -------- | ------------------------------------------ |
+| `url`      | `string` | 取得する URL（`http` / `https` のみ）      |
+
+- 常に有効
+- HTML / XHTML のみを対象に fetch し、Readability + Turndown で Markdown に変換する
+- タイムアウト 15 秒、本文 2 MB、出力 20,000 文字で制限する
+- private / loopback / link-local 宛てや、そこへ到達する redirect は SSRF 対策として拒否する
+- Readability で本文抽出できない場合はフォールバック文字列を返す
+
+### `webSearch` (`src/agent/tools/web-search.ts`)
+
+| パラメータ | 型       | 説明                                 |
+| ---------- | -------- | ------------------------------------ |
+| `query`    | `string` | Brave Search へ渡す検索クエリ        |
+| `count`    | `number` | 返却件数（省略時 5、最大 10）        |
+
+- `BRAVE_API_KEY` が設定されているときのみ公開
+- Brave Search API の Web 検索結果から `title` / `url` / `snippet` を返す
 
 ### `loadSkill` (`src/agent/tools/load-skill.ts`)
 
@@ -136,11 +158,12 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 | 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
 | システムプロンプト構築 | memory / diary / summary がタグ付きで正しく組み立てられる |
-| ツール実行 | saveMemory / recallDiary / loadSkill が対応ストアを呼ぶ |
+| ツール実行 | saveMemory / recallDiary / webFetch / webSearch / loadSkill が想定どおり呼ばれる |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 
 ## セキュリティ
 
 - memory / diary / summary はすべてタグで囲い、instruction と分離
 - `saveMemory` の `mode: replace` は実装しない
+- `webFetch` は DNS 解決と redirect を検査し、private / loopback / link-local への SSRF を拒否する
 - ツールのステップ数上限（`stopWhen: stepCountIs(n)`）を設定して無限ループを防ぐ
