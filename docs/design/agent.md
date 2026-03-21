@@ -8,12 +8,23 @@ LLM（OpenAI）を使って会話を処理するコア層。
 ## インターフェース: `IAgent` (`src/agent/core.ts`)
 
 ```typescript
+interface AgentLifecycleCallbacks {
+  onThinking(): void;
+  onToolCallStart(toolName: string): void;
+  onToolCallFinish(toolName: string): void;
+}
+
+interface HandleMessageOptions {
+  lifecycle?: AgentLifecycleCallbacks;
+}
+
 interface IAgent {
   /** ユーザーメッセージを処理して応答文字列を返す */
   handleMessage(
     sessionId: string,
     userMessage: string,
     userName: string,
+    options?: HandleMessageOptions,
   ): Promise<string>;
 
   /** セッション履歴を LLM で要約して返す */
@@ -46,7 +57,9 @@ interface IAgent {
    └── ツール使用説明
         ↓
 4. generateText() + tools + stopWhen: stepCountIs(n)
-        ↓
+   └── options.lifecycle がある場合は experimental_onStepStart /
+       experimental_onToolCallStart / experimental_onToolCallFinish を配線
+         ↓
 5. result.response.messages を sessionManager に保存して応答文字列を返す
 ```
 
@@ -159,6 +172,7 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
 | システムプロンプト構築 | memory / diary / summary がタグ付きで正しく組み立てられる |
 | ツール実行 | saveMemory / recallDiary / webFetch / webSearch / loadSkill が想定どおり呼ばれる |
+| lifecycle callback 配線 | AgentLifecycleCallbacks が generateText の step/tool callback へ同期で橋渡しされる |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 
 ## セキュリティ

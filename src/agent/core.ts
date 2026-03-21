@@ -19,8 +19,23 @@ const logger = createLogger('Agent');
 const DEFAULT_RECENT_DIARY_COUNT = 3;
 const DEFAULT_RECENT_TURN_COUNT = 4;
 
+export interface AgentLifecycleCallbacks {
+  onThinking(): void;
+  onToolCallStart(toolName: string): void;
+  onToolCallFinish(toolName: string): void;
+}
+
+export interface HandleMessageOptions {
+  lifecycle?: AgentLifecycleCallbacks;
+}
+
 export interface IAgent {
-  handleMessage(sessionId: string, userMessage: string, userName: string): Promise<string>;
+  handleMessage(
+    sessionId: string,
+    userMessage: string,
+    userName: string,
+    options?: HandleMessageOptions,
+  ): Promise<string>;
   summarizeSession(sessionId: string): Promise<string>;
 }
 
@@ -73,7 +88,12 @@ export class KarakuriAgent implements IAgent {
       ((modelId: string) => openAiProvider.responses(modelId as Parameters<typeof openAiProvider.responses>[0]));
   }
 
-  async handleMessage(sessionId: string, userMessage: string, userName: string): Promise<string> {
+  async handleMessage(
+    sessionId: string,
+    userMessage: string,
+    userName: string,
+    options?: HandleMessageOptions,
+  ): Promise<string> {
     logger.info('handleMessage', { sessionId, userMessageLength: userMessage.length });
     let session = await this.sessionManager.addMessages(sessionId, [
       {
@@ -118,18 +138,33 @@ export class KarakuriAgent implements IAgent {
     });
     logger.debug('Calling LLM', { sessionId, model: this.config.openaiModel, messageCount: session.messages.length });
     logger.debug(`System prompt:\n${systemPrompt}`);
+    const tools = createAgentTools({
+      memoryStore: this.memoryStore,
+      timezone: this.config.timezone,
+      braveApiKey: this.config.braveApiKey,
+      ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
+      skills,
+    });
+    const lifecycle = options?.lifecycle;
     const result = await this.generateTextFn({
       model: this.modelFactory(this.config.openaiModel),
       system: systemPrompt,
       messages: session.messages,
-      tools: createAgentTools({
-        memoryStore: this.memoryStore,
-        timezone: this.config.timezone,
-        braveApiKey: this.config.braveApiKey,
-        ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
-        skills,
-      }),
+      tools,
       stopWhen: stepCountIs(this.config.maxSteps),
+      ...(lifecycle != null
+        ? {
+            experimental_onStepStart: () => {
+              lifecycle.onThinking();
+            },
+            experimental_onToolCallStart: (event) => {
+              lifecycle.onToolCallStart(String(event.toolCall.toolName));
+            },
+            experimental_onToolCallFinish: (event) => {
+              lifecycle.onToolCallFinish(String(event.toolCall.toolName));
+            },
+          }
+        : {}),
     });
 
     logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });

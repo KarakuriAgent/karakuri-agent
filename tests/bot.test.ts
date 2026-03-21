@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBot } from '../src/bot.js';
 import type { IAgent } from '../src/agent/core.js';
 import type { Config } from '../src/config.js';
+import { DONE_REACTION_DURATION_MS, STATUS_EMOJI } from '../src/status-reaction.js';
 
 const { initializeMock, shutdownMock, startGatewayListenerMock } = vi.hoisted(() => ({
   initializeMock: vi.fn(async () => {}),
@@ -90,6 +91,54 @@ const agentStub: IAgent = {
   },
 };
 
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+
+  return { promise, resolve };
+}
+
+function createMockThread() {
+  const reactionEvents: string[] = [];
+  const adapter = {
+    addReaction: vi.fn(async (threadId: string, messageId: string, emoji: string) => {
+      reactionEvents.push(`add:${threadId}:${messageId}:${emoji}`);
+    }),
+    removeReaction: vi.fn(async (threadId: string, messageId: string, emoji: string) => {
+      reactionEvents.push(`remove:${threadId}:${messageId}:${emoji}`);
+    }),
+  };
+
+  return {
+    reactionEvents,
+    thread: {
+      adapter,
+      subscribe: vi.fn(),
+      startTyping: vi.fn(),
+      post: vi.fn(),
+    },
+  };
+}
+
+function createMessage(overrides: Partial<{
+  id: string;
+  threadId: string;
+  text: string;
+  attachments: Array<{ url: string }>;
+  author: { fullName: string };
+}> = {}) {
+  return {
+    id: 'message-1',
+    threadId: 'thread-1',
+    text: 'hello',
+    attachments: [] as Array<{ url: string }>,
+    author: { fullName: 'User' },
+    ...overrides,
+  };
+}
+
 describe('createBot', () => {
   beforeEach(() => {
     startGatewayListenerMock.mockReset();
@@ -141,6 +190,7 @@ describe('createBot', () => {
   });
 
   it('serializes concurrent messages on the same thread', async () => {
+    vi.useFakeTimers();
     const executionOrder: string[] = [];
 
     const agent: IAgent = {
@@ -163,20 +213,18 @@ describe('createBot', () => {
     expect(handlers).toHaveLength(1);
     const handler = handlers[0]!;
 
-    const mockThread = {
-      subscribe: vi.fn(),
-      startTyping: vi.fn(),
-      post: vi.fn(),
-    };
+    const { thread } = createMockThread();
 
-    const msgA = { threadId: 'thread-1', text: 'A', attachments: [], author: { fullName: 'User' } };
-    const msgB = { threadId: 'thread-1', text: 'B', attachments: [], author: { fullName: 'User' } };
+    const msgA = createMessage({ id: 'message-a', text: 'A' });
+    const msgB = createMessage({ id: 'message-b', text: 'B' });
 
     // Fire both messages concurrently on the same thread
-    const [resultA, resultB] = await Promise.all([
-      handler(mockThread, msgA),
-      handler(mockThread, msgB),
+    const pendingResults = Promise.all([
+      handler(thread, msgA),
+      handler(thread, msgB),
     ]);
+    await vi.runAllTimersAsync();
+    const [resultA, resultB] = await pendingResults;
 
     // Both should complete without error
     expect(resultA).toBeUndefined();
@@ -202,36 +250,33 @@ describe('createBot', () => {
       _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
     };
 
-    const mockThread = {
-      subscribe: vi.fn(),
-      startTyping: vi.fn(),
-      post: vi.fn(),
-    };
+    const { thread } = createMockThread();
 
     // Test onNewMessage handler
     const newHandler = chat._getNewMessageHandlers()[0]!;
-    const attachmentOnlyMsg = {
+    const attachmentOnlyMsg = createMessage({
+      id: 'message-new',
       threadId: 'thread-new',
       text: '',
       attachments: [{ url: 'file.png' }],
-      author: { fullName: 'User' },
-    };
+    });
 
-    await newHandler(mockThread, attachmentOnlyMsg);
-    expect(mockThread.post).toHaveBeenCalledWith(
+    await newHandler(thread, attachmentOnlyMsg);
+    expect(thread.post).toHaveBeenCalledWith(
       expect.stringContaining('テキストメッセージのみ'),
     );
 
     // Test onSubscribedMessage handler
-    mockThread.post.mockClear();
+    thread.post.mockClear();
     const subHandler = chat._getSubscribedMessageHandlers()[0]!;
-    await subHandler(mockThread, attachmentOnlyMsg);
-    expect(mockThread.post).toHaveBeenCalledWith(
+    await subHandler(thread, attachmentOnlyMsg);
+    expect(thread.post).toHaveBeenCalledWith(
       expect.stringContaining('テキストメッセージのみ'),
     );
   });
 
   it('sends attachment warning when message has both text and attachments', async () => {
+    vi.useFakeTimers();
     const agent: IAgent = {
       async handleMessage(): Promise<string> {
         return 'response';
@@ -247,24 +292,18 @@ describe('createBot', () => {
     };
     const handler = chat._getSubscribedMessageHandlers()[0]!;
 
-    const mockThread = {
-      subscribe: vi.fn(),
-      startTyping: vi.fn(),
-      post: vi.fn(),
-    };
-
-    const msgWithAttachment = {
-      threadId: 'thread-1',
-      text: 'hello',
+    const { thread } = createMockThread();
+    const msgWithAttachment = createMessage({
       attachments: [{ url: 'file.png' }],
-      author: { fullName: 'User' },
-    };
+    });
 
-    await handler(mockThread, msgWithAttachment);
-    expect(mockThread.post).toHaveBeenCalledWith(
+    const task = handler(thread, msgWithAttachment);
+    await vi.runAllTimersAsync();
+    await task;
+    expect(thread.post).toHaveBeenCalledWith(
       expect.stringContaining('添付ファイルは現在未対応'),
     );
-    expect(mockThread.post).toHaveBeenCalledWith('response');
+    expect(thread.post).toHaveBeenCalledWith('response');
   });
 
   it('does not subscribe when new message has no processable text', async () => {
@@ -274,32 +313,28 @@ describe('createBot', () => {
     };
     const handler = chat._getNewMessageHandlers()[0]!;
 
-    const mockThread = {
-      subscribe: vi.fn(),
-      startTyping: vi.fn(),
-      post: vi.fn(),
-    };
+    const { thread } = createMockThread();
 
     // Attachment-only message should not trigger subscribe
-    await handler(mockThread, {
+    await handler(thread, createMessage({
+      id: 'message-new',
       threadId: 'thread-new',
       text: '',
       attachments: [{ url: 'file.png' }],
-      author: { fullName: 'User' },
-    });
-    expect(mockThread.subscribe).not.toHaveBeenCalled();
+    }));
+    expect(thread.subscribe).not.toHaveBeenCalled();
 
     // Whitespace-only message should not trigger subscribe
-    await handler(mockThread, {
+    await handler(thread, createMessage({
+      id: 'message-new2',
       threadId: 'thread-new2',
       text: '   ',
-      attachments: [],
-      author: { fullName: 'User' },
-    });
-    expect(mockThread.subscribe).not.toHaveBeenCalled();
+    }));
+    expect(thread.subscribe).not.toHaveBeenCalled();
   });
 
   it('allows concurrent messages on different threads', async () => {
+    vi.useFakeTimers();
     const executionOrder: string[] = [];
 
     const agent: IAgent = {
@@ -320,22 +355,133 @@ describe('createBot', () => {
     };
     const handler = chat._getSubscribedMessageHandlers()[0]!;
 
-    const mockThread = {
-      subscribe: vi.fn(),
-      startTyping: vi.fn(),
-      post: vi.fn(),
-    };
+    const { thread } = createMockThread();
 
-    const msgA = { threadId: 'thread-1', text: 'A', attachments: [], author: { fullName: 'User' } };
-    const msgB = { threadId: 'thread-2', text: 'B', attachments: [], author: { fullName: 'User' } };
-
-    await Promise.all([
-      handler(mockThread, msgA),
-      handler(mockThread, msgB),
+    const pendingResults = Promise.all([
+      handler(thread, createMessage({ id: 'message-a', threadId: 'thread-1', text: 'A' })),
+      handler(thread, createMessage({ id: 'message-b', threadId: 'thread-2', text: 'B' })),
     ]);
+    await vi.runAllTimersAsync();
+    await pendingResults;
 
     // Different threads should run concurrently: both start before either ends
     expect(executionOrder[0]).toBe('start:A');
     expect(executionOrder[1]).toBe('start:B');
+  });
+
+  it('shows the status reaction lifecycle for a successful response', async () => {
+    vi.useFakeTimers();
+    const agent: IAgent = {
+      async handleMessage(_threadId, _text, _userName, options): Promise<string> {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        options?.lifecycle?.onToolCallStart('webFetch');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        options?.lifecycle?.onToolCallFinish('webFetch');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return 'response';
+      },
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+
+    const bot = createBot(baseConfig, agent);
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread, reactionEvents } = createMockThread();
+
+    const task = handler(thread, createMessage());
+    await vi.runAllTimersAsync();
+    await task;
+
+    expect(reactionEvents).toEqual([
+      `add:thread-1:message-1:${STATUS_EMOJI.queued}`,
+      `remove:thread-1:message-1:${STATUS_EMOJI.queued}`,
+      `add:thread-1:message-1:${STATUS_EMOJI.thinking}`,
+      `remove:thread-1:message-1:${STATUS_EMOJI.thinking}`,
+      `add:thread-1:message-1:${STATUS_EMOJI.web}`,
+      `remove:thread-1:message-1:${STATUS_EMOJI.web}`,
+      `add:thread-1:message-1:${STATUS_EMOJI.thinking}`,
+      `remove:thread-1:message-1:${STATUS_EMOJI.thinking}`,
+      `add:thread-1:message-1:${STATUS_EMOJI.done}`,
+      `remove:thread-1:message-1:${STATUS_EMOJI.done}`,
+    ]);
+    expect(thread.startTyping).toHaveBeenCalledTimes(1);
+    expect(thread.post).toHaveBeenCalledWith('response');
+  });
+
+  it('leaves the error reaction applied when handling fails', async () => {
+    vi.useFakeTimers();
+    const agent: IAgent = {
+      async handleMessage(): Promise<string> {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        throw new Error('boom');
+      },
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+
+    const bot = createBot(baseConfig, agent);
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread, reactionEvents } = createMockThread();
+
+    const task = handler(thread, createMessage());
+    await vi.runAllTimersAsync();
+    await task;
+    await vi.advanceTimersByTimeAsync(DONE_REACTION_DURATION_MS * 2);
+
+    expect(reactionEvents).toEqual([
+      `add:thread-1:message-1:${STATUS_EMOJI.queued}`,
+      `remove:thread-1:message-1:${STATUS_EMOJI.queued}`,
+      `add:thread-1:message-1:${STATUS_EMOJI.thinking}`,
+      `remove:thread-1:message-1:${STATUS_EMOJI.thinking}`,
+      `add:thread-1:message-1:${STATUS_EMOJI.error}`,
+    ]);
+    expect(thread.post).toHaveBeenCalledWith(
+      expect.stringContaining('エラーが発生しました'),
+    );
+  });
+
+  it('shows queued immediately for messages waiting on the thread mutex', async () => {
+    vi.useFakeTimers();
+    const firstMessageGate = createDeferred();
+    const agent: IAgent = {
+      async handleMessage(_threadId, text): Promise<string> {
+        if (text === 'A') {
+          await firstMessageGate.promise;
+        }
+        return `reply:${text}`;
+      },
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+
+    const bot = createBot(baseConfig, agent);
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread, reactionEvents } = createMockThread();
+
+    const taskA = handler(thread, createMessage({ id: 'message-a', text: 'A' }));
+    await Promise.resolve();
+
+    const taskB = handler(thread, createMessage({ id: 'message-b', text: 'B' }));
+    await Promise.resolve();
+
+    expect(reactionEvents).toContain(
+      `add:thread-1:message-b:${STATUS_EMOJI.queued}`,
+    );
+
+    firstMessageGate.resolve();
+    await vi.runAllTimersAsync();
+    await Promise.all([taskA, taskB]);
   });
 });

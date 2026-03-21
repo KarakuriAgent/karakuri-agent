@@ -25,18 +25,22 @@ const bot = createBot({
 メンションの有無に関わらず、1文字以上のテキストを含むすべてのメッセージに反応する。
 
 ```
+0. processable なメッセージなら元メッセージに 👀 を付ける（mutex の外）
 1. thread.subscribe() でスレッドを購読登録（永続 state に保存）
-2. agent.handleMessage(threadId, message.content, message.author.name)
+2. `StatusReactionController` を通じて 💭 / ツール絵文字 / ✅ / ❌ を制御しながら agent.handleMessage(...)
 3. 応答を分割送信（2000 文字超の場合）
-4. エラー時はエラーメッセージを送信
+4. 投稿成功後に ✅ を付け、2 秒後に除去
+5. エラー時は ❌ を残したままエラーメッセージを送信
 ```
 
 ### `onSubscribedMessage`（購読済みスレッドへのメッセージ）
 
 ```
-1. agent.handleMessage(threadId, message.content, message.author.name)
+0. processable なメッセージなら元メッセージに 👀 を付ける（mutex の外）
+1. `StatusReactionController` を通じて 💭 / ツール絵文字 / ✅ / ❌ を制御しながら agent.handleMessage(...)
 2. 応答を分割送信（2000 文字超の場合）
-3. エラー時はエラーメッセージを送信
+3. 投稿成功後に ✅ を付け、2 秒後に除去
+4. エラー時は ❌ を残したままエラーメッセージを送信
 ```
 
 ## スレッド単位キューイング
@@ -45,7 +49,16 @@ const bot = createBot({
 
 - `onNewMessage` / `onSubscribedMessage` の両ハンドラーで `threadMutex.runExclusive(message.threadId, ...)` を使用
 - `thread.subscribe()` も mutex 内に含めることで、subscribe 前に次のメッセージが来ても順序を保証
+- ただし `queued`（👀）は mutex の外で先に適用し、ロック待ち中のメッセージも視覚的に分かるようにする
 - 異なるスレッド間は並行処理を維持（スレッド間の独立性を損なわない）
+
+## ステータスリアクション (`src/status-reaction.ts`)
+
+- `StatusReactionController` は元メッセージ上のリアクション 1 個だけを保つ reconcile 型 state machine
+- `queued` → `thinking` → tool（`saveMemory` / `recallDiary` は 📝、`webFetch` / `webSearch` は 🔍、`loadSkill` は 📖）→ `thinking` を繰り返す
+- 応答投稿完了後は ✅ を付け、2 秒後に除去してクリーンな状態へ戻す
+- エラー時は ❌ に遷移して保持する
+- Agent 層との接続は `AgentLifecycleCallbacks` を経由し、Discord 依存を Bot 層と controller に閉じ込める
 
 ## メッセージ分割 (`src/utils/message-splitter.ts`)
 
