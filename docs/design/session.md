@@ -75,6 +75,15 @@ interface ISessionManager {
   JSON 本体には元の `sessionId` を保持する
 - 未対応の `schemaVersion` を読み込んだ場合は、将来の migration 実装まで明示的にエラーとする
 
+### write-through cache (`sessionCache`)
+
+- `loadSession()` は初回のみディスクから読み込み、以降は `sessionCache` から返す
+- cache から返す `SessionData` は `structuredClone()` で複製し、呼び出し側の mutate で内部状態が壊れないようにする
+- `saveSession()` / `addMessages()` / `applySummary()` は最終的に `writeSessionFile()` を通り、
+  ディスク write 完了後に cache を更新する
+- ファイル未作成の空セッションは cache しない。再起動、または別プロセスで更新された内容を拾うには
+  新しい `FileSessionManager` インスタンスを生成する
+
 ### トークン予算判定 (`needsSummarization`)
 
 メッセージ**件数**ではなく**トークン予算（概算）**で要約トリガーを判定する:
@@ -116,4 +125,6 @@ interface ISessionManager {
 | needsSummarization（予算超過）   | true を返す                                            |
 | needsSummarization（session 単体は予算以下、additionalTokens で超過） | additionalTokens が判定に反映され true を返す |
 | needsSummarization（additionalTokens = 0） | 外部コンテキストなしで正しく判定される         |
+| loadSession cache copy          | 返却値を mutate しても cache 内の session が壊れないことを確認 |
+| unsupported schema after restart | 新しい manager インスタンスで破損ファイルを読み込むとエラーになる |
 | applySummary                     | 指定 turn 数が保持され、tool ペアが壊れていないことを確認 |

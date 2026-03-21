@@ -13,8 +13,8 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                 │                      │
                 │                      ├── OpenAI (via @ai-sdk/openai)
                 │                      ├── Tools (saveMemory, recallDiary)
-                │                      ├── Memory (file-based, mutex付き)
-                │                      └── Session (file-based, turn単位管理)
+                │                      ├── Memory (file-based, write-through cache + mutex付き)
+                │                      └── Session (file-based, write-through cache + turn単位管理)
                 │
                 └── State (JSON file-backed custom adapter)
                     └── thread subscriptionの永続化
@@ -26,8 +26,8 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
 | ------- | ------------------ | --------------------------- | ----------------------- |
 | Channel | Chat SDK adapters  | Discord                     | Slack, Web 等            |
 | Agent   | `IAgent`           | generateText + OpenAI       | モデル切替、スキル追加  |
-| Memory  | `IMemoryStore`     | ファイルベース (mutex 付き)  | SQLite, object storage |
-| Session | `ISessionManager`  | JSON ファイル               | Redis, DB              |
+| Memory  | `IMemoryStore`     | ファイルベース (write-through cache + mutex 付き) | SQLite, object storage |
+| Session | `ISessionManager`  | JSON ファイル (write-through cache) | Redis, DB |
 
 ## プロジェクト構造
 
@@ -43,10 +43,10 @@ karakuri-agent/
 │   │       ├── save-memory.ts  # メモリ書き込みツール
 │   │       └── recall-diary.ts # 日記検索ツール
 │   ├── memory/
-│   │   ├── store.ts            # IMemoryStore + FileMemoryStore (mutex + atomic write)
+│   │   ├── store.ts            # IMemoryStore + FileMemoryStore (write-through cache + mutex + atomic write)
 │   │   └── types.ts
 │   ├── session/
-│   │   ├── manager.ts          # ISessionManager + FileSessionManager
+│   │   ├── manager.ts          # ISessionManager + FileSessionManager (write-through cache)
 │   │   └── types.ts
 │   ├── state/
 │   │   └── file-state.ts       # Chat SDK StateAdapter の JSON ファイル実装
@@ -119,14 +119,14 @@ karakuri-agent/
 ### Phase 2: Memory 層
 
 - `src/memory/types.ts` (IMemoryStore)
-- `src/memory/store.ts` (FileMemoryStore: mutex + atomic write)
+- `src/memory/store.ts` (FileMemoryStore: write-through cache + mutex + atomic write)
 - `data/memory/core/memory.md`（空 or 初期内容）
 - **unit test**: read/write/append/concurrent write
 
 ### Phase 3: Session 層
 
 - `src/session/types.ts` (SessionData with schema version, ISessionManager)
-- `src/session/manager.ts` (FileSessionManager: turn 単位管理, トークン予算判定)
+- `src/session/manager.ts` (FileSessionManager: write-through cache + turn 単位管理, トークン予算判定)
 - **unit test**: load/save/turn-based summarization trigger/applySummary
 
 ### Phase 4: Agent 層

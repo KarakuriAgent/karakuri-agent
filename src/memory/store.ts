@@ -20,6 +20,9 @@ export class FileMemoryStore implements IMemoryStore {
   private readonly diaryDir: string;
   private readonly timezone: string;
   private readonly mutex: KeyedMutex;
+  private coreMemoryCache: string | undefined;
+  private readonly diaryContentCache = new Map<string, string | null>();
+  private diaryDatesCache: string[] | undefined;
 
   constructor({ dataDir, timezone = 'Asia/Tokyo', mutex = new KeyedMutex() }: FileMemoryStoreOptions) {
     this.coreMemoryPath = join(dataDir, 'memory', 'core', 'memory.md');
@@ -29,7 +32,13 @@ export class FileMemoryStore implements IMemoryStore {
   }
 
   async readCoreMemory(): Promise<string> {
-    return (await readFileIfExists(this.coreMemoryPath)) ?? '';
+    if (this.coreMemoryCache !== undefined) {
+      return this.coreMemoryCache;
+    }
+
+    const content = (await readFileIfExists(this.coreMemoryPath)) ?? '';
+    this.coreMemoryCache = content;
+    return content;
   }
 
   async writeCoreMemory(content: string, mode: 'append'): Promise<void> {
@@ -46,12 +55,20 @@ export class FileMemoryStore implements IMemoryStore {
       const current = await this.readCoreMemory();
       const next = appendContent(current, normalizedContent);
       await writeFileAtomically(this.coreMemoryPath, next);
+      this.coreMemoryCache = next;
     });
   }
 
   async readDiary(date: string): Promise<string | null> {
+    const cached = this.diaryContentCache.get(date);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const diaryPath = this.getDiaryPath(date);
-    return readFileIfExists(diaryPath);
+    const content = await readFileIfExists(diaryPath);
+    this.diaryContentCache.set(date, content);
+    return content;
   }
 
   async writeDiary(date: string, content: string): Promise<void> {
@@ -63,9 +80,14 @@ export class FileMemoryStore implements IMemoryStore {
     }
 
     await this.mutex.runExclusive(diaryPath, async () => {
-      const current = (await readFileIfExists(diaryPath)) ?? '';
+      const current = (await this.readDiary(date)) ?? '';
       const next = appendContent(current, normalizedContent);
       await writeFileAtomically(diaryPath, next);
+      this.diaryContentCache.set(date, next);
+
+      if (this.diaryDatesCache != null && !this.diaryDatesCache.includes(date)) {
+        this.diaryDatesCache = [...this.diaryDatesCache, date].sort();
+      }
     });
   }
 
@@ -89,15 +111,22 @@ export class FileMemoryStore implements IMemoryStore {
   }
 
   async listDiaryDates(): Promise<string[]> {
+    if (this.diaryDatesCache != null) {
+      return [...this.diaryDatesCache];
+    }
+
     try {
       const entries = await readdir(this.diaryDir, { withFileTypes: true });
-      return entries
+      const dates = entries
         .filter((entry) => entry.isFile())
         .map((entry) => DIARY_FILE_PATTERN.exec(entry.name)?.[1])
         .filter((date): date is string => date != null)
         .sort();
+      this.diaryDatesCache = dates;
+      return [...dates];
     } catch (error) {
       if (isMissingFileError(error)) {
+        this.diaryDatesCache = [];
         return [];
       }
 
@@ -138,4 +167,3 @@ function appendContent(existing: string, entry: string): string {
   const separator = existing.endsWith('\n') ? '\n' : '\n\n';
   return `${existing}${separator}${entry}\n`;
 }
-

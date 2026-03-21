@@ -49,9 +49,12 @@ interface IMemoryStore {
 
 - `node:fs/promises` で読み書き
 - ディレクトリは `{ recursive: true }` で遅延作成
+- **write-through cache**: `memory.md` / diary 本文 / diary 日付一覧は初回 read 時にメモリへ載せ、
+  同一プロセス内の後続 read はキャッシュから返す。write 後はディスク保存と同時にキャッシュも更新する
 - **mutex + atomic write**: memory.md と当日 diary は全スレッドから共有アクセスされるため、
   書き込み時は mutex 取得 → temp ファイル書き込み → `rename`（atomic）で更新ロスト防止
 - diary は日付ごとの追記型ファイルとし、同じ日付への複数回の書き込みを保持する
+- `listDiaryDates()` はキャッシュ済み配列をそのまま返さず、常にコピーを返して内部状態の破壊を防ぐ
 
 ### mutex の適用範囲
 
@@ -79,3 +82,5 @@ interface IMemoryStore {
 | write + read diary       | 指定日の内容が追記され、読み込める            |
 | getRecentDiaries         | 直近 N 日分が昇順（時系列順）で返る            |
 | listDiaryDates           | 保存済み日付が一覧で返る                      |
+| cached diary date update | cache 温存中に古い日付を後から追加しても sort 順が壊れない |
+| defensive copy           | `listDiaryDates()` の返り値を mutate しても内部 cache が壊れない |

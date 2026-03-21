@@ -55,9 +55,14 @@ function toolResultMessage(): ModelMessage {
 }
 
 async function createManager(tokenBudget = 200) {
+  const dataDir = await createDataDir();
+  return new FileSessionManager({ dataDir, tokenBudget });
+}
+
+async function createDataDir() {
   const dataDir = await mkdtemp(join(tmpdir(), 'karakuri-session-'));
   temporaryDirectories.push(dataDir);
-  return new FileSessionManager({ dataDir, tokenBudget });
+  return dataDir;
 }
 
 describe('FileSessionManager', () => {
@@ -80,8 +85,8 @@ describe('FileSessionManager', () => {
   });
 
   it('throws when loading a session with an unsupported schema version', async () => {
-    const manager = await createManager();
-    const dataDir = temporaryDirectories.at(-1) as string;
+    const dataDir = await createDataDir();
+    const manager = new FileSessionManager({ dataDir, tokenBudget: 200 });
 
     await manager.saveSession({
       schemaVersion: 1,
@@ -107,7 +112,9 @@ describe('FileSessionManager', () => {
       updatedAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
     }));
 
-    await expect(manager.loadSession('thread-1')).rejects.toThrow(
+    const restartedManager = new FileSessionManager({ dataDir, tokenBudget: 200 });
+
+    await expect(restartedManager.loadSession('thread-1')).rejects.toThrow(
       'Unsupported session schema version',
     );
   });
@@ -144,6 +151,42 @@ describe('FileSessionManager', () => {
     const loaded = await manager.loadSession('thread-direct');
     expect(loaded.messages).toEqual([userMessage('saved directly')]);
     expect(loaded.summary).toBe('test summary');
+  });
+
+  it('returns defensive copies from the session cache', async () => {
+    const manager = await createManager();
+
+    await manager.saveSession({
+      schemaVersion: 1,
+      sessionId: 'thread-1',
+      messages: [userMessage('hello')],
+      summary: 'summary text',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:00.000Z',
+    });
+
+    const session = await manager.loadSession('thread-1');
+    session.messages.push(assistantMessage('mutated'));
+    session.summary = 'mutated summary';
+    session.updatedAt = '2026-01-01T00:00:00.000Z';
+
+    const reloaded = await manager.loadSession('thread-1');
+    expect(reloaded.messages).toEqual([userMessage('hello')]);
+    expect(reloaded.summary).toBe('summary text');
+    expect(reloaded.updatedAt).toBe('2025-01-01T00:00:00.000Z');
+  });
+
+  it('appends messages without dropping concurrent addMessages calls', async () => {
+    const manager = await createManager();
+
+    await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        manager.addMessages('thread-1', [userMessage(`msg-${i}`)]),
+      ),
+    );
+
+    const session = await manager.loadSession('thread-1');
+    expect(session.messages).toHaveLength(8);
   });
 
   it('keeps recent turns together when applying a summary', async () => {
