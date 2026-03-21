@@ -8,6 +8,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI + Disc
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
+- Discord メッセージに処理状態を表すリアクション絵文字を表示（完了は 2 秒後に除去、エラーは保持）
 - 各層をインターフェースで抽象化し、実装の差し替えが容易
 - v1 はテキストメッセージのみ対応
 
@@ -43,6 +44,7 @@ Discord Gateway listener を同時に起動する。
 - `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う
 - Chat SDK の state は `DATA_DIR/state/chat-state.json` に保存するカスタム JSON アダプターを使用
 - Memory / Session も `data/` 配下にファイル保存
+- 元メッセージへのリアクションで `queued` / `thinking` / tool 実行中 / `done` / `error` を表示し、`done` は 2 秒後に自動除去する
 - 添付ファイルは未対応。添付付きメッセージはテキスト部分のみ処理し、注意メッセージを返す
 
 ## ドキュメント

@@ -2,7 +2,8 @@ import { createDiscordAdapter, type DiscordAdapter } from '@chat-adapter/discord
 import { Chat, type Message, type Thread } from 'chat';
 
 import type { Config } from './config.js';
-import type { IAgent } from './agent/core.js';
+import type { AgentLifecycleCallbacks, IAgent } from './agent/core.js';
+import { StatusReactionController } from './status-reaction.js';
 import { createFileStateAdapter } from './state/file-state.js';
 import { createLogger } from './utils/logger.js';
 import { splitMessageForDiscord } from './utils/message-splitter.js';
@@ -67,19 +68,26 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
   };
 
   const handleNewThread = async (thread: Thread, message: Message): Promise<void> => {
+    const controller = createStatusReactionController(thread, message);
+    if (hasProcessableText(message)) {
+      controller.setQueued();
+    }
+
     await threadMutex.runExclusive(message.threadId, async () => {
       try {
         logger.info('Handling new message', { threadId: message.threadId });
-        if (message.text.trim().length > 0) {
+        if (hasProcessableText(message)) {
           await thread.subscribe();
           logger.debug('Subscribed to thread', { threadId: message.threadId });
         }
-        await handleThreadMessage(agent, thread, message);
+        await handleThreadMessage(agent, thread, message, controller);
       } catch (error) {
+        controller.error();
         logger.error('Failed to handle new message', error);
         await safePost(thread, ERROR_MESSAGE);
       }
     });
+    await controller.waitForCompletion();
   };
 
   chat.onNewMessage(/.*/, async (thread, message) => {
@@ -87,15 +95,23 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
   });
 
   chat.onSubscribedMessage(async (thread, message) => {
-    await trackHandler(threadMutex.runExclusive(message.threadId, async () => {
-      try {
-        logger.info('Handling subscribed message', { threadId: message.threadId });
-        await handleThreadMessage(agent, thread, message);
-      } catch (error) {
-        logger.error('Failed to handle subscribed message', error);
-        await safePost(thread, ERROR_MESSAGE);
-      }
-    }));
+    const controller = createStatusReactionController(thread, message);
+    if (hasProcessableText(message)) {
+      controller.setQueued();
+    }
+
+    await trackHandler(
+      threadMutex.runExclusive(message.threadId, async () => {
+        try {
+          logger.info('Handling subscribed message', { threadId: message.threadId });
+          await handleThreadMessage(agent, thread, message, controller);
+        } catch (error) {
+          controller.error();
+          logger.error('Failed to handle subscribed message', error);
+          await safePost(thread, ERROR_MESSAGE);
+        }
+      }).then(() => controller.waitForCompletion()),
+    );
   });
 
   return {
@@ -203,6 +219,7 @@ async function handleThreadMessage(
   agent: IAgent,
   thread: Thread,
   message: Message,
+  controller: StatusReactionController,
 ): Promise<void> {
   if (message.attachments.length > 0 && message.text.trim().length === 0) {
     logger.debug('Skipped attachment-only message', { threadId: message.threadId });
@@ -216,23 +233,52 @@ async function handleThreadMessage(
     return;
   }
 
+  controller.setThinking();
   await thread.startTyping();
   logger.debug('Calling agent.handleMessage', { threadId: message.threadId, textLength: text.length });
-  const responseText = await agent.handleMessage(
-    message.threadId,
-    text,
-    message.author.fullName,
-  );
+  const lifecycle: AgentLifecycleCallbacks = {
+    onThinking: () => {
+      controller.setThinking();
+    },
+    onToolCallStart: (toolName) => {
+      controller.setTool(toolName);
+    },
+    onToolCallFinish: () => {
+      controller.setThinking();
+    },
+  };
 
-  if (message.attachments.length > 0) {
-    await safePost(thread, ATTACHMENT_WARNING);
-  }
+  try {
+    const responseText = await agent.handleMessage(
+      message.threadId,
+      text,
+      message.author.fullName,
+      { lifecycle },
+    );
 
-  const chunks = splitMessageForDiscord(responseText);
-  logger.debug('Agent responded', { threadId: message.threadId, responseLength: responseText.length, chunks: chunks.length });
-  for (const chunk of chunks) {
-    await safePost(thread, chunk);
+    if (message.attachments.length > 0) {
+      await safePost(thread, ATTACHMENT_WARNING);
+    }
+
+    const chunks = splitMessageForDiscord(responseText);
+    logger.debug('Agent responded', { threadId: message.threadId, responseLength: responseText.length, chunks: chunks.length });
+    for (const chunk of chunks) {
+      await safePost(thread, chunk);
+    }
+
+    controller.done();
+  } catch (error) {
+    controller.error();
+    throw error;
   }
+}
+
+function hasProcessableText(message: Message): boolean {
+  return message.text.trim().length > 0;
+}
+
+function createStatusReactionController(thread: Thread, message: Message): StatusReactionController {
+  return new StatusReactionController(thread.adapter, message.threadId, message.id);
 }
 
 async function safePost(thread: Thread, text: string): Promise<void> {

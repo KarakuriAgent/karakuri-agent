@@ -332,4 +332,84 @@ describe('KarakuriAgent', () => {
     expect(capturedTools).toHaveProperty('webSearch');
     expect(capturedSystem).toContain('- webSearch: search the web via Brave Search.');
   });
+
+  it('wires lifecycle callbacks into generateText when provided', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const lifecycleEvents: string[] = [];
+
+    const generateTextFn = vi.fn(async (options: {
+      experimental_onStepStart?: (event: unknown) => void;
+      experimental_onToolCallStart?: (event: { toolCall: { toolName: string } }) => void;
+      experimental_onToolCallFinish?: (event: { toolCall: { toolName: string } }) => void;
+    }) => {
+      options.experimental_onStepStart?.({} as never);
+      options.experimental_onToolCallStart?.({ toolCall: { toolName: 'saveMemory' } } as never);
+      options.experimental_onToolCallFinish?.({ toolCall: { toolName: 'saveMemory' } } as never);
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', {
+      lifecycle: {
+        onThinking: () => {
+          lifecycleEvents.push('thinking');
+        },
+        onToolCallStart: (toolName) => {
+          lifecycleEvents.push(`start:${toolName}`);
+        },
+        onToolCallFinish: (toolName) => {
+          lifecycleEvents.push(`finish:${toolName}`);
+        },
+      },
+    });
+
+    expect(lifecycleEvents).toEqual([
+      'thinking',
+      'start:saveMemory',
+      'finish:saveMemory',
+    ]);
+  });
+
+  it('does not register lifecycle callbacks when options are omitted', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedOptions:
+      | {
+          experimental_onStepStart?: unknown;
+          experimental_onToolCallStart?: unknown;
+          experimental_onToolCallFinish?: unknown;
+        }
+      | undefined;
+
+    const generateTextFn = vi.fn(async (options: Record<string, unknown>) => {
+      capturedOptions = options as {
+        experimental_onStepStart?: unknown;
+        experimental_onToolCallStart?: unknown;
+        experimental_onToolCallFinish?: unknown;
+      };
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(capturedOptions?.experimental_onStepStart).toBeUndefined();
+    expect(capturedOptions?.experimental_onToolCallStart).toBeUndefined();
+    expect(capturedOptions?.experimental_onToolCallFinish).toBeUndefined();
+  });
 });
