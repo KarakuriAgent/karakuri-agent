@@ -3,6 +3,11 @@ import { resolve } from 'node:path';
 import { config as loadDotEnv } from 'dotenv';
 import { ZodError, z } from 'zod';
 
+import {
+  DEFAULT_LLM_MODEL,
+  parseModelSelector,
+  type LlmModelSelector,
+} from './llm/model-selector.js';
 import { createLogger } from './utils/logger.js';
 
 const logger = createLogger('Config');
@@ -11,11 +16,15 @@ const configSchema = z.object({
   discordApplicationId: z.string().trim().min(1, 'DISCORD_APPLICATION_ID is required'),
   discordBotToken: z.string().trim().min(1, 'DISCORD_BOT_TOKEN is required'),
   discordPublicKey: z.string().trim().min(1, 'DISCORD_PUBLIC_KEY is required'),
-  openaiApiKey: z.string().trim().min(1, 'OPENAI_API_KEY is required'),
+  llmApiKey: z.string({
+    required_error: 'LLM_API_KEY is required (OPENAI_API_KEY is also accepted)',
+    invalid_type_error: 'LLM_API_KEY is required (OPENAI_API_KEY is also accepted)',
+  }).trim().min(1, 'LLM_API_KEY is required (OPENAI_API_KEY is also accepted)'),
+  llmBaseUrl: z.string().trim().optional(),
+  llmModel: z.string().trim().default(DEFAULT_LLM_MODEL),
   braveApiKey: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
-  openaiModel: z.string().trim().default('gpt-4o'),
   maxSteps: z.coerce.number().int().positive().default(10),
   tokenBudget: z.coerce.number().int().positive().default(8_000),
   port: z.coerce.number().int().min(1).max(65_535).default(3_000),
@@ -29,11 +38,13 @@ export interface Config {
   discordApplicationId: string;
   discordBotToken: string;
   discordPublicKey: string;
-  openaiApiKey: string;
+  llmApiKey: string;
+  llmBaseUrl?: string | undefined;
+  llmModel: string;
+  llmModelSelector: LlmModelSelector;
   braveApiKey?: string | undefined;
   dataDir: string;
   timezone: string;
-  openaiModel: string;
   maxSteps: number;
   tokenBudget: number;
   port: number;
@@ -59,11 +70,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     discordApplicationId: env.DISCORD_APPLICATION_ID,
     discordBotToken: env.DISCORD_BOT_TOKEN ?? env.DISCORD_TOKEN,
     discordPublicKey: env.DISCORD_PUBLIC_KEY,
-    openaiApiKey: env.OPENAI_API_KEY,
+    llmApiKey: resolveEnvAliases(env.LLM_API_KEY, env.OPENAI_API_KEY),
+    llmBaseUrl: resolveEnvAliases(env.LLM_BASE_URL, env.OPENAI_BASE_URL),
+    llmModel: resolveEnvAliases(env.LLM_MODEL, env.OPENAI_MODEL, env.AGENT_MODEL),
     braveApiKey: env.BRAVE_API_KEY || undefined,
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
-    openaiModel: env.OPENAI_MODEL ?? env.AGENT_MODEL,
     maxSteps: env.MAX_STEPS ?? env.AGENT_MAX_STEPS,
     tokenBudget: env.TOKEN_BUDGET ?? env.AGENT_TOKEN_BUDGET,
     port: env.PORT,
@@ -76,7 +88,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   try {
     const parsed = configSchema.parse(rawConfig);
     assertValidTimezone(parsed.timezone);
+    const llmBaseUrl = normalizeBaseUrl(parsed.llmBaseUrl);
 
+    const llmModelSelector = parseModelSelector(parsed.llmModel);
     const postMessageChannelIds = parseIdList(parsed.allowedChannelIds);
     const reportChannelId = normalizeOptionalString(parsed.reportChannelId);
     const mergedAllowedChannelIds = reportChannelId != null
@@ -84,6 +98,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : postMessageChannelIds;
     const config = {
       ...parsed,
+      llmBaseUrl,
+      llmModel: llmModelSelector.selector,
+      llmModelSelector,
       dataDir: resolve(parsed.dataDir),
       postMessageChannelIds,
       allowedChannelIds: mergedAllowedChannelIds,
@@ -93,7 +110,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logger.debug('Config parsed', {
       dataDir: config.dataDir,
       timezone: config.timezone,
-      model: config.openaiModel,
+      model: config.llmModel,
+      llmProvider: config.llmModelSelector.provider,
+      llmApi: config.llmModelSelector.api,
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,
@@ -127,4 +146,41 @@ function parseIdList(value: string | undefined): string[] | undefined {
 function normalizeOptionalString(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized != null && normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeBaseUrl(value: string | undefined): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (normalized == null) {
+    return undefined;
+  }
+
+  let url: URL;
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw new Error('LLM_BASE_URL must be a valid URL');
+  }
+
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('LLM_BASE_URL must use http or https');
+  }
+  if (url.username.length > 0 || url.password.length > 0) {
+    throw new Error('LLM_BASE_URL must not include credentials');
+  }
+  if (url.search.length > 0 || url.hash.length > 0) {
+    throw new Error('LLM_BASE_URL must not include query parameters or fragments');
+  }
+
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+function resolveEnvAliases(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    const normalized = normalizeOptionalString(value);
+    if (normalized != null) {
+      return normalized;
+    }
+  }
+
+  return undefined;
 }

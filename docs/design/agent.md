@@ -2,7 +2,7 @@
 
 ## 概要
 
-LLM（OpenAI）を使って会話を処理するコア層。
+LLM（OpenAI 互換 API を含む）を使って会話を処理するコア層。
 セッション・メモリ・ツールを統合し、ユーザーメッセージに対して応答を生成する。
 
 ## インターフェース: `IAgent` (`src/agent/core.ts`)
@@ -57,8 +57,10 @@ interface IAgent {
    └── ツール使用説明
         ↓
 4. generateText() + tools + stopWhen: stepCountIs(n)
+   ├── `config.llmModelSelector` を見て LLM factory abstraction 経由で
+   │   OpenAI Responses API / Chat API を切り替える
    └── options.lifecycle がある場合は experimental_onStepStart /
-       experimental_onToolCallStart / experimental_onToolCallFinish を配線
+        experimental_onToolCallStart / experimental_onToolCallFinish を配線
          ↓
 5. result.response.messages を sessionManager に保存して応答文字列を返す
 ```
@@ -124,7 +126,7 @@ interface IAgent {
 
 ## 要約処理 (`Agent.summarizeSession`)
 
-- 別途 `generateText()` で要約専用の LLM 呼び出しを行う
+- 別途 `generateText()` で要約専用の LLM 呼び出しを行う（通常応答と同じ selector を使って OpenAI Responses API / Chat API を選択）
 - 既存 `summary` があれば結合して要約する
 - 要約プロンプト: 重要な事実・決定・ユーザーの好み・コンテキストを保持するよう指示
 

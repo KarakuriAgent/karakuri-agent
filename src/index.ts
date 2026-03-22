@@ -18,7 +18,13 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 async function main(): Promise<void> {
   logger.info('Starting karakuri-agent...');
   const config = loadConfig();
-  logger.info('Config loaded', { dataDir: config.dataDir, model: config.openaiModel, port: config.port });
+  logger.info('Config loaded', {
+    dataDir: config.dataDir,
+    model: config.llmModel,
+    provider: config.llmModelSelector.provider,
+    api: config.llmModelSelector.api,
+    port: config.port,
+  });
   const memoryStore = new FileMemoryStore({ dataDir: config.dataDir, timezone: config.timezone });
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,

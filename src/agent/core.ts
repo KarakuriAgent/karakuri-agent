@@ -1,7 +1,7 @@
-import { createOpenAI } from '@ai-sdk/openai';
 import { generateText, stepCountIs, type LanguageModel, type ModelMessage } from 'ai';
 
 import type { Config } from '../config.js';
+import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ISkillStore } from '../skill/types.js';
@@ -52,7 +52,7 @@ export interface KarakuriAgentOptions {
   schedulerStore?: ISchedulerStore | undefined;
   messageSink?: IMessageSink | undefined;
   generateTextFn?: typeof generateText;
-  modelFactory?: (modelId: string) => LanguageModel;
+  modelFactory?: (selector: LlmModelSelector) => LanguageModel;
   keepRecentTurns?: number;
   recentDiaryCount?: number;
 }
@@ -66,7 +66,7 @@ export class KarakuriAgent implements IAgent {
   private readonly schedulerStore: ISchedulerStore | undefined;
   private readonly messageSink: IMessageSink | undefined;
   private readonly generateTextFn: typeof generateText;
-  private readonly modelFactory: (modelId: string) => LanguageModel;
+  private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly keepRecentTurns: number;
   private readonly recentDiaryCount: number;
 
@@ -94,10 +94,10 @@ export class KarakuriAgent implements IAgent {
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
 
-    const openAiProvider = createOpenAI({ apiKey: config.openaiApiKey });
-    this.modelFactory =
-      modelFactory ??
-      ((modelId: string) => openAiProvider.responses(modelId as Parameters<typeof openAiProvider.responses>[0]));
+    this.modelFactory = modelFactory ?? createConfiguredOpenAiModelFactory({
+      apiKey: config.llmApiKey,
+      ...(config.llmBaseUrl != null ? { baseURL: config.llmBaseUrl } : {}),
+    });
   }
 
   async handleMessage(
@@ -160,7 +160,13 @@ export class KarakuriAgent implements IAgent {
       hasManageCron,
       extraSystemPrompt: options?.extraSystemPrompt,
     });
-    logger.debug('Calling LLM', { sessionId, model: this.config.openaiModel, messageCount: session.messages.length });
+    logger.debug('Calling LLM', {
+      sessionId,
+      model: this.config.llmModel,
+      provider: this.config.llmModelSelector.provider,
+      api: this.config.llmModelSelector.api,
+      messageCount: session.messages.length,
+    });
     logger.debug(`System prompt:\n${systemPrompt}`);
     const tools = createAgentTools({
       memoryStore: this.memoryStore,
@@ -178,7 +184,7 @@ export class KarakuriAgent implements IAgent {
     });
     const lifecycle = options?.lifecycle;
     const result = await this.generateTextFn({
-      model: this.modelFactory(this.config.openaiModel),
+      model: this.modelFactory(this.config.llmModelSelector),
       system: systemPrompt,
       messages: session.messages,
       tools,
@@ -229,7 +235,7 @@ export class KarakuriAgent implements IAgent {
       .join('\n\n');
 
     const result = await this.generateTextFn({
-      model: this.modelFactory(this.config.openaiModel),
+      model: this.modelFactory(this.config.llmModelSelector),
       prompt,
     });
 
