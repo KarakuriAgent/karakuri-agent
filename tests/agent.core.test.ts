@@ -2,6 +2,7 @@ import type { LanguageModel, ModelMessage } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
 import { KarakuriAgent } from '../src/agent/core.js';
+import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from '../src/llm/model-selector.js';
 import { countAdditionalContextTokens } from '../src/agent/prompt.js';
 import type { PromptContext } from '../src/agent/prompt-context.js';
 import type { Config } from '../src/config.js';
@@ -14,10 +15,11 @@ const baseConfig: Config = {
   discordApplicationId: 'app',
   discordBotToken: 'token',
   discordPublicKey: 'public',
-  openaiApiKey: 'openai',
+  llmApiKey: 'openai',
   dataDir: '/tmp/karakuri-agent-test',
   timezone: 'Asia/Tokyo',
-  openaiModel: 'gpt-4o',
+  llmModel: DEFAULT_LLM_MODEL,
+  llmModelSelector: parseModelSelector(DEFAULT_LLM_MODEL),
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,
@@ -639,6 +641,50 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
     expect(capturedTools).not.toHaveProperty('postMessage');
     expect(capturedTools).toHaveProperty('manageCron');
+  });
+
+  it('passes the parsed selector into the configured model factory', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const seenSelectors: string[] = [];
+    const generateTextFn = vi.fn(async () =>
+      makeGenerateTextResult('reply', [assistantMessage('reply')]),
+    ) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        llmModel: 'openai/chat/gpt-4o-mini',
+        llmModelSelector: parseModelSelector('openai/chat/gpt-4o-mini'),
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: (selector) => {
+        seenSelectors.push(selector.selector);
+        return {} as LanguageModel;
+      },
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(seenSelectors).toEqual(['openai/chat/gpt-4o-mini']);
+  });
+
+  it('routes OpenAI selectors to the matching provider surface', () => {
+    const provider = {
+      responses: vi.fn((modelId: string) => ({ kind: `responses:${modelId}` }) as unknown as LanguageModel),
+      chat: vi.fn((modelId: string) => ({ kind: `chat:${modelId}` }) as unknown as LanguageModel),
+    };
+    const modelFactory = createOpenAiModelFactory(provider);
+
+    const responsesModel = modelFactory(parseModelSelector('openai/gpt-4o-mini'));
+    const chatModel = modelFactory(parseModelSelector('openai/chat/gpt-4o-mini'));
+
+    expect(provider.responses).toHaveBeenCalledWith('gpt-4o-mini');
+    expect(provider.chat).toHaveBeenCalledWith('gpt-4o-mini');
+    expect(responsesModel).toEqual({ kind: 'responses:gpt-4o-mini' });
+    expect(chatModel).toEqual({ kind: 'chat:gpt-4o-mini' });
   });
 
 });

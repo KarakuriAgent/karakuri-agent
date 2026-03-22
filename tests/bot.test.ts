@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBot } from '../src/bot.js';
 import type { IAgent } from '../src/agent/core.js';
 import type { Config } from '../src/config.js';
+import { DEFAULT_LLM_MODEL, parseModelSelector } from '../src/llm/model-selector.js';
 import { DONE_REACTION_DURATION_MS, STATUS_EMOJI } from '../src/status-reaction.js';
 
 const { initializeMock, shutdownMock, startGatewayListenerMock } = vi.hoisted(() => ({
@@ -73,10 +74,11 @@ const baseConfig: Config = {
   discordApplicationId: 'app',
   discordBotToken: 'token',
   discordPublicKey: 'public',
-  openaiApiKey: 'openai',
+  llmApiKey: 'openai',
   dataDir: '/tmp/karakuri-agent-test',
   timezone: 'Asia/Tokyo',
-  openaiModel: 'gpt-4o',
+  llmModel: DEFAULT_LLM_MODEL,
+  llmModelSelector: parseModelSelector(DEFAULT_LLM_MODEL),
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,

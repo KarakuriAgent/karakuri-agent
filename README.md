@@ -1,6 +1,6 @@
 # Karakuri-Agent
 
-OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI + Discord で構築する。
+OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換 LLM + Discord で構築する。
 
 ## 特徴
 
@@ -18,7 +18,10 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI + Disc
 ## セットアップ
 
 1. `cp .env.example .env`
-2. `.env` に Discord / OpenAI の設定を入力（`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能）
+2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能）
+   - `LLM_MODEL` は `openai/gpt-4o` のような OpenAI Responses API セレクタ、または `openai/chat/gpt-4o` のような OpenAI Chat API セレクタで指定する
+   - 旧形式の bare model 名（例: `gpt-4o`）も互換用に受け付けるが、内部では `openai/gpt-4o` として扱う
+   - `LLM_API_KEY` 未設定時のエラーでは legacy alias の `OPENAI_API_KEY` も案内する
    - Heartbeat / Cron を使う場合は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` を設定し、必要に応じて `REPORT_CHANNEL_ID` / `HEARTBEAT_INTERVAL_MINUTES` も指定
 3. `cp -r data.example data`
 4. `npm install`

@@ -8,7 +8,7 @@ const validEnv = {
   DISCORD_APPLICATION_ID: 'app',
   DISCORD_BOT_TOKEN: 'token',
   DISCORD_PUBLIC_KEY: 'public',
-  OPENAI_API_KEY: 'openai',
+  LLM_API_KEY: 'openai',
 };
 
 describe('loadConfig', () => {
@@ -20,7 +20,14 @@ describe('loadConfig', () => {
 
     expect(config.dataDir).toBe(resolve('./tmp-data'));
     expect(config.timezone).toBe('Asia/Tokyo');
-    expect(config.openaiModel).toBe('gpt-4o');
+    expect(config.llmModel).toBe('openai/gpt-4o');
+    expect(config.llmModelSelector).toEqual({
+      provider: 'openai',
+      api: 'responses',
+      modelId: 'gpt-4o',
+      selector: 'openai/gpt-4o',
+    });
+    expect(config.llmBaseUrl).toBeUndefined();
     expect(config.maxSteps).toBe(10);
     expect(config.tokenBudget).toBe(8_000);
     expect(config.port).toBe(3_000);
@@ -75,19 +82,142 @@ describe('loadConfig', () => {
       DISCORD_APPLICATION_ID: 'app',
       DISCORD_TOKEN: 'alias-token',
       DISCORD_PUBLIC_KEY: 'public',
-      OPENAI_API_KEY: 'openai',
+      LLM_API_KEY: 'openai',
     });
 
     expect(config.discordBotToken).toBe('alias-token');
   });
 
-  it('accepts AGENT_MODEL as alias for OPENAI_MODEL', () => {
+  it('accepts OPENAI_API_KEY as alias for LLM_API_KEY', () => {
     const config = loadConfig({
-      ...validEnv,
-      AGENT_MODEL: 'gpt-4o-mini',
+      DISCORD_APPLICATION_ID: 'app',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_PUBLIC_KEY: 'public',
+      OPENAI_API_KEY: 'openai',
     });
 
-    expect(config.openaiModel).toBe('gpt-4o-mini');
+    expect(config.llmApiKey).toBe('openai');
+  });
+
+  it('falls back to OPENAI_API_KEY when LLM_API_KEY is blank', () => {
+    const config = loadConfig({
+      DISCORD_APPLICATION_ID: 'app',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_PUBLIC_KEY: 'public',
+      LLM_API_KEY: '   ',
+      OPENAI_API_KEY: 'openai',
+    });
+
+    expect(config.llmApiKey).toBe('openai');
+  });
+
+  it('accepts LLM_BASE_URL as an optional setting', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: 'https://example.com/v1',
+    });
+
+    expect(config.llmBaseUrl).toBe('https://example.com/v1');
+  });
+
+  it('normalizes trailing slashes from LLM_BASE_URL', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: 'https://example.com/v1/',
+    });
+
+    expect(config.llmBaseUrl).toBe('https://example.com/v1');
+  });
+
+  it('treats empty LLM_BASE_URL as undefined', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: '   ',
+    });
+
+    expect(config.llmBaseUrl).toBeUndefined();
+  });
+
+  it('accepts OPENAI_BASE_URL as alias for LLM_BASE_URL', () => {
+    const config = loadConfig({
+      ...validEnv,
+      OPENAI_BASE_URL: 'https://example.com/v1/',
+    });
+
+    expect(config.llmBaseUrl).toBe('https://example.com/v1');
+  });
+
+  it('falls back to OPENAI_BASE_URL when LLM_BASE_URL is blank', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: '   ',
+      OPENAI_BASE_URL: 'https://example.com/v1',
+    });
+
+    expect(config.llmBaseUrl).toBe('https://example.com/v1');
+  });
+
+  it('accepts LLM_MODEL as the primary model setting', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_MODEL: 'openai/gpt-4o-mini',
+    });
+
+    expect(config.llmModel).toBe('openai/gpt-4o-mini');
+    expect(config.llmModelSelector.api).toBe('responses');
+  });
+
+  it('accepts an OpenAI Chat API selector', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_MODEL: 'openai/chat/gpt-4o-mini',
+    });
+
+    expect(config.llmModel).toBe('openai/chat/gpt-4o-mini');
+    expect(config.llmModelSelector).toEqual({
+      provider: 'openai',
+      api: 'chat',
+      modelId: 'gpt-4o-mini',
+      selector: 'openai/chat/gpt-4o-mini',
+    });
+  });
+
+  it('normalizes bare model ids to the OpenAI Responses selector', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_MODEL: 'gpt-4o-mini',
+    });
+
+    expect(config.llmModel).toBe('openai/gpt-4o-mini');
+    expect(config.llmModelSelector.api).toBe('responses');
+  });
+
+  it('accepts OPENAI_MODEL as alias for LLM_MODEL', () => {
+    const config = loadConfig({
+      ...validEnv,
+      OPENAI_MODEL: 'openai/gpt-4o-mini',
+    });
+
+    expect(config.llmModel).toBe('openai/gpt-4o-mini');
+  });
+
+  it('falls back to OPENAI_MODEL when LLM_MODEL is blank', () => {
+    const config = loadConfig({
+      ...validEnv,
+      LLM_MODEL: '   ',
+      OPENAI_MODEL: 'openai/gpt-4o-mini',
+    });
+
+    expect(config.llmModel).toBe('openai/gpt-4o-mini');
+  });
+
+  it('accepts AGENT_MODEL as a legacy alias for LLM_MODEL', () => {
+    const config = loadConfig({
+      ...validEnv,
+      AGENT_MODEL: 'openai/gpt-4o-mini',
+    });
+
+    expect(config.llmModel).toBe('openai/gpt-4o-mini');
   });
 
   it('accepts AGENT_MAX_STEPS as alias for MAX_STEPS', () => {
@@ -130,8 +260,72 @@ describe('loadConfig', () => {
     expect(() => loadConfig({
       DISCORD_APPLICATION_ID: 'app',
       DISCORD_PUBLIC_KEY: 'public',
-      OPENAI_API_KEY: 'openai',
+      LLM_API_KEY: 'openai',
     })).toThrow('Invalid configuration');
+  });
+
+  it('mentions the OPENAI_API_KEY alias when the API key is missing', () => {
+    expect(() => loadConfig({
+      DISCORD_APPLICATION_ID: 'app',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_PUBLIC_KEY: 'public',
+    })).toThrow('LLM_API_KEY is required (OPENAI_API_KEY is also accepted)');
+  });
+
+  it('throws for an invalid LLM_BASE_URL', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: 'not-a-url',
+    })).toThrow('LLM_BASE_URL must be a valid URL');
+  });
+
+  it('throws for an unsupported LLM_BASE_URL protocol', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: 'ftp://example.com/v1',
+    })).toThrow('LLM_BASE_URL must use http or https');
+  });
+
+  it('throws when LLM_BASE_URL includes credentials', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: 'https://user:pass@example.com/v1',
+    })).toThrow('LLM_BASE_URL must not include credentials');
+  });
+
+  it('throws when LLM_BASE_URL includes query parameters', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_BASE_URL: 'https://example.com/v1?foo=bar',
+    })).toThrow('LLM_BASE_URL must not include query parameters or fragments');
+  });
+
+  it('throws for an invalid LLM_MODEL selector', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_MODEL: 'anthropic/claude-sonnet-4.5',
+    })).toThrow('LLM_MODEL must use an OpenAI selector');
+  });
+
+  it('throws when the OpenAI selector has no model id', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_MODEL: 'openai/chat/',
+    })).toThrow('LLM_MODEL must include a model name');
+  });
+
+  it('throws when the OpenAI chat selector omits the model name without a trailing slash', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_MODEL: 'openai/chat',
+    })).toThrow('LLM_MODEL must include a model name');
+  });
+
+  it('throws when the OpenAI selector contains an empty path segment', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      LLM_MODEL: 'openai//gpt-4o',
+    })).toThrow('LLM_MODEL must not contain empty path segments');
   });
 
   it('throws for an invalid timezone', () => {
