@@ -168,6 +168,7 @@ export class KarakuriAgent implements IAgent {
       braveApiKey: this.config.braveApiKey,
       postMessageEnabled: hasPostMessage,
       postMessageChannelIds: this.config.postMessageChannelIds,
+      reportChannelId: this.config.reportChannelId,
       adminUserIds: this.config.adminUserIds,
       userId: options?.userId,
       ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),

@@ -3,11 +3,14 @@ import { Chat, type Message, type Thread } from 'chat';
 
 import type { Config } from './config.js';
 import type { AgentLifecycleCallbacks, IAgent } from './agent/core.js';
+import type { IMessageSink } from './scheduler/types.js';
 import { StatusReactionController } from './status-reaction.js';
 import { createFileStateAdapter } from './state/file-state.js';
+import { formatError } from './utils/error.js';
 import { createLogger } from './utils/logger.js';
 import { splitMessageForDiscord } from './utils/message-splitter.js';
 import { KeyedMutex } from './utils/mutex.js';
+import { reportSafely } from './utils/report.js';
 
 const logger = createLogger('Bot');
 
@@ -34,7 +37,11 @@ export interface BotRuntime {
   shutdown(): Promise<void>;
 }
 
-export function createBot(config: Config, agent: IAgent): BotRuntime {
+export interface CreateBotOptions {
+  messageSink?: IMessageSink | undefined;
+}
+
+export function createBot(config: Config, agent: IAgent, options?: CreateBotOptions): BotRuntime {
   const threadMutex = new KeyedMutex();
   const inFlightHandlers = new Set<Promise<void>>();
   const chat = new Chat<KarakuriAdapters>({
@@ -84,7 +91,21 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
       } catch (error) {
         controller.error();
         logger.error('Failed to handle new message', error);
-        await safePost(thread, ERROR_MESSAGE);
+        try {
+          await safePost(thread, ERROR_MESSAGE);
+        } catch (postError) {
+          logger.error('Failed to send new-message error reply', postError);
+        }
+        void reportSafely(
+          options?.messageSink,
+          config.reportChannelId,
+          `❌ Chat error (message: ${message.id})\n${formatError(error)}`,
+          {
+            error: (_message, reportError) => {
+              logger.error('Failed to report new-message error', reportError);
+            },
+          },
+        );
       }
     });
     await controller.waitForCompletion();
@@ -108,7 +129,21 @@ export function createBot(config: Config, agent: IAgent): BotRuntime {
         } catch (error) {
           controller.error();
           logger.error('Failed to handle subscribed message', error);
-          await safePost(thread, ERROR_MESSAGE);
+          try {
+            await safePost(thread, ERROR_MESSAGE);
+          } catch (postError) {
+            logger.error('Failed to send subscribed-message error reply', postError);
+          }
+          void reportSafely(
+            options?.messageSink,
+            config.reportChannelId,
+            `❌ Chat error (message: ${message.id})\n${formatError(error)}`,
+            {
+              error: (_message, reportError) => {
+                logger.error('Failed to report subscribed-message error', reportError);
+              },
+            },
+          );
         }
       }).then(() => controller.waitForCompletion()),
     );

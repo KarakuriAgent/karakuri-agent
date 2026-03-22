@@ -260,6 +260,109 @@ describe('createBot', () => {
     );
   });
 
+  it('reports new-message handler errors to the report channel', async () => {
+    const messageSink = { postMessage: vi.fn(async () => {}) };
+    const agent: IAgent = {
+      async handleMessage(): Promise<string> {
+        throw new Error('boom detail');
+      },
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+
+    const bot = createBot({ ...baseConfig, reportChannelId: 'report' }, agent, { messageSink });
+    const chat = bot.chat as unknown as {
+      _getNewMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getNewMessageHandlers()[0]!;
+    const { thread } = createMockThread();
+
+    await expect(handler(thread, createMessage())).resolves.toBeUndefined();
+
+    expect(thread.post).toHaveBeenCalledWith(expect.stringContaining('エラーが発生しました'));
+    expect(messageSink.postMessage).toHaveBeenCalledWith(
+      'report',
+      '❌ Chat error (message: message-1)\nboom detail',
+    );
+  });
+
+  it('reports subscribed-message handler errors to the report channel', async () => {
+    const messageSink = { postMessage: vi.fn(async () => {}) };
+    const agent: IAgent = {
+      async handleMessage(): Promise<string> {
+        throw new Error('boom detail');
+      },
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+
+    const bot = createBot({ ...baseConfig, reportChannelId: 'report' }, agent, { messageSink });
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread } = createMockThread();
+
+    await expect(handler(thread, createMessage())).resolves.toBeUndefined();
+
+    expect(thread.post).toHaveBeenCalledWith(expect.stringContaining('エラーが発生しました'));
+    expect(messageSink.postMessage).toHaveBeenCalledWith(
+      'report',
+      '❌ Chat error (message: message-1)\nboom detail',
+    );
+  });
+
+  it('reports chat errors even when posting the user-facing error reply fails', async () => {
+    const messageSink = { postMessage: vi.fn(async () => {}) };
+    const agent: IAgent = {
+      async handleMessage(): Promise<string> {
+        throw new Error('boom detail');
+      },
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+
+    const bot = createBot({ ...baseConfig, reportChannelId: 'report' }, agent, { messageSink });
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread } = createMockThread();
+    thread.post.mockRejectedValueOnce(new Error('post failed'));
+
+    await expect(handler(thread, createMessage())).resolves.toBeUndefined();
+
+    expect(messageSink.postMessage).toHaveBeenCalledWith(
+      'report',
+      '❌ Chat error (message: message-1)\nboom detail',
+    );
+  });
+
+  it('does not crash when reporting a chat error fails', async () => {
+    const messageSink = { postMessage: vi.fn(async () => { throw new Error('report failed'); }) };
+    const agent: IAgent = {
+      async handleMessage(): Promise<string> {
+        throw new Error('boom detail');
+      },
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+
+    const bot = createBot({ ...baseConfig, reportChannelId: 'report' }, agent, { messageSink });
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread } = createMockThread();
+
+    await expect(handler(thread, createMessage())).resolves.toBeUndefined();
+    expect(thread.post).toHaveBeenCalledWith(expect.stringContaining('エラーが発生しました'));
+  });
+
   it('replies with attachment-only message when text is empty', async () => {
     const agent: IAgent = {
       async handleMessage(): Promise<string> {

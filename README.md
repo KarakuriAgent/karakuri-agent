@@ -10,6 +10,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI + Disc
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
 - `postMessage` / `manageCron` ツールによる管理者限定のプロアクティブ投稿と Cron 管理
+- `REPORT_CHANNEL_ID` への Heartbeat / Cron 実行結果、Cron 登録変更、チャット処理エラー詳細の通知
 - Discord メッセージに処理状態を表すリアクション絵文字を表示（完了は 2 秒後に除去、エラーは保持）
 - 各層をインターフェースで抽象化し、実装の差し替えが容易
 - v1 はテキストメッセージのみ対応
@@ -48,7 +49,7 @@ Discord Gateway listener を同時に起動する。
 - `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う
 - `postMessage` / `manageCron` は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` が設定された管理者コンテキストでのみ公開される
 - Heartbeat は `ALLOWED_CHANNEL_IDS` 設定時のみ有効化され、`REPORT_CHANNEL_ID` は空欄のままでも省略設定として扱われる
-- `REPORT_CHANNEL_ID` を設定すると Heartbeat / Cron の実行成否を自動投稿する（エージェント応答本文は自動投稿しない）
+- `REPORT_CHANNEL_ID` を設定すると Heartbeat / Cron の実行成否、`manageCron` による登録/解除、チャット処理エラー詳細を自動投稿する（エージェント応答本文は自動投稿しない）
 - Chat SDK の state は `DATA_DIR/state/chat-state.json` に保存するカスタム JSON アダプターを使用
 - Memory / Session も `data/` 配下にファイル保存
 - 元メッセージへのリアクションで `queued` / `thinking` / tool 実行中 / `done` / `error` を表示し、`done` は 2 秒後に自動除去する

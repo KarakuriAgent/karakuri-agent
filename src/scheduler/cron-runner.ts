@@ -3,6 +3,7 @@ import { Cron } from 'croner';
 import type { IAgent } from '../agent/core.js';
 import { formatError } from '../utils/error.js';
 import { createLogger } from '../utils/logger.js';
+import { reportSafely } from '../utils/report.js';
 import type { CronJobDefinition, IMessageSink, ISchedulerStore } from './types.js';
 
 const logger = createLogger('CronRunner');
@@ -209,39 +210,49 @@ export class CronRunner {
             },
           );
           logger.debug('Cron run completed', { name: job.name, responseLength: response.trim().length });
-          await this.reportSafely(job.name, `✅ Cron ${job.name} succeeded in ${this.now().getTime() - startedAt.getTime()}ms`);
+          await reportSafely(
+            this.options.messageSink,
+            this.options.reportChannelId,
+            `✅ Cron ${job.name} succeeded in ${this.now().getTime() - startedAt.getTime()}ms`,
+            {
+              error: (_message, error) => {
+                logger.error(`Cron job ${job.name} report failed`, error);
+              },
+            },
+          );
         } catch (error) {
           logger.error(`Cron job ${job.name} failed`, error);
-          await this.reportSafely(job.name, `❌ Cron ${job.name} failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`);
+          await reportSafely(
+            this.options.messageSink,
+            this.options.reportChannelId,
+            `❌ Cron ${job.name} failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`,
+            {
+              error: (_message, reportError) => {
+                logger.error(`Cron job ${job.name} report failed`, reportError);
+              },
+            },
+          );
         }
       })();
       state.inFlight = inFlight;
       await inFlight;
     } catch (error) {
       logger.error(`Cron job ${job.name} failed`, error);
-      await this.reportSafely(job.name, `❌ Cron ${job.name} failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`);
+      await reportSafely(
+        this.options.messageSink,
+        this.options.reportChannelId,
+        `❌ Cron ${job.name} failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`,
+        {
+          error: (_message, reportError) => {
+            logger.error(`Cron job ${job.name} report failed`, reportError);
+          },
+        },
+      );
     } finally {
       if (state.inFlight === inFlight) {
         state.inFlight = null;
       }
     }
-  }
-
-  private async reportSafely(name: string, text: string): Promise<void> {
-    try {
-      await this.report(name, text);
-    } catch (error) {
-      logger.error(`Cron job ${name} report failed`, error);
-    }
-  }
-
-  private async report(name: string, text: string): Promise<void> {
-    if (this.options.messageSink == null || this.options.reportChannelId == null) {
-      return;
-    }
-
-    await this.options.messageSink.postMessage(this.options.reportChannelId, text);
-    logger.debug('Cron run reported', { name });
   }
 
   private cancelState(state: CronState): void {

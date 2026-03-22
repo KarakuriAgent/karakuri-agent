@@ -17,6 +17,7 @@ export interface CreateAgentToolsOptions {
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   messageSink?: IMessageSink | undefined;
+  reportChannelId?: string | undefined;
   postMessageEnabled?: boolean | undefined;
   postMessageChannelIds?: string[] | undefined;
   schedulerStore?: ISchedulerStore | undefined;
@@ -31,6 +32,7 @@ export function createAgentTools({
   skillStore,
   skills = [],
   messageSink,
+  reportChannelId,
   postMessageEnabled,
   postMessageChannelIds,
   schedulerStore,
@@ -72,6 +74,8 @@ export function createAgentTools({
             schedulerStore: schedulerStore!,
             adminUserIds,
             userId,
+            messageSink,
+            reportChannelId,
           }),
         }
       : {}),
