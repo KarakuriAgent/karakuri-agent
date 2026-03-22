@@ -1,6 +1,7 @@
 import type { IAgent } from '../agent/core.js';
 import { formatError } from '../utils/error.js';
 import { createLogger } from '../utils/logger.js';
+import { reportSafely } from '../utils/report.js';
 import type { IMessageSink, ISchedulerStore } from './types.js';
 
 const logger = createLogger('HeartbeatRunner');
@@ -129,26 +130,28 @@ export class HeartbeatRunner {
         },
       );
       logger.debug('Heartbeat run completed', { responseLength: response.trim().length });
-      await this.reportSafely(`✅ Heartbeat succeeded in ${this.now().getTime() - startedAt.getTime()}ms`);
+      await reportSafely(
+        this.options.messageSink,
+        this.options.reportChannelId,
+        `✅ Heartbeat succeeded in ${this.now().getTime() - startedAt.getTime()}ms`,
+        {
+          error: (_message, error) => {
+            logger.error('Heartbeat report failed', error);
+          },
+        },
+      );
     } catch (error) {
       logger.error('Heartbeat run failed', error);
-      await this.reportSafely(`❌ Heartbeat failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`);
+      await reportSafely(
+        this.options.messageSink,
+        this.options.reportChannelId,
+        `❌ Heartbeat failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`,
+        {
+          error: (_message, reportError) => {
+            logger.error('Heartbeat report failed', reportError);
+          },
+        },
+      );
     }
-  }
-
-  private async reportSafely(text: string): Promise<void> {
-    try {
-      await this.report(text);
-    } catch (error) {
-      logger.error('Heartbeat report failed', error);
-    }
-  }
-
-  private async report(text: string): Promise<void> {
-    if (this.options.messageSink == null || this.options.reportChannelId == null) {
-      return;
-    }
-
-    await this.options.messageSink.postMessage(this.options.reportChannelId, text);
   }
 }

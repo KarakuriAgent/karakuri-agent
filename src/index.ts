@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     messageSink,
     store: schedulerStore,
   });
-  const bot = createBot(config, agent);
+  const bot = createBot(config, agent, { messageSink });
 
   await bot.initialize();
   logger.debug('Bot initialized');

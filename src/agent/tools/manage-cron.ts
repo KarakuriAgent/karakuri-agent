@@ -1,8 +1,12 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 
-import type { ISchedulerStore } from '../../scheduler/types.js';
+import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
+import { createLogger } from '../../utils/logger.js';
+import { reportSafely } from '../../utils/report.js';
 import { assertAdminUser } from './admin-auth.js';
+
+const logger = createLogger('ManageCronTool');
 
 const manageCronSchema = z.object({
   action: z.enum(['register', 'unregister', 'list']),
@@ -18,9 +22,17 @@ export interface ManageCronToolOptions {
   schedulerStore: ISchedulerStore;
   adminUserIds: string[];
   userId?: string | undefined;
+  messageSink?: IMessageSink | undefined;
+  reportChannelId?: string | undefined;
 }
 
-export function createManageCronTool({ schedulerStore, adminUserIds, userId }: ManageCronToolOptions) {
+export function createManageCronTool({
+  schedulerStore,
+  adminUserIds,
+  userId,
+  messageSink,
+  reportChannelId,
+}: ManageCronToolOptions) {
   return tool({
     description: 'Register, update, unregister, or list cron jobs. For register/unregister, name is required. For register, schedule and instructions are also required.',
     inputSchema: manageCronSchema,
@@ -40,6 +52,12 @@ export function createManageCronTool({ schedulerStore, adminUserIds, userId }: M
             ...(input.sessionMode != null ? { sessionMode: input.sessionMode } : {}),
             ...(input.staggerMs != null ? { staggerMs: input.staggerMs } : {}),
           });
+          void reportSafely(
+            messageSink,
+            reportChannelId,
+            `⏰ Cron \`${job.name}\` saved (schedule: ${job.schedule})`,
+            logger,
+          );
           return { action: 'register', job };
         }
         case 'unregister': {
@@ -47,6 +65,14 @@ export function createManageCronTool({ schedulerStore, adminUserIds, userId }: M
             throw new Error('unregister requires name');
           }
           const removed = await schedulerStore.unregisterJob(input.name);
+          if (removed) {
+            void reportSafely(
+              messageSink,
+              reportChannelId,
+              `🗑️ Cron \`${input.name}\` unregistered`,
+              logger,
+            );
+          }
           return { action: 'unregister', name: input.name, removed };
         }
         case 'list': {
