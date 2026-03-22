@@ -8,6 +8,8 @@ export const STATUS_EMOJI = {
   memory: '📝',
   web: '🔍',
   skill: '📖',
+  message: '📣',
+  scheduler: '⏰',
   done: '✅',
   error: '❌',
 } as const;
@@ -39,6 +41,10 @@ export function resolveToolEmoji(toolName: string): string | null {
       return STATUS_EMOJI.web;
     case 'loadSkill':
       return STATUS_EMOJI.skill;
+    case 'postMessage':
+      return STATUS_EMOJI.message;
+    case 'manageCron':
+      return STATUS_EMOJI.scheduler;
     default:
       return null;
   }

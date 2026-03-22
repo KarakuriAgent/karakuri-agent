@@ -8,6 +8,7 @@ import type { Config } from '../src/config.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
 import type { ISessionManager, SessionData } from '../src/session/types.js';
 import type { ISkillStore, SkillDefinition } from '../src/skill/types.js';
+import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
 
 const baseConfig: Config = {
   discordApplicationId: 'app',
@@ -412,4 +413,232 @@ describe('KarakuriAgent', () => {
     expect(capturedOptions?.experimental_onToolCallStart).toBeUndefined();
     expect(capturedOptions?.experimental_onToolCallFinish).toBeUndefined();
   });
+
+
+  it('does not expose postMessage without allowed channels', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const schedulerStore: ISchedulerStore = {
+      readHeartbeatInstructions: async () => null,
+      listCronJobs: async () => [],
+      registerJob: async () => ({
+        name: 'job',
+        schedule: '* * * * *',
+        instructions: 'run',
+        enabled: true,
+        sessionMode: 'isolated',
+        staggerMs: 0,
+      }),
+      unregisterJob: async () => true,
+      setReloadListener: () => {},
+      close: async () => {},
+    };
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        adminUserIds: ['admin-1'],
+      },
+      memoryStore,
+      sessionManager,
+      schedulerStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', {
+      userId: 'system',
+    });
+
+    expect(capturedSystem).not.toContain('- postMessage: post a message to an allowed Discord channel.');
+    expect(capturedTools).not.toHaveProperty('postMessage');
+    expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
+    expect(capturedTools).toHaveProperty('manageCron');
+  });
+
+  it('injects extra system prompt and admin tools for system runs', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const schedulerStore: ISchedulerStore = {
+      readHeartbeatInstructions: async () => null,
+      listCronJobs: async () => [],
+      registerJob: async () => ({
+        name: 'job',
+        schedule: '* * * * *',
+        instructions: 'run',
+        enabled: true,
+        sessionMode: 'isolated',
+        staggerMs: 0,
+      }),
+      unregisterJob: async () => true,
+      setReloadListener: () => {},
+      close: async () => {},
+    };
+    const messageSink: IMessageSink = {
+      postMessage: async () => {},
+    };
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        postMessageChannelIds: ['channel-1'],
+        allowedChannelIds: ['channel-1', 'report-1'],
+        reportChannelId: 'report-1',
+        adminUserIds: ['admin-1'],
+      },
+      memoryStore,
+      sessionManager,
+      schedulerStore,
+      messageSink,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', {
+      extraSystemPrompt: 'Run background checks.',
+      userId: 'system',
+    });
+
+    expect(capturedSystem).toContain('Additional runtime instructions:');
+    expect(capturedSystem).toContain('Run background checks.');
+    expect(capturedSystem).toContain('- postMessage: post a message to an allowed Discord channel.');
+    expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
+    expect(capturedTools).toHaveProperty('postMessage');
+    expect(capturedTools).toHaveProperty('manageCron');
+
+    const postMessageTool = capturedTools.postMessage as { inputSchema: { safeParse: (value: unknown) => { success: boolean } } };
+    expect(postMessageTool.inputSchema.safeParse({ channelId: 'channel-1', text: 'ok' }).success).toBe(true);
+    expect(postMessageTool.inputSchema.safeParse({ channelId: 'report-1', text: 'ok' }).success).toBe(false);
+    expect(postMessageTool.inputSchema.safeParse({ channelId: 'other', text: 'ok' }).success).toBe(false);
+  });
+
+  it('exposes scheduler admin-only tools for system runs without configured admins', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const schedulerStore: ISchedulerStore = {
+      readHeartbeatInstructions: async () => null,
+      listCronJobs: async () => [],
+      registerJob: async () => ({
+        name: 'job',
+        schedule: '* * * * *',
+        instructions: 'run',
+        enabled: true,
+        sessionMode: 'isolated',
+        staggerMs: 0,
+      }),
+      unregisterJob: async () => true,
+      setReloadListener: () => {},
+      close: async () => {},
+    };
+    const messageSink: IMessageSink = {
+      postMessage: async () => {},
+    };
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        postMessageChannelIds: ['channel-1'],
+        allowedChannelIds: ['channel-1'],
+      },
+      memoryStore,
+      sessionManager,
+      schedulerStore,
+      messageSink,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', {
+      userId: 'system',
+    });
+
+    expect(capturedSystem).toContain('- postMessage: post a message to an allowed Discord channel.');
+    expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
+    expect(capturedTools).toHaveProperty('postMessage');
+    expect(capturedTools).toHaveProperty('manageCron');
+  });
+
+  it('keeps manageCron available when only the report channel is configured', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const schedulerStore: ISchedulerStore = {
+      readHeartbeatInstructions: async () => null,
+      listCronJobs: async () => [],
+      registerJob: async () => ({
+        name: 'job',
+        schedule: '* * * * *',
+        instructions: 'run',
+        enabled: true,
+        sessionMode: 'isolated',
+        staggerMs: 0,
+      }),
+      unregisterJob: async () => true,
+      setReloadListener: () => {},
+      close: async () => {},
+    };
+    const messageSink: IMessageSink = {
+      postMessage: async () => {},
+    };
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        allowedChannelIds: ['report-1'],
+        reportChannelId: 'report-1',
+        adminUserIds: ['admin-1'],
+      },
+      memoryStore,
+      sessionManager,
+      schedulerStore,
+      messageSink,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', {
+      userId: 'system',
+    });
+
+    expect(capturedSystem).not.toContain('- postMessage: post a message to an allowed Discord channel.');
+    expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
+    expect(capturedTools).not.toHaveProperty('postMessage');
+    expect(capturedTools).toHaveProperty('manageCron');
+  });
+
 });

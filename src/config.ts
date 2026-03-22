@@ -19,6 +19,10 @@ const configSchema = z.object({
   maxSteps: z.coerce.number().int().positive().default(10),
   tokenBudget: z.coerce.number().int().positive().default(8_000),
   port: z.coerce.number().int().min(1).max(65_535).default(3_000),
+  heartbeatIntervalMinutes: z.coerce.number().positive().default(30),
+  allowedChannelIds: z.string().optional(),
+  reportChannelId: z.string().trim().min(1).optional(),
+  adminUserIds: z.string().optional(),
 });
 
 export interface Config {
@@ -33,6 +37,11 @@ export interface Config {
   maxSteps: number;
   tokenBudget: number;
   port: number;
+  heartbeatIntervalMinutes?: number | undefined;
+  postMessageChannelIds?: string[] | undefined;
+  allowedChannelIds?: string[] | undefined;
+  reportChannelId?: string | undefined;
+  adminUserIds?: string[] | undefined;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -58,17 +67,39 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxSteps: env.MAX_STEPS ?? env.AGENT_MAX_STEPS,
     tokenBudget: env.TOKEN_BUDGET ?? env.AGENT_TOKEN_BUDGET,
     port: env.PORT,
+    heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES,
+    allowedChannelIds: env.ALLOWED_CHANNEL_IDS,
+    reportChannelId: normalizeOptionalString(env.REPORT_CHANNEL_ID),
+    adminUserIds: env.ADMIN_USER_IDS,
   };
 
   try {
     const parsed = configSchema.parse(rawConfig);
     assertValidTimezone(parsed.timezone);
 
+    const postMessageChannelIds = parseIdList(parsed.allowedChannelIds);
+    const reportChannelId = normalizeOptionalString(parsed.reportChannelId);
+    const mergedAllowedChannelIds = reportChannelId != null
+      ? [...new Set([...(postMessageChannelIds ?? []), reportChannelId])]
+      : postMessageChannelIds;
     const config = {
       ...parsed,
       dataDir: resolve(parsed.dataDir),
+      postMessageChannelIds,
+      allowedChannelIds: mergedAllowedChannelIds,
+      reportChannelId,
+      adminUserIds: parseIdList(parsed.adminUserIds),
     };
-    logger.debug('Config parsed', { dataDir: config.dataDir, timezone: config.timezone, model: config.openaiModel, port: config.port });
+    logger.debug('Config parsed', {
+      dataDir: config.dataDir,
+      timezone: config.timezone,
+      model: config.openaiModel,
+      port: config.port,
+      heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
+      hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,
+      hasAdminUsers: (config.adminUserIds?.length ?? 0) > 0,
+      hasReportChannel: config.reportChannelId != null,
+    });
     return config;
   } catch (error) {
     if (error instanceof ZodError) {
@@ -78,4 +109,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
     throw error;
   }
+}
+
+function parseIdList(value: string | undefined): string[] | undefined {
+  if (value == null) {
+    return undefined;
+  }
+
+  const parsed = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+function normalizeOptionalString(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized != null && normalized.length > 0 ? normalized : undefined;
 }
