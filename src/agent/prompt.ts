@@ -28,7 +28,10 @@ export interface BuildSystemPromptOptions {
   recentDiaries: DiaryEntry[];
   summary?: string | null;
   skills?: SkillDefinition[];
-  hasWebSearch?: boolean;
+  hasWebSearch?: boolean | undefined;
+  hasPostMessage?: boolean | undefined;
+  hasManageCron?: boolean | undefined;
+  extraSystemPrompt?: string | null | undefined;
 }
 
 const CLOSING_TAG_PATTERN = /<\/(memory|diary|summary|existing-summary|conversation)>/gi;
@@ -87,7 +90,11 @@ export function buildSkillListSection(skills: SkillDefinition[] = []): string {
 
 export function buildToolGuidance(
   skills: SkillDefinition[] = [],
-  options: { hasWebSearch?: boolean | undefined } = {},
+  options: {
+    hasWebSearch?: boolean | undefined;
+    hasPostMessage?: boolean | undefined;
+    hasManageCron?: boolean | undefined;
+  } = {},
 ): string {
   const lines = [...TOOL_GUIDANCE_BASE] as string[];
 
@@ -99,6 +106,14 @@ export function buildToolGuidance(
     lines.push('- loadSkill: load the full content of a skill by name. Use when a skill is relevant to the user\'s request.');
   }
 
+  if (options.hasPostMessage === true) {
+    lines.push('- postMessage: post a message to an allowed Discord channel.');
+  }
+
+  if (options.hasManageCron === true) {
+    lines.push('- manageCron: register, unregister, or list cron jobs.');
+  }
+
   return lines.join('\n');
 }
 
@@ -106,10 +121,13 @@ export function countAdditionalContextTokens(
   coreMemory: string,
   recentDiaries: DiaryEntry[],
   options: {
-    agentInstructions?: string | null;
-    rules?: string | null;
-    skills?: SkillDefinition[];
+    agentInstructions?: string | null | undefined;
+    rules?: string | null | undefined;
+    skills?: SkillDefinition[] | undefined;
     hasWebSearch?: boolean | undefined;
+    hasPostMessage?: boolean | undefined;
+    hasManageCron?: boolean | undefined;
+    extraSystemPrompt?: string | null | undefined;
   } = {},
 ): number {
   return [
@@ -119,7 +137,12 @@ export function countAdditionalContextTokens(
     buildMemorySection(coreMemory),
     buildDiarySection(recentDiaries),
     buildSkillListSection(options.skills),
-    buildToolGuidance(options.skills, { hasWebSearch: options.hasWebSearch }),
+    buildToolGuidance(options.skills, {
+      hasWebSearch: options.hasWebSearch,
+      hasPostMessage: options.hasPostMessage,
+      hasManageCron: options.hasManageCron,
+    }),
+    buildExtraSystemPromptSection(options.extraSystemPrompt),
   ]
     .filter((section) => section.length > 0)
     .reduce((total, section) => total + estimateTokenCount(section), 0);
@@ -133,6 +156,9 @@ export function buildSystemPrompt({
   summary,
   skills = [],
   hasWebSearch,
+  hasPostMessage,
+  hasManageCron,
+  extraSystemPrompt,
 }: BuildSystemPromptOptions): string {
   return [
     resolveAgentInstructions(agentInstructions),
@@ -142,8 +168,18 @@ export function buildSystemPrompt({
     buildDiarySection(recentDiaries),
     buildSummarySection(summary),
     buildSkillListSection(skills),
-    buildToolGuidance(skills, { hasWebSearch }),
+    buildToolGuidance(skills, { hasWebSearch, hasPostMessage, hasManageCron }),
+    buildExtraSystemPromptSection(extraSystemPrompt),
   ]
     .filter((section) => section.length > 0)
     .join('\n\n');
+}
+
+export function buildExtraSystemPromptSection(extraSystemPrompt?: string | null): string {
+  const normalized = extraSystemPrompt?.trim();
+  if (normalized == null || normalized.length === 0) {
+    return '';
+  }
+
+  return `Additional runtime instructions:\n\`\`\`\n${normalized}\n\`\`\``;
 }

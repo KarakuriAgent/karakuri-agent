@@ -4,9 +4,11 @@ import { KarakuriAgent } from './agent/core.js';
 import { FilePromptContextStore } from './agent/prompt-context.js';
 import { createBot } from './bot.js';
 import { loadConfig } from './config.js';
+import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import { FileMemoryStore } from './memory/store.js';
 import { FileSessionManager } from './session/manager.js';
 import { FileSkillStore } from './skill/store.js';
+import { performGracefulShutdown } from './shutdown.js';
 import { createLogger } from './utils/logger.js';
 
 const logger = createLogger('Server');
@@ -22,16 +24,32 @@ async function main(): Promise<void> {
     dataDir: config.dataDir,
     tokenBudget: config.tokenBudget,
   });
-  const [promptContextStore, skillStore] = await Promise.all([
+  const [promptContextStore, skillStore, schedulerStore] = await Promise.all([
     FilePromptContextStore.create({ dataDir: config.dataDir }),
     FileSkillStore.create({ dataDir: config.dataDir }),
+    FileSchedulerStore.create({ dataDir: config.dataDir }),
   ]);
+  const messageSink = config.allowedChannelIds != null && config.allowedChannelIds.length > 0
+    ? new DiscordMessageSink({
+        botToken: config.discordBotToken,
+        allowedChannelIds: config.allowedChannelIds,
+        reportChannelId: config.reportChannelId,
+      })
+    : undefined;
   const agent = new KarakuriAgent({
     config,
     memoryStore,
     sessionManager,
     promptContextStore,
     skillStore,
+    schedulerStore,
+    messageSink,
+  });
+  const scheduler = await createScheduler({
+    agent,
+    config,
+    messageSink,
+    store: schedulerStore,
   });
   const bot = createBot(config, agent);
 
@@ -57,13 +75,17 @@ async function main(): Promise<void> {
     }, SHUTDOWN_TIMEOUT_MS);
 
     try {
-      const results = await Promise.allSettled([
-        closeServer(server),
-        bot.shutdown(),
-        memoryStore.close(),
-        promptContextStore.close(),
-        skillStore.close(),
-      ]);
+      const results = await performGracefulShutdown({
+        closeServer: () => closeServer(server),
+        closeScheduler: () => scheduler.close(),
+        shutdownBot: () => bot.shutdown(),
+        closeStores: () => [
+          memoryStore.close(),
+          promptContextStore.close(),
+          skillStore.close(),
+          schedulerStore.close(),
+        ],
+      });
       clearTimeout(timeout);
       const failures = results.filter((r) => r.status === 'rejected');
       if (failures.length > 0) {

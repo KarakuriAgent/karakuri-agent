@@ -5,8 +5,10 @@ import type { Config } from '../config.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ISkillStore } from '../skill/types.js';
+import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { createLogger } from '../utils/logger.js';
 import { createAgentTools } from './tools/index.js';
+import { hasAdminToolAccess } from './tools/admin-auth.js';
 import type { IPromptContextStore } from './prompt-context.js';
 import {
   buildSystemPrompt,
@@ -26,7 +28,9 @@ export interface AgentLifecycleCallbacks {
 }
 
 export interface HandleMessageOptions {
-  lifecycle?: AgentLifecycleCallbacks;
+  lifecycle?: AgentLifecycleCallbacks | undefined;
+  extraSystemPrompt?: string | undefined;
+  userId?: string | undefined;
 }
 
 export interface IAgent {
@@ -43,8 +47,10 @@ export interface KarakuriAgentOptions {
   config: Config;
   memoryStore: IMemoryStore;
   sessionManager: ISessionManager;
-  skillStore?: ISkillStore;
-  promptContextStore?: IPromptContextStore;
+  skillStore?: ISkillStore | undefined;
+  promptContextStore?: IPromptContextStore | undefined;
+  schedulerStore?: ISchedulerStore | undefined;
+  messageSink?: IMessageSink | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (modelId: string) => LanguageModel;
   keepRecentTurns?: number;
@@ -57,6 +63,8 @@ export class KarakuriAgent implements IAgent {
   private readonly sessionManager: ISessionManager;
   private readonly skillStore: ISkillStore | undefined;
   private readonly promptContextStore: IPromptContextStore | undefined;
+  private readonly schedulerStore: ISchedulerStore | undefined;
+  private readonly messageSink: IMessageSink | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (modelId: string) => LanguageModel;
   private readonly keepRecentTurns: number;
@@ -68,6 +76,8 @@ export class KarakuriAgent implements IAgent {
     sessionManager,
     skillStore,
     promptContextStore,
+    schedulerStore,
+    messageSink,
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
@@ -78,6 +88,8 @@ export class KarakuriAgent implements IAgent {
     this.sessionManager = sessionManager;
     this.skillStore = skillStore;
     this.promptContextStore = promptContextStore;
+    this.schedulerStore = schedulerStore;
+    this.messageSink = messageSink;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
@@ -109,11 +121,20 @@ export class KarakuriAgent implements IAgent {
       this.skillStore?.listSkills() ?? Promise.resolve([]),
     ]);
 
+    const hasAdminAccess = hasAdminToolAccess(options?.userId, this.config.adminUserIds ?? []);
+    const hasPostMessage = hasAdminAccess
+      && (this.config.postMessageChannelIds?.length ?? 0) > 0
+      && this.messageSink != null;
+    const hasManageCron = hasAdminAccess && this.schedulerStore != null;
+
     const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
       agentInstructions: promptContext.agentInstructions,
       rules: promptContext.rules,
       skills,
       hasWebSearch: this.config.braveApiKey != null,
+      hasPostMessage,
+      hasManageCron,
+      extraSystemPrompt: options?.extraSystemPrompt,
     });
 
     if (this.sessionManager.needsSummarization(session, additionalTokens)) {
@@ -135,6 +156,9 @@ export class KarakuriAgent implements IAgent {
       summary: session.summary,
       skills,
       hasWebSearch: this.config.braveApiKey != null,
+      hasPostMessage,
+      hasManageCron,
+      extraSystemPrompt: options?.extraSystemPrompt,
     });
     logger.debug('Calling LLM', { sessionId, model: this.config.openaiModel, messageCount: session.messages.length });
     logger.debug(`System prompt:\n${systemPrompt}`);
@@ -142,7 +166,13 @@ export class KarakuriAgent implements IAgent {
       memoryStore: this.memoryStore,
       timezone: this.config.timezone,
       braveApiKey: this.config.braveApiKey,
+      postMessageEnabled: hasPostMessage,
+      postMessageChannelIds: this.config.postMessageChannelIds,
+      adminUserIds: this.config.adminUserIds,
+      userId: options?.userId,
       ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
+      ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
+      ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
       skills,
     });
     const lifecycle = options?.lifecycle;

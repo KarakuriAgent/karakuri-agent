@@ -127,14 +127,14 @@ function createMessage(overrides: Partial<{
   threadId: string;
   text: string;
   attachments: Array<{ url: string }>;
-  author: { fullName: string };
+  author: { fullName: string; userId: string };
 }> = {}) {
   return {
     id: 'message-1',
     threadId: 'thread-1',
     text: 'hello',
     attachments: [] as Array<{ url: string }>,
-    author: { fullName: 'User' },
+    author: { fullName: 'User', userId: 'user-1' },
     ...overrides,
   };
 }
@@ -232,6 +232,32 @@ describe('createBot', () => {
 
     // A must fully complete before B starts
     expect(executionOrder).toEqual(['start:A', 'end:A', 'start:B', 'end:B']);
+  });
+
+
+  it('passes author userId into agent.handleMessage options', async () => {
+    const handleMessage = vi.fn(async () => 'reply');
+    const agent: IAgent = {
+      handleMessage,
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+    const bot = createBot(baseConfig, agent);
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread } = createMockThread();
+
+    await handler(thread, createMessage({ author: { fullName: 'User', userId: 'admin-1' } }));
+
+    expect(handleMessage).toHaveBeenCalledWith(
+      'thread-1',
+      'hello',
+      'User',
+      expect.objectContaining({ userId: 'admin-1' }),
+    );
   });
 
   it('replies with attachment-only message when text is empty', async () => {

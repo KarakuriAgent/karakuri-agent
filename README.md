@@ -8,6 +8,8 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI + Disc
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
+- `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
+- `postMessage` / `manageCron` ツールによる管理者限定のプロアクティブ投稿と Cron 管理
 - Discord メッセージに処理状態を表すリアクション絵文字を表示（完了は 2 秒後に除去、エラーは保持）
 - 各層をインターフェースで抽象化し、実装の差し替えが容易
 - v1 はテキストメッセージのみ対応
@@ -16,11 +18,12 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI + Disc
 
 1. `cp .env.example .env`
 2. `.env` に Discord / OpenAI の設定を入力（`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能）
+   - Heartbeat / Cron を使う場合は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` を設定し、必要に応じて `REPORT_CHANNEL_ID` / `HEARTBEAT_INTERVAL_MINUTES` も指定
 3. `cp -r data.example data`
 4. `npm install`
 5. `npm run dev`
 
-`data.example/` にはサンプルの `AGENT.md`・`RULES.md`・スキル定義が含まれている。
+`data.example/` にはサンプルの `AGENT.md`・`RULES.md`・スキル定義に加えて、`HEARTBEAT.md` と `cron/daily-summary/CRON.md` も含まれている。
 `data/` はユーザーごとにカスタマイズするため `.gitignore` で除外されている。
 
 Discord Developer Portal では `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` を取得し、
@@ -38,10 +41,14 @@ Discord Gateway listener を同時に起動する。
 ## 実装メモ
 
 - `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は追加スキル定義
+- `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、`data/cron/*/CRON.md` で Cron ジョブを定義できる
 - スキルが有効なときだけ `loadSkill` ツールが公開され、一覧だけをシステムプロンプトへ注入する
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は private / loopback / link-local 宛てや、そこへ向かう redirect を拒否して SSRF を抑止する
 - `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う
+- `postMessage` / `manageCron` は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` が設定された管理者コンテキストでのみ公開される
+- Heartbeat は `ALLOWED_CHANNEL_IDS` 設定時のみ有効化され、`REPORT_CHANNEL_ID` は空欄のままでも省略設定として扱われる
+- `REPORT_CHANNEL_ID` を設定すると Heartbeat / Cron の実行成否を自動投稿する（エージェント応答本文は自動投稿しない）
 - Chat SDK の state は `DATA_DIR/state/chat-state.json` に保存するカスタム JSON アダプターを使用
 - Memory / Session も `data/` 配下にファイル保存
 - 元メッセージへのリアクションで `queued` / `thinking` / tool 実行中 / `done` / `error` を表示し、`done` は 2 秒後に自動除去する

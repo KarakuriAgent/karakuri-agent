@@ -253,7 +253,10 @@ async function handleThreadMessage(
       message.threadId,
       text,
       message.author.fullName,
-      { lifecycle },
+      {
+        lifecycle,
+        userId: message.author.userId,
+      },
     );
 
     if (message.attachments.length > 0) {

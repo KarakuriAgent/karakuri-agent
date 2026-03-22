@@ -24,7 +24,50 @@ describe('loadConfig', () => {
     expect(config.maxSteps).toBe(10);
     expect(config.tokenBudget).toBe(8_000);
     expect(config.port).toBe(3_000);
+    expect(config.heartbeatIntervalMinutes).toBe(30);
     expect(config.braveApiKey).toBeUndefined();
+    expect(config.postMessageChannelIds).toBeUndefined();
+    expect(config.allowedChannelIds).toBeUndefined();
+    expect(config.adminUserIds).toBeUndefined();
+  });
+
+  it('parses channel and admin allowlists', () => {
+    const config = loadConfig({
+      ...validEnv,
+      ALLOWED_CHANNEL_IDS: 'channel-1, channel-2',
+      REPORT_CHANNEL_ID: 'report-1',
+      ADMIN_USER_IDS: 'admin-1, admin-2',
+      HEARTBEAT_INTERVAL_MINUTES: '15',
+    });
+
+    expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
+    expect(config.allowedChannelIds).toEqual(['channel-1', 'channel-2', 'report-1']);
+    expect(config.reportChannelId).toBe('report-1');
+    expect(config.adminUserIds).toEqual(['admin-1', 'admin-2']);
+    expect(config.heartbeatIntervalMinutes).toBe(15);
+  });
+
+  it('treats an empty REPORT_CHANNEL_ID as omitted', () => {
+    const config = loadConfig({
+      ...validEnv,
+      ALLOWED_CHANNEL_IDS: 'channel-1, channel-2',
+      REPORT_CHANNEL_ID: '   ',
+    });
+
+    expect(config.reportChannelId).toBeUndefined();
+    expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
+    expect(config.allowedChannelIds).toEqual(['channel-1', 'channel-2']);
+  });
+
+  it('keeps report-only channels out of the postMessage allowlist', () => {
+    const config = loadConfig({
+      ...validEnv,
+      REPORT_CHANNEL_ID: 'report-1',
+    });
+
+    expect(config.postMessageChannelIds).toBeUndefined();
+    expect(config.allowedChannelIds).toEqual(['report-1']);
+    expect(config.reportChannelId).toBe('report-1');
   });
 
   it('accepts DISCORD_TOKEN as alias for DISCORD_BOT_TOKEN', () => {
