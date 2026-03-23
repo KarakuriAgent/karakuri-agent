@@ -1,0 +1,16 @@
+node_modules
+.git
+.gitignore
+.env
+data
+dist
+coverage
+.vitest
+.claude
+docs
+tests
+*.md
+LICENSE
+docker-compose*.yml
+Dockerfile
+.dockerignore

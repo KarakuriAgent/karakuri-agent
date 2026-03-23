@@ -85,11 +85,16 @@ karakuri-agent/
 │   └── sessions/
 │       └── {hashedSessionId}.json
 ├── .env
-├── .env.example
+├── .env.example               # Docker Compose 用に数値 UID / GID の雛形も定義
+├── .dockerignore
+├── Dockerfile
+├── docker-compose.yml
+├── docker-compose.dev.yml
 ├── .gitignore                  # data/ 全体を除外
 ├── package.json
 ├── package-lock.json           # lockfileをコミット
-└── tsconfig.json
+├── tsconfig.json
+└── tsconfig.build.json
 ```
 
 ## 依存パッケージ
@@ -118,6 +123,12 @@ karakuri-agent/
 ```
 
 > Chat SDK は beta のため **exact version 固定** + **lockfile コミット**必須。
+
+## Docker Compose メモ
+
+- `docker-compose.yml` は container 内の `DATA_DIR` を `/app/data` に固定し、bind mount の保存先とアプリ設定がずれないようにする
+- `docker-compose.dev.yml` は `src/` と `tsconfig.json` だけを bind mount し、イメージ内の `/app/node_modules` をそのまま使うことで devDependencies が bind mount で隠れないようにする
+- 開発コンテナでは `HOME` / npm cache を `/tmp/karakuri-agent` に向け、任意 UID / GID 実行でも `npx` 系キャッシュが `/` に落ちないようにする
 
 ## 実装フェーズ
 
