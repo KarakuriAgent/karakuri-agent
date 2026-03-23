@@ -41,6 +41,50 @@ Discord Gateway listener を同時に起動する。
 - `npm run start` - 本番起動
 - `npm run typecheck` - TypeScript 型検査
 - `npm test` - unit test 実行
+- `npm run docker:build` - Docker イメージビルド
+- `npm run docker:up` - Docker Compose で本番起動
+- `npm run docker:dev` - Docker Compose で開発モード起動（フォアグラウンド）
+- `npm run docker:dev:up` - Docker Compose で開発モード起動（バックグラウンド）
+- `npm run docker:down` - Docker Compose 停止
+
+## Docker Compose
+
+### 本番相当の起動
+
+1. `cp .env.example .env`
+2. `.env` を設定
+   - Discord / LLM 系の値を入力する
+   - Docker Compose 用の `UID` / `GID` には **数値** を入れる（`.env` は `$(id -u)` のような command substitution を展開しない）
+   - Linux / macOS / WSL では `id -u` / `id -g` の出力結果をそのまま `UID` / `GID` に書く
+   - Docker Desktop on Windows など bind mount の所有者差分を気にしなくてよい環境では `UID=1000` / `GID=1000` のような固定値でも運用できる
+   - 例:
+
+     ```bash
+     printf 'UID=%s\nGID=%s\n' "$(id -u)" "$(id -g)"
+     ```
+3. `cp -r data.example data`
+4. `npm run docker:build`
+5. `npm run docker:up`
+
+- アプリは `http://localhost:${PORT:-3000}` で待ち受け、`GET /healthz` でヘルスチェックできる
+- 永続データは `./data` を `/app/data` に bind mount して保持する
+- Compose は container 内の `DATA_DIR` を `/app/data` に固定している。ホスト側の保存先を変えたい場合は `.env` の `DATA_DIR` ではなく `docker-compose.yml` の volume 側を編集する
+- `docker-compose.yml` の `user:` は `.env` の `UID` / `GID` を必須にしており、未設定のまま `1000:1000` にフォールバックしてホスト側の `data/` を書けなくなる事故を防いでいる
+- 停止は `npm run docker:down`。Compose 側の `stop_grace_period: 15s` により、アプリの graceful shutdown に余裕を持たせている
+
+### 開発モード
+
+`tsx watch` をコンテナ内で使う場合は、オーバーライドを重ねて起動する。
+
+```bash
+npm run docker:dev
+```
+
+- `docker-compose.dev.yml` は `deps` ステージを使い、devDependencies を含む状態で起動する
+- `docker-compose.dev.yml` では `src/` と `tsconfig.json` だけを bind mount し、イメージ内の `/app/node_modules` はそのまま使うため、`tsx` などの devDependencies が bind mount で隠れない
+- 起動コマンドは `npx` ではなく `/app/node_modules/.bin/tsx` を直接実行する
+- 開発コンテナでは `HOME` / npm cache を `/tmp/karakuri-agent` に寄せているため、Compose 側でホストの任意 UID / GID に合わせて実行しても npm cache が `/.npm` に落ちず権限エラーを踏みにくい
+- 依存を更新した後は `npm run docker:dev` でイメージを作り直す
 
 ## 実装メモ
 

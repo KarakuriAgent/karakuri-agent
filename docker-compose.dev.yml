@@ -1,0 +1,16 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: deps
+    init: true
+    command: ["/app/node_modules/.bin/tsx", "watch", "src/index.ts"]
+    volumes:
+      - ./src:/app/src
+      - ./tsconfig.json:/app/tsconfig.json:ro
+    environment:
+      LOG_LEVEL: debug
+      HOME: /tmp/karakuri-agent
+      XDG_CACHE_HOME: /tmp/karakuri-agent/.cache
+      npm_config_cache: /tmp/karakuri-agent/.npm
