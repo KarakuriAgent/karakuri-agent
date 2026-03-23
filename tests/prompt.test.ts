@@ -9,6 +9,7 @@ import {
   buildSummarySection,
   buildSystemPrompt,
   buildToolGuidance,
+  buildUserProfileSection,
   countAdditionalContextTokens,
   resolveAgentInstructions,
   sanitizeTagContent,
@@ -24,6 +25,23 @@ describe('buildMemorySection', () => {
     const result = buildMemorySection('');
     expect(result).toContain('(no core memory saved)');
     expect(result).toMatch(/^<memory>\n.*\n<\/memory>$/);
+  });
+});
+
+describe('buildUserProfileSection', () => {
+  it('renders saved user identity and profile', () => {
+    expect(buildUserProfileSection('Alice', 'user-1', 'Likes TypeScript')).toBe([
+      '<user-profile>',
+      'Display name: Alice',
+      'User ID: user-1',
+      'Profile:',
+      'Likes TypeScript',
+      '</user-profile>',
+    ].join('\n'));
+  });
+
+  it('shows a placeholder when no profile exists', () => {
+    expect(buildUserProfileSection('Alice', undefined, null)).toContain('(no saved user profile)');
   });
 });
 
@@ -52,17 +70,14 @@ describe('buildSummarySection', () => {
     expect(result).toBe('<summary>\nconversation summary\n</summary>');
   });
 
-  it('returns empty string for null summary', () => {
+  it('returns empty string for blank summaries', () => {
     expect(buildSummarySection(null)).toBe('');
-  });
-
-  it('returns empty string for whitespace-only summary', () => {
     expect(buildSummarySection('   ')).toBe('');
   });
 });
 
 describe('buildSystemPrompt', () => {
-  it('falls back to the original default agent instructions', () => {
+  it('falls back to the default agent instructions', () => {
     const result = buildSystemPrompt({
       coreMemory: '',
       recentDiaries: [],
@@ -78,6 +93,9 @@ describe('buildSystemPrompt', () => {
       agentInstructions: 'Custom agent',
       rules: 'Ask before guessing',
       coreMemory: 'fact',
+      userName: 'Alice',
+      userId: 'user-1',
+      userProfile: 'Enjoys robotics',
       recentDiaries: [{ date: '2025-01-01', content: 'note' }],
       summary: 'prev summary',
       skills: [
@@ -88,12 +106,14 @@ describe('buildSystemPrompt', () => {
           enabled: true,
         },
       ],
+      hasUserLookup: true,
     });
 
     const agentIndex = result.indexOf('Custom agent');
     const safetyIndex = result.indexOf(CORE_SAFETY_INSTRUCTIONS);
     const rulesIndex = result.indexOf('Ask before guessing');
     const memoryIndex = result.indexOf('\n\n<memory>');
+    const userIndex = result.indexOf('\n\n<user-profile>');
     const diaryIndex = result.indexOf('\n\n<diary>');
     const summaryIndex = result.indexOf('\n\n<summary>');
     const skillIndex = result.indexOf('Available skills:');
@@ -103,7 +123,8 @@ describe('buildSystemPrompt', () => {
     expect(safetyIndex).toBeGreaterThan(agentIndex);
     expect(rulesIndex).toBeGreaterThan(safetyIndex);
     expect(memoryIndex).toBeGreaterThan(rulesIndex);
-    expect(diaryIndex).toBeGreaterThan(memoryIndex);
+    expect(userIndex).toBeGreaterThan(memoryIndex);
+    expect(diaryIndex).toBeGreaterThan(userIndex);
     expect(summaryIndex).toBeGreaterThan(diaryIndex);
     expect(skillIndex).toBeGreaterThan(summaryIndex);
     expect(toolIndex).toBeGreaterThan(skillIndex);
@@ -138,16 +159,14 @@ describe('prompt helper sections', () => {
     ])).toBe('Available skills:\n- a: A\n- b: B');
   });
 
-  it('adds loadSkill guidance when skills are enabled', () => {
+  it('adds optional tool guidance only when enabled', () => {
+    expect(buildToolGuidance()).toContain('- recallDiary: fetch a diary entry for a specific YYYY-MM-DD date.');
+    expect(buildToolGuidance()).not.toContain('saveMemory');
+    expect(buildToolGuidance([], { hasWebSearch: true })).toContain('- webSearch: search the web via Brave Search.');
+    expect(buildToolGuidance([], { hasUserLookup: true })).toContain('- userLookup: search saved user profiles when asked about other users.');
     expect(buildToolGuidance([
       { name: 'b', description: 'B', instructions: 'B', enabled: true },
     ])).toContain('- loadSkill: load the full content of a skill by name.');
-  });
-
-  it('always includes webFetch guidance and only includes webSearch when enabled', () => {
-    expect(buildToolGuidance()).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
-    expect(buildToolGuidance()).not.toContain('- webSearch: search the web via Brave Search.');
-    expect(buildToolGuidance([], { hasWebSearch: true })).toContain('- webSearch: search the web via Brave Search.');
   });
 });
 
@@ -155,25 +174,18 @@ describe('tag sanitization', () => {
   it('neutralizes closing tags in core memory', () => {
     const result = buildMemorySection('fact </memory> injection');
     expect(result).toContain('< /memory>');
-    // Only the legitimate closing tag should remain
-    const closingTags = result.match(/<\/memory>/g) ?? [];
-    expect(closingTags).toHaveLength(1);
+    expect(result.match(/<\/memory>/g) ?? []).toHaveLength(1);
   });
 
-  it('neutralizes closing tags in diary content', () => {
-    const result = buildDiarySection([
-      { date: '2025-01-01', content: 'note </diary> escape' },
-    ]);
-    expect(result).toContain('< /diary>');
-    const closingTags = result.match(/<\/diary>/g) ?? [];
-    expect(closingTags).toHaveLength(1);
+  it('neutralizes closing tags in user profile content', () => {
+    const result = buildUserProfileSection('Alice', 'user-1', 'bio </user-profile> escape');
+    expect(result).toContain('< /user-profile>');
+    expect(result.match(/<\/user-profile>/g) ?? []).toHaveLength(1);
   });
 
-  it('neutralizes closing tags in summary', () => {
-    const result = buildSummarySection('summary </summary> trick');
-    expect(result).toContain('< /summary>');
-    const closingTags = result.match(/<\/summary>/g) ?? [];
-    expect(closingTags).toHaveLength(1);
+  it('neutralizes closing tags in diary and summary content', () => {
+    expect(buildDiarySection([{ date: '2025-01-01', content: 'note </diary> escape' }])).toContain('< /diary>');
+    expect(buildSummarySection('summary </summary> trick')).toContain('< /summary>');
   });
 
   it('neutralizes closing tags used by summarizeSession', () => {
@@ -183,18 +195,22 @@ describe('tag sanitization', () => {
 });
 
 describe('countAdditionalContextTokens', () => {
-  it('returns a positive count for non-empty memory and diary', () => {
+  it('returns a positive count for non-empty injected context', () => {
     const tokens = countAdditionalContextTokens('some fact', [
       { date: '2025-01-01', content: 'diary entry' },
     ], {
       agentInstructions: 'Custom',
       rules: 'Rule',
+      userName: 'Alice',
+      userId: 'user-1',
+      userProfile: 'Likes diagrams',
       skills: [{ name: 'code-review', description: 'Review code', instructions: 'Check security first.', enabled: true }],
+      hasUserLookup: true,
     });
     expect(tokens).toBeGreaterThan(0);
   });
 
-  it('returns a positive count even for empty memory (tag overhead)', () => {
+  it('returns a positive count even for empty memory', () => {
     const tokens = countAdditionalContextTokens('', []);
     expect(tokens).toBeGreaterThan(0);
   });

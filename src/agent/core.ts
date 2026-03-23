@@ -3,10 +3,13 @@ import { generateText, stepCountIs, type LanguageModel, type ModelMessage } from
 import type { Config } from '../config.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
 import type { IMemoryStore } from '../memory/types.js';
+import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ISkillStore } from '../skill/types.js';
-import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
+import { evaluatePostResponse } from '../user/post-response-evaluator.js';
+import type { IUserStore } from '../user/types.js';
 import { createLogger } from '../utils/logger.js';
+import { KeyedMutex } from '../utils/mutex.js';
 import { createAgentTools } from './tools/index.js';
 import { hasAdminToolAccess } from './tools/admin-auth.js';
 import type { IPromptContextStore } from './prompt-context.js';
@@ -51,6 +54,7 @@ export interface KarakuriAgentOptions {
   promptContextStore?: IPromptContextStore | undefined;
   schedulerStore?: ISchedulerStore | undefined;
   messageSink?: IMessageSink | undefined;
+  userStore?: IUserStore | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
   keepRecentTurns?: number;
@@ -65,10 +69,14 @@ export class KarakuriAgent implements IAgent {
   private readonly promptContextStore: IPromptContextStore | undefined;
   private readonly schedulerStore: ISchedulerStore | undefined;
   private readonly messageSink: IMessageSink | undefined;
+  private readonly userStore: IUserStore | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
+  private readonly postResponseModelFactory: ((selector: LlmModelSelector) => LanguageModel) | undefined;
   private readonly keepRecentTurns: number;
   private readonly recentDiaryCount: number;
+  private readonly evaluationMutex = new KeyedMutex();
+  private readonly pendingEvaluations = new Set<Promise<void>>();
 
   constructor({
     config,
@@ -78,6 +86,7 @@ export class KarakuriAgent implements IAgent {
     promptContextStore,
     schedulerStore,
     messageSink,
+    userStore,
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
@@ -90,6 +99,7 @@ export class KarakuriAgent implements IAgent {
     this.promptContextStore = promptContextStore;
     this.schedulerStore = schedulerStore;
     this.messageSink = messageSink;
+    this.userStore = userStore;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
@@ -98,6 +108,14 @@ export class KarakuriAgent implements IAgent {
       apiKey: config.llmApiKey,
       ...(config.llmBaseUrl != null ? { baseURL: config.llmBaseUrl } : {}),
     });
+    this.postResponseModelFactory = config.postResponseLlmApiKey != null || config.postResponseLlmBaseUrl != null
+      ? createConfiguredOpenAiModelFactory({
+          apiKey: config.postResponseLlmApiKey ?? config.llmApiKey,
+          ...((config.postResponseLlmBaseUrl ?? config.llmBaseUrl) != null
+            ? { baseURL: config.postResponseLlmBaseUrl ?? config.llmBaseUrl }
+            : {}),
+        })
+      : undefined;
   }
 
   async handleMessage(
@@ -107,6 +125,15 @@ export class KarakuriAgent implements IAgent {
     options?: HandleMessageOptions,
   ): Promise<string> {
     logger.info('handleMessage', { sessionId, userMessageLength: userMessage.length });
+    const userId = options?.userId;
+    const isRealUser = userId != null && userId !== 'system';
+    const ensuredUserPromise = isRealUser && this.userStore != null
+      ? this.userStore.ensureUser(userId, userName).catch((error) => {
+          logger.warn('Failed to ensure user record', error, { userId });
+          return null;
+        })
+      : Promise.resolve(null);
+
     let session = await this.sessionManager.addMessages(sessionId, [
       {
         role: 'user',
@@ -114,24 +141,36 @@ export class KarakuriAgent implements IAgent {
       },
     ]);
 
-    const [coreMemory, recentDiaries, promptContext, skills] = await Promise.all([
+    const [coreMemory, recentDiaries, promptContext, skills, ensuredUser] = await Promise.all([
       this.memoryStore.readCoreMemory(),
       this.memoryStore.getRecentDiaries(this.recentDiaryCount),
       this.promptContextStore?.read() ?? Promise.resolve({ agentInstructions: null, rules: null }),
       this.skillStore?.listSkills() ?? Promise.resolve([]),
+      ensuredUserPromise,
     ]);
 
-    const hasAdminAccess = hasAdminToolAccess(options?.userId, this.config.adminUserIds ?? []);
+    const promptUserName = isRealUser ? ensuredUser?.displayName ?? userName : undefined;
+    const promptUserProfile = isRealUser ? ensuredUser?.profile ?? null : undefined;
+    const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
       && this.messageSink != null;
     const hasManageCron = hasAdminAccess && this.schedulerStore != null;
+    const hasUserLookup = this.userStore != null;
 
     const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
       agentInstructions: promptContext.agentInstructions,
       rules: promptContext.rules,
+      ...(isRealUser
+        ? {
+            userName: promptUserName ?? userName,
+            userId,
+            userProfile: promptUserProfile,
+          }
+        : {}),
       skills,
       hasWebSearch: this.config.braveApiKey != null,
+      hasUserLookup,
       hasPostMessage,
       hasManageCron,
       extraSystemPrompt: options?.extraSystemPrompt,
@@ -152,10 +191,18 @@ export class KarakuriAgent implements IAgent {
       agentInstructions: promptContext.agentInstructions,
       rules: promptContext.rules,
       coreMemory,
+      ...(isRealUser
+        ? {
+            userName: promptUserName ?? userName,
+            userId,
+            userProfile: promptUserProfile,
+          }
+        : {}),
       recentDiaries,
       summary: session.summary,
       skills,
       hasWebSearch: this.config.braveApiKey != null,
+      hasUserLookup,
       hasPostMessage,
       hasManageCron,
       extraSystemPrompt: options?.extraSystemPrompt,
@@ -170,13 +217,13 @@ export class KarakuriAgent implements IAgent {
     logger.debug(`System prompt:\n${systemPrompt}`);
     const tools = createAgentTools({
       memoryStore: this.memoryStore,
-      timezone: this.config.timezone,
       braveApiKey: this.config.braveApiKey,
       postMessageEnabled: hasPostMessage,
       postMessageChannelIds: this.config.postMessageChannelIds,
       reportChannelId: this.config.reportChannelId,
       adminUserIds: this.config.adminUserIds,
-      userId: options?.userId,
+      userId,
+      userStore: this.userStore,
       ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
       ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
       ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
@@ -215,6 +262,16 @@ export class KarakuriAgent implements IAgent {
     }
     logger.debug(`Response text:\n${result.text}`);
     await this.sessionManager.addMessages(sessionId, result.response.messages);
+
+    if (isRealUser) {
+      this.enqueuePostResponseEvaluation({
+        userId,
+        userName,
+        userMessage,
+        assistantResponse: result.text,
+      });
+    }
+
     logger.info('handleMessage complete', { sessionId, responseLength: result.text.length });
     return result.text;
   }
@@ -241,6 +298,56 @@ export class KarakuriAgent implements IAgent {
 
     const summary = result.text.trim();
     return summary.length > 0 ? summary : session.summary ?? 'No durable summary available yet.';
+  }
+
+  async drainPendingEvaluations(): Promise<void> {
+    await Promise.allSettled([...this.pendingEvaluations]);
+  }
+
+  private enqueuePostResponseEvaluation({
+    userId,
+    userName,
+    userMessage,
+    assistantResponse,
+  }: {
+    userId: string;
+    userName: string;
+    userMessage: string;
+    assistantResponse: string;
+  }): void {
+    const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
+      try {
+        const [currentUser, currentCoreMemory] = await Promise.all([
+          this.userStore?.getUser(userId) ?? Promise.resolve(null),
+          this.memoryStore.readCoreMemory(),
+        ]);
+        const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
+        const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
+        const userStoreIfKnown = currentUser != null ? this.userStore : undefined;
+
+        await evaluatePostResponse({
+          model: modelFactory(modelSelector),
+          memoryStore: this.memoryStore,
+          userStore: userStoreIfKnown,
+          userId,
+          userName,
+          savedDisplayName: currentUser?.displayName,
+          userMessage,
+          assistantResponse,
+          currentProfile: currentUser?.profile,
+          currentCoreMemory,
+          timezone: this.config.timezone,
+          generateTextFn: this.generateTextFn,
+        });
+      } catch (error) {
+        logger.warn('Post-response evaluation task failed', error, { userId });
+      }
+    });
+
+    this.pendingEvaluations.add(task);
+    void task.finally(() => {
+      this.pendingEvaluations.delete(task);
+    });
   }
 }
 

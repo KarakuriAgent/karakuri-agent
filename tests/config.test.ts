@@ -238,6 +238,48 @@ describe('loadConfig', () => {
     expect(config.tokenBudget).toBe(4_000);
   });
 
+  it('parses optional post-response LLM settings', () => {
+    const config = loadConfig({
+      ...validEnv,
+      POST_RESPONSE_LLM_MODEL: 'openai/gpt-4o-mini',
+      POST_RESPONSE_LLM_API_KEY: 'post-key',
+      POST_RESPONSE_LLM_BASE_URL: 'https://example.com/post/',
+    });
+
+    expect(config.postResponseLlmModel).toBe('openai/gpt-4o-mini');
+    expect(config.postResponseLlmModelSelector?.selector).toBe('openai/gpt-4o-mini');
+    expect(config.postResponseLlmApiKey).toBe('post-key');
+    expect(config.postResponseLlmBaseUrl).toBe('https://example.com/post');
+  });
+
+  it('treats blank post-response LLM settings as undefined', () => {
+    const config = loadConfig({
+      ...validEnv,
+      POST_RESPONSE_LLM_MODEL: '   ',
+      POST_RESPONSE_LLM_API_KEY: '   ',
+      POST_RESPONSE_LLM_BASE_URL: '   ',
+    });
+
+    expect(config.postResponseLlmModel).toBeUndefined();
+    expect(config.postResponseLlmModelSelector).toBeUndefined();
+    expect(config.postResponseLlmApiKey).toBeUndefined();
+    expect(config.postResponseLlmBaseUrl).toBeUndefined();
+  });
+
+  it('rejects invalid POST_RESPONSE_LLM_BASE_URL with correct label', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      POST_RESPONSE_LLM_BASE_URL: 'not-a-url',
+    })).toThrow('POST_RESPONSE_LLM_BASE_URL must be a valid URL');
+  });
+
+  it('rejects POST_RESPONSE_LLM_BASE_URL with credentials', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      POST_RESPONSE_LLM_BASE_URL: 'https://user:pass@example.com',
+    })).toThrow('POST_RESPONSE_LLM_BASE_URL must not include credentials');
+  });
+
   it('accepts BRAVE_API_KEY as an optional setting', () => {
     const config = loadConfig({
       ...validEnv,

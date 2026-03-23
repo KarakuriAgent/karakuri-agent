@@ -10,6 +10,7 @@ import { FileMemoryStore } from './memory/store.js';
 import { FileSessionManager } from './session/manager.js';
 import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
+import { SqliteUserStore } from './user/store.js';
 import { createLogger } from './utils/logger.js';
 
 const logger = createLogger('Server');
@@ -27,6 +28,7 @@ async function main(): Promise<void> {
     port: config.port,
   });
   const memoryStore = new FileMemoryStore({ dataDir: config.dataDir, timezone: config.timezone });
+  const userStore = new SqliteUserStore({ dataDir: config.dataDir });
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
     tokenBudget: config.tokenBudget,
@@ -51,6 +53,7 @@ async function main(): Promise<void> {
     skillStore,
     schedulerStore,
     messageSink,
+    userStore,
   });
   const scheduler = await createScheduler({
     agent,
@@ -86,8 +89,10 @@ async function main(): Promise<void> {
         closeServer: () => closeServer(server),
         closeScheduler: () => scheduler.close(),
         shutdownBot: () => bot.shutdown(),
+        drainEvaluations: () => agent.drainPendingEvaluations(),
         closeStores: () => [
           memoryStore.close(),
+          userStore.close(),
           promptContextStore.close(),
           skillStore.close(),
           schedulerStore.close(),

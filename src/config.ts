@@ -22,6 +22,9 @@ const configSchema = z.object({
   }).trim().min(1, 'LLM_API_KEY is required (OPENAI_API_KEY is also accepted)'),
   llmBaseUrl: z.string().trim().optional(),
   llmModel: z.string().trim().default(DEFAULT_LLM_MODEL),
+  postResponseLlmApiKey: z.string().trim().optional(),
+  postResponseLlmBaseUrl: z.string().trim().optional(),
+  postResponseLlmModel: z.string().trim().optional(),
   braveApiKey: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
@@ -42,6 +45,10 @@ export interface Config {
   llmBaseUrl?: string | undefined;
   llmModel: string;
   llmModelSelector: LlmModelSelector;
+  postResponseLlmApiKey?: string | undefined;
+  postResponseLlmBaseUrl?: string | undefined;
+  postResponseLlmModel?: string | undefined;
+  postResponseLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
   dataDir: string;
   timezone: string;
@@ -73,6 +80,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     llmApiKey: resolveEnvAliases(env.LLM_API_KEY, env.OPENAI_API_KEY),
     llmBaseUrl: resolveEnvAliases(env.LLM_BASE_URL, env.OPENAI_BASE_URL),
     llmModel: resolveEnvAliases(env.LLM_MODEL, env.OPENAI_MODEL, env.AGENT_MODEL),
+    postResponseLlmApiKey: env.POST_RESPONSE_LLM_API_KEY,
+    postResponseLlmBaseUrl: env.POST_RESPONSE_LLM_BASE_URL,
+    postResponseLlmModel: env.POST_RESPONSE_LLM_MODEL,
     braveApiKey: env.BRAVE_API_KEY || undefined,
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
@@ -89,8 +99,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const parsed = configSchema.parse(rawConfig);
     assertValidTimezone(parsed.timezone);
     const llmBaseUrl = normalizeBaseUrl(parsed.llmBaseUrl);
+    const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
 
     const llmModelSelector = parseModelSelector(parsed.llmModel);
+    const postResponseLlmModel = normalizeOptionalString(parsed.postResponseLlmModel);
+    const postResponseLlmModelSelector = postResponseLlmModel != null
+      ? parseModelSelector(postResponseLlmModel)
+      : undefined;
     const postMessageChannelIds = parseIdList(parsed.allowedChannelIds);
     const reportChannelId = normalizeOptionalString(parsed.reportChannelId);
     const mergedAllowedChannelIds = reportChannelId != null
@@ -101,6 +116,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmBaseUrl,
       llmModel: llmModelSelector.selector,
       llmModelSelector,
+      postResponseLlmApiKey: normalizeOptionalString(parsed.postResponseLlmApiKey),
+      postResponseLlmBaseUrl,
+      postResponseLlmModel,
+      postResponseLlmModelSelector,
       dataDir: resolve(parsed.dataDir),
       postMessageChannelIds,
       allowedChannelIds: mergedAllowedChannelIds,
@@ -113,6 +132,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       model: config.llmModel,
       llmProvider: config.llmModelSelector.provider,
       llmApi: config.llmModelSelector.api,
+      hasPostResponseModel: config.postResponseLlmModelSelector != null,
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,
@@ -148,7 +168,7 @@ function normalizeOptionalString(value: string | undefined): string | undefined 
   return normalized != null && normalized.length > 0 ? normalized : undefined;
 }
 
-function normalizeBaseUrl(value: string | undefined): string | undefined {
+function normalizeBaseUrl(value: string | undefined, label = 'LLM_BASE_URL'): string | undefined {
   const normalized = normalizeOptionalString(value);
   if (normalized == null) {
     return undefined;
@@ -158,17 +178,17 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   try {
     url = new URL(normalized);
   } catch {
-    throw new Error('LLM_BASE_URL must be a valid URL');
+    throw new Error(`${label} must be a valid URL`);
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('LLM_BASE_URL must use http or https');
+    throw new Error(`${label} must use http or https`);
   }
   if (url.username.length > 0 || url.password.length > 0) {
-    throw new Error('LLM_BASE_URL must not include credentials');
+    throw new Error(`${label} must not include credentials`);
   }
   if (url.search.length > 0 || url.hash.length > 0) {
-    throw new Error('LLM_BASE_URL must not include query parameters or fragments');
+    throw new Error(`${label} must not include query parameters or fragments`);
   }
 
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;

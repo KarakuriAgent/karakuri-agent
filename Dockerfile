@@ -2,7 +2,8 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 # Dev override runs as an arbitrary host UID/GID, so keep node_modules cache-writable.
-RUN npm ci --include=dev --no-audit --no-fund \
+RUN apk add --no-cache build-base python3 \
+  && npm ci --include=dev --no-audit --no-fund \
   && mkdir -p /app/node_modules/.cache \
   && chmod 1777 /app/node_modules /app/node_modules/.cache
 
@@ -12,10 +13,12 @@ COPY src/ ./src/
 RUN node ./node_modules/typescript/bin/tsc -p tsconfig.build.json
 
 FROM node:20-alpine
-RUN apk add --no-cache tini
+RUN apk add --no-cache tini build-base python3
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
+RUN npm ci --omit=dev --no-audit --no-fund \
+  && npm cache clean --force \
+  && apk del build-base python3
 COPY --from=build /app/dist ./dist/
 ENV NODE_ENV=production
 ENV DATA_DIR=/app/data

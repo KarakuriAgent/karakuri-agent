@@ -72,7 +72,6 @@ interface IMemoryStore {
 
 - memory / diary の内容はシステムプロンプトの instruction 部分と明確に区切る
 - `<memory>` / `<diary>` タグ等で **untrusted data** であることを明示
-- `saveMemory` の `mode: replace` は開放しない（append のみ）
 - watcher 監視は親ディレクトリ単位で行い、atomic rename と整合するようにする
 
 ## テスト方針

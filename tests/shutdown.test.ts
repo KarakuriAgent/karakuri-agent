@@ -11,11 +11,12 @@ function createDeferred() {
 }
 
 describe('performGracefulShutdown', () => {
-  it('closes the scheduler in the first shutdown batch before closing stores', async () => {
+  it('drains evaluations after the first batch and before closing stores', async () => {
     const events: string[] = [];
     const server = createDeferred();
     const scheduler = createDeferred();
     const bot = createDeferred();
+    const evaluations = createDeferred();
 
     const shutdownPromise = performGracefulShutdown({
       closeServer: vi.fn(() => {
@@ -30,6 +31,10 @@ describe('performGracefulShutdown', () => {
         events.push('shutdown-bot');
         return bot.promise;
       }),
+      drainEvaluations: vi.fn(() => {
+        events.push('drain-evaluations');
+        return evaluations.promise;
+      }),
       closeStores: vi.fn(() => {
         events.push('close-stores');
         return [Promise.resolve()];
@@ -39,14 +44,22 @@ describe('performGracefulShutdown', () => {
     await Promise.resolve();
     expect(events).toEqual(['close-server', 'close-scheduler', 'shutdown-bot']);
 
-    scheduler.resolve();
-    await Promise.resolve();
-    expect(events).toEqual(['close-server', 'close-scheduler', 'shutdown-bot']);
-
     server.resolve();
+    scheduler.resolve();
     bot.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toEqual(['close-server', 'close-scheduler', 'shutdown-bot', 'drain-evaluations']);
+
+    evaluations.resolve();
     await shutdownPromise;
 
-    expect(events).toEqual(['close-server', 'close-scheduler', 'shutdown-bot', 'close-stores']);
+    expect(events).toEqual([
+      'close-server',
+      'close-scheduler',
+      'shutdown-bot',
+      'drain-evaluations',
+      'close-stores',
+    ]);
   });
 });
