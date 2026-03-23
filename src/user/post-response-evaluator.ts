@@ -10,11 +10,16 @@ const logger = createLogger('PostResponseEvaluator');
 export const MAX_PERSISTED_PROFILE_LENGTH = 4_000;
 
 export const postResponseEvaluationSchema = z.object({
-  profileAction: z.enum(['none', 'update', 'clear']),
-  profile: z.string().max(MAX_PERSISTED_PROFILE_LENGTH),
-  displayName: z.string().max(100),
-  coreMemoryAppend: z.string().max(4_000),
-  diaryEntry: z.string().max(4_000),
+  profileAction: z.enum(['none', 'update', 'clear'])
+    .describe('"none" if no profile change, "update" to set/replace profile, "clear" to erase it'),
+  profile: z.string().max(MAX_PERSISTED_PROFILE_LENGTH)
+    .describe('Complete next profile text when profileAction is "update", otherwise empty string'),
+  displayName: z.string().max(100)
+    .describe('New display name only when the user explicitly asked to be called differently, otherwise empty string'),
+  coreMemoryAppend: z.string().max(4_000)
+    .describe('Text to append to core memory (durable facts/decisions), or empty string'),
+  diaryEntry: z.string().max(4_000)
+    .describe('Diary note about concrete events in this conversation, or empty string'),
 });
 
 export type PostResponseEvaluation = z.infer<typeof postResponseEvaluationSchema>;
@@ -61,13 +66,17 @@ export async function evaluatePostResponse({
       model,
       system: [
         'You evaluate a completed assistant reply and decide what durable information should be persisted.',
-        'Return only structured JSON matching the schema.',
+        'Return a JSON object with EXACTLY these five keys (use these exact key names):',
+        '  "profileAction": "none" | "update" | "clear"',
+        '  "profile": string — complete merged profile text when updating, otherwise ""',
+        '  "displayName": string — new name only when user explicitly asked, otherwise ""',
+        '  "coreMemoryAppend": string — durable facts/decisions to append, otherwise ""',
+        '  "diaryEntry": string — concrete events from this conversation, otherwise ""',
+        'All values must be plain strings, never objects or arrays.',
         'Merge any profile update into a complete next profile, not a diff.',
-        'Profile should contain durable user-specific facts such as interests, expertise, preferences, or ongoing projects.',
-        'Core memory should contain durable facts, decisions, or promises that matter beyond this conversation.',
-        'Diary should contain concrete events or activities that happened today in this conversation.',
-        'Only set displayName when the user explicitly revealed or changed how they should be called.',
-        'If nothing should be saved, use profileAction="none" and empty strings for the other fields.',
+        'coreMemoryAppend must contain distilled facts only, not conversation descriptions. Good: "Weekly meeting: every Tuesday 10:00". Bad: "User said the meeting is on Tuesdays".',
+        'diaryEntry should summarize what happened, not quote the conversation verbatim.',
+        'If nothing should be saved, set profileAction to "none" and all other fields to "".',
       ].join('\n'),
       prompt: [
         `User ID: ${userId}`,
@@ -80,6 +89,7 @@ export async function evaluatePostResponse({
       output: Output.object({
         schema: postResponseEvaluationSchema,
         name: 'post_response_evaluation',
+        description: 'Post-response evaluation with profileAction, profile, displayName, coreMemoryAppend, and diaryEntry fields.',
       }),
     });
 
