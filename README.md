@@ -66,7 +66,7 @@ Discord Gateway listener を同時に起動する。
 4. `npm run docker:build`
 5. `npm run docker:up`
 
-- アプリは `http://localhost:${PORT:-3000}` で待ち受け、`GET /healthz` でヘルスチェックできる
+- アプリは `http://localhost:${PORT:-3000}` で待ち受ける。`GET /healthz` は Discord Gateway listener が 5 秒以上生存したかを基準に接続状態を判定し、初回接続前・listener の起動失敗/早期終了・shutdown 時は `503` を返す。初回接続後は通常の listener 切り替え中も healthy を維持する
 - 永続データは `./data` を `/app/data` に bind mount して保持する
 - Compose は container 内の `DATA_DIR` を `/app/data` に固定している。ホスト側の保存先を変えたい場合は `.env` の `DATA_DIR` ではなく `docker-compose.yml` の volume 側を編集する
 - `docker-compose.yml` の `user:` は `.env` の `UID` / `GID` を必須にしており、未設定のまま `1000:1000` にフォールバックしてホスト側の `data/` を書けなくなる事故を防いでいる
