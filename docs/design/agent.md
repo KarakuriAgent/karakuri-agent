@@ -16,6 +16,8 @@ interface AgentLifecycleCallbacks {
 
 interface HandleMessageOptions {
   lifecycle?: AgentLifecycleCallbacks;
+  extraSystemPrompt?: string;
+  userId?: string;
 }
 
 interface IAgent {
@@ -35,22 +37,35 @@ interface IAgent {
 ## メッセージ処理フロー (`Agent.handleMessage`)
 
 ```
+0. （real user かつ userStore ありの場合）ensureUser(userId, userName) を fire-and-forget で開始
+   - display name / profile を壊さない best-effort 登録
+   - 失敗しても会話は継続
+        ↓
 1. ユーザーメッセージ追加         sessionManager.addMessages(sessionId, [...])
-   （セッション読み込み＋追加を一括処理）
+   （セッション読み込み＋追加を一括処理。履歴には Discord から来た生の userName を残す）
         ↓
 2. 要約チェック（トークン予算）
-   a. coreMemory, recentDiaries, AGENT.md / RULES.md, enabled skills を取得
-   b. additionalTokens = tokens(可変長の trusted prompt context + "<memory>...</memory>" + "<diary>...</diary>" + skill list + 利用可能ツール説明)
+   a. coreMemory, recentDiaries, AGENT.md / RULES.md, enabled skills, ensured user を取得
+   b. additionalTokens = tokens(可変長の trusted prompt context
+      + "<memory>...</memory>"
+      + "<user-profile>...</user-profile>"
+      + "<diary>...</diary>"
+      + skill list
+      + 利用可能ツール説明)
    c. needsSummarization(session, additionalTokens) が true
          │                              ↓
          │                        summarizeSession() で LLM 要約
-        │                        sessionManager.applySummary() で圧縮
-        ↓
+         │                        sessionManager.applySummary() で圧縮
+         ↓
 3. システムプロンプト構築
    ├── AGENT.md（なければデフォルト指示）
    ├── CORE_SAFETY_INSTRUCTIONS（不変）
    ├── RULES.md（あれば trusted に追加）
    ├── <memory> ... </memory>          memory.md の内容（常時注入）
+   ├── <user-profile> ... </user-profile>
+   │    ├── Display name: ensureUser/getUser で得た保存済み表示名
+   │    ├── User ID: Discord user ID
+   │    └── Profile: 保存済みプロフィール
    ├── <diary> ... </diary>            直近3日分の diary（自動注入）
    ├── session.summary（あれば注入）
    ├── Available skills（enabled skill の一覧）
@@ -59,31 +74,39 @@ interface IAgent {
 4. generateText() + tools + stopWhen: stepCountIs(n)
    ├── `config.llmModelSelector` を見て LLM factory abstraction 経由で
    │   OpenAI Responses API / Chat API を切り替える
+   ├── userStore があると `userLookup` を公開
    └── options.lifecycle がある場合は experimental_onStepStart /
         experimental_onToolCallStart / experimental_onToolCallFinish を配線
          ↓
 5. result.response.messages を sessionManager に保存して応答文字列を返す
+        ↓
+6. real user のときだけ post-response evaluator をバックグラウンド enqueue
+   - user ごとに直列化（別 user 同士は並行しうる）
+   - evaluator 実行直前に currentProfile / currentCoreMemory を再読込
+   - `POST_RESPONSE_LLM_*` があれば evaluator 専用 model / client を使用
+   - 失敗は warn ログのみで握りつぶし、返信結果は変えない
 ```
 
 > **注**: trusted prompt context（AGENT.md / RULES.md / skills 一覧）と
 > `coreMemory` / `recentDiaries` のトークン数は Session 層のスコープ外のため、
 > Agent 層がステップ 3b で `src/utils/token-counter.ts` を使って計算し `additionalTokens` として渡す。
-> トークン数は **プロンプトに埋め込む最終形**（`<memory>...</memory>`, `<diary>...</diary>` タグを含む文字列）に対してカウントする。
-> `additionalTokens` の対象は **可変長の外部コンテキスト**（AGENT.md / RULES.md / skills 一覧 / coreMemory / recentDiaries）。
+> トークン数は **プロンプトに埋め込む最終形**（`<memory>...</memory>`, `<user-profile>...</user-profile>`, `<diary>...</diary>` タグを含む文字列）に対してカウントする。
+> `additionalTokens` の対象は **可変長の外部コンテキスト**（AGENT.md / RULES.md / skills 一覧 / coreMemory / current user profile / recentDiaries）。
 > 将来さらに可変長の trusted prompt context を追加した場合もここへ含める。
 
 ## ツール
 
-### `saveMemory` (`src/agent/tools/save-memory.ts`)
+### `userLookup` (`src/agent/tools/user-lookup.ts`)
 
-| パラメータ | 型                    | 説明                                      |
-| ---------- | --------------------- | ----------------------------------------- |
-| `target`   | `'core' \| 'diary'`   | 書き込み先                                |
-| `content`  | `string`              | 書き込む内容                              |
-| `date`     | `string` (オプション) | diary 書き込み時の日付（デフォルト: 今日）|
+| パラメータ | 型 | 説明 |
+| --- | --- | --- |
+| `query` | `string` | 名前やプロフィールでの検索語。空文字なら最近アクティブな既知ユーザー一覧 |
+| `limit` | `number` | 返却件数（省略時 5, 最大 10） |
+| `offset` | `number` | ページング用オフセット |
 
-- core への書き込みは **append のみ**（prompt injection 固定化防止）
-- 日付は `config.timezone` 基準で決定
+- `userStore` が設定されているときのみ公開
+- 保存済みプロフィールから他ユーザー情報を検索する
+- 空クエリ時は `updated_at DESC` で最近アクティブだった既知ユーザーを返す
 
 ### `recallDiary` (`src/agent/tools/recall-diary.ts`)
 
@@ -143,6 +166,13 @@ interface IAgent {
 {coreMemory の内容}
 </memory>
 
+<user-profile>
+Display name: {保存済み表示名 or 現在の userName}
+User ID: {Discord user ID}
+Profile:
+{現在ユーザーの保存済みプロフィール}
+</user-profile>
+
 <diary>
 {直近3日分の diary（日付付き）}
 </diary>
@@ -159,9 +189,21 @@ Available skills:
 [ツール使用説明]
 ```
 
-`<memory>` / `<diary>` / `<summary>` タグで untrusted data を明示し、
+`<memory>` / `<user-profile>` / `<diary>` / `<summary>` タグで untrusted data を明示し、
 instruction 部分と明確に分離することで prompt injection を防ぐ。
 AGENT.md / RULES.md / skills は trusted ファイルとして扱い、`fs.watch()` で eager reload する。
+
+## ポストレスポンス評価と shutdown
+
+- `handleMessage()` は main reply 完了後に `enqueuePostResponseEvaluation()` を呼び、プロフィール / core memory / diary の永続化判断をバックグラウンドで進める
+- evaluator には `userId`, `userName`, `savedDisplayName`, 最新 user message, assistant response, current profile, current core memory, timezone を渡す
+- user row が未作成（`ensureUser` 失敗等）の場合は evaluator に `userStore` を渡さず、プロフィール関連の書き込みをスキップする
+- `drainPendingEvaluations()` は未完了 evaluator を `Promise.allSettled()` で待つ
+- `src/index.ts` の graceful shutdown では
+  1. HTTP server / scheduler / bot を停止
+  2. `agent.drainPendingEvaluations()` で evaluator を待機
+  3. memory / user / prompt / skill / scheduler store を close
+  の順で drain する
 
 ## テスト方針
 
@@ -172,14 +214,15 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 | additionalTokens の計算 | AGENT/RULES/skills 一覧 + coreMemory + recentDiaries のプロンプト埋め込み最終形に対してトークン数が計算される |
 | 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
-| システムプロンプト構築 | memory / diary / summary がタグ付きで正しく組み立てられる |
-| ツール実行 | saveMemory / recallDiary / webFetch / webSearch / loadSkill が想定どおり呼ばれる |
+| システムプロンプト構築 | memory / user-profile / diary / summary がタグ付きで正しく組み立てられる |
+| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill が想定どおり呼ばれる |
 | lifecycle callback 配線 | AgentLifecycleCallbacks が generateText の step/tool callback へ同期で橋渡しされる |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
+| post-response evaluation | reply を先に返しつつ evaluator がバックグラウンドで動き、drainPendingEvaluations で待機できる |
 
 ## セキュリティ
 
-- memory / diary / summary はすべてタグで囲い、instruction と分離
-- `saveMemory` の `mode: replace` は実装しない
+- memory / user-profile / diary / summary はすべてタグで囲い、instruction と分離
+- 応答後の永続化判断はポストレスポンス評価 LLM に集約する
 - `webFetch` は DNS 解決と redirect を検査し、private / loopback / link-local への SSRF を拒否する
 - ツールのステップ数上限（`stopWhen: stepCountIs(n)`）を設定して無限ループを防ぐ

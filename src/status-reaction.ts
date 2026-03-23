@@ -33,8 +33,8 @@ type TerminalStatus = 'done' | 'error' | null;
 
 export function resolveToolEmoji(toolName: string): string | null {
   switch (toolName) {
-    case 'saveMemory':
     case 'recallDiary':
+    case 'userLookup':
       return STATUS_EMOJI.memory;
     case 'webFetch':
     case 'webSearch':

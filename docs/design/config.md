@@ -9,35 +9,56 @@
 
 ## 環境変数
 
-| 変数名              | 必須 | デフォルト          | 説明 |
-| ------------------- | ---- | ------------------- | ---- |
-| `DISCORD_BOT_TOKEN` | ✅   | -                   | Discord Bot トークン |
-| `DISCORD_PUBLIC_KEY` | ✅  | -                   | Discord Interactions 用の公開鍵 |
-| `DISCORD_APPLICATION_ID` | ✅ | -                | Discord Application ID |
-| `LLM_API_KEY`       | ✅   | -                   | OpenAI 互換 LLM API キー |
-| `LLM_BASE_URL`      |      | -                   | OpenAI 互換 API の Base URL（`http` / `https` のみ、末尾 `/` は正規化） |
-| `BRAVE_API_KEY`     |      | -                   | Brave Search API キー（設定時のみ `webSearch` を有効化） |
-| `DATA_DIR`          |      | `./data`            | memory / session / bot state ファイルの保存ディレクトリ |
-| `TIMEZONE`          |      | `Asia/Tokyo`        | diary 日付の基準タイムゾーン |
-| `LLM_MODEL`         |      | `openai/gpt-4o`     | 使用するモデルセレクタ |
-| `MAX_STEPS`         |      | `10`                | ツールループの最大ステップ数 |
-| `TOKEN_BUDGET`      |      | `8000`              | 要約トリガーのトークン予算 |
-| `PORT`              |      | `3000`              | Webhook / healthcheck HTTP サーバーの待受ポート |
+| 変数名 | 必須 | デフォルト | 説明 |
+| --- | --- | --- | --- |
+| `DISCORD_BOT_TOKEN` | ✅ | - | Discord Bot トークン |
+| `DISCORD_PUBLIC_KEY` | ✅ | - | Discord Interactions 用の公開鍵 |
+| `DISCORD_APPLICATION_ID` | ✅ | - | Discord Application ID |
+| `LLM_API_KEY` | ✅ | - | メイン会話 LLM の API キー（`OPENAI_API_KEY` alias あり） |
+| `LLM_BASE_URL` |  | - | メイン会話 LLM の Base URL（`http` / `https` のみ、末尾 `/` は正規化） |
+| `LLM_MODEL` |  | `openai/gpt-4o` | メイン会話 LLM のモデルセレクタ |
+| `POST_RESPONSE_LLM_API_KEY` |  | fallback to `LLM_API_KEY` | ポストレスポンス evaluator 専用 API キー |
+| `POST_RESPONSE_LLM_BASE_URL` |  | fallback to `LLM_BASE_URL` | ポストレスポンス evaluator 専用 Base URL |
+| `POST_RESPONSE_LLM_MODEL` |  | fallback to `LLM_MODEL` | ポストレスポンス evaluator 専用モデルセレクタ |
+| `BRAVE_API_KEY` |  | - | Brave Search API キー（設定時のみ `webSearch` を有効化） |
+| `DATA_DIR` |  | `./data` | memory / session / user / bot state ファイルの保存ディレクトリ |
+| `TIMEZONE` |  | `Asia/Tokyo` | diary 日付の基準タイムゾーン |
+| `MAX_STEPS` |  | `10` | ツールループの最大ステップ数 |
+| `TOKEN_BUDGET` |  | `8000` | 要約トリガーのトークン予算 |
+| `PORT` |  | `3000` | Webhook / healthcheck HTTP サーバーの待受ポート |
+| `HEARTBEAT_INTERVAL_MINUTES` |  | `30` | Heartbeat scheduler の実行間隔 |
+| `ALLOWED_CHANNEL_IDS` |  | - | `postMessage` で送信可能なチャンネル ID 一覧（`,` 区切り） |
+| `REPORT_CHANNEL_ID` |  | - | scheduler/report 用の専用チャンネル ID。`allowedChannelIds` には含まれるが `postMessage` の送信先には含めない |
+| `ADMIN_USER_IDS` |  | - | admin-only tool を使えるユーザー ID 一覧（`,` 区切り） |
 
 ## モデルセレクタ
 
-`LLM_MODEL` は API 面も含めた selector として扱う。
+`LLM_MODEL` / `POST_RESPONSE_LLM_MODEL` は API 面も含めた selector として扱う。
 
 - `openai/<model>`: OpenAI Responses API を使う
 - `openai/chat/<model>`: OpenAI Chat API を使う
 - bare model 名（例: `gpt-4o`）も互換用に受け付け、内部では `openai/gpt-4o` として正規化する
 
-`LLM_BASE_URL` は canonical 化して保持する。具体的には:
+`LLM_BASE_URL` / `POST_RESPONSE_LLM_BASE_URL` は canonical 化して保持する。具体的には:
 
 - 空文字は未設定として扱う
 - `http` / `https` 以外は拒否する
 - credentials / query / fragment を含む URL は拒否する
 - 末尾の `/` は削除してから SDK に渡す
+
+## ポストレスポンス evaluator のフォールバック
+
+ポストレスポンス evaluator は `src/agent/core.ts` で以下の独立したフォールバックを行う。
+
+- model selector: `postResponseLlmModelSelector ?? llmModelSelector`
+- API key: `postResponseLlmApiKey ?? llmApiKey`
+- base URL: `postResponseLlmBaseUrl ?? llmBaseUrl`
+
+つまり:
+
+- `POST_RESPONSE_LLM_MODEL` だけ設定 → 同じ provider/baseURL/API key のまま evaluator だけ別モデルに切り替え
+- `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` だけ設定 → evaluator 用 client を別資格情報 / 別 endpoint で生成し、モデルはメイン設定を継続利用
+- 3 つ全て未設定 → evaluator もメイン会話 LLM 設定をそのまま利用
 
 ## 設定オブジェクト
 
@@ -55,16 +76,32 @@ interface Config {
     modelId: string;
     selector: string;
   };
+  postResponseLlmApiKey?: string | undefined;
+  postResponseLlmBaseUrl?: string | undefined;
+  postResponseLlmModel?: string | undefined;
+  postResponseLlmModelSelector?: {
+    provider: 'openai';
+    api: 'responses' | 'chat';
+    modelId: string;
+    selector: string;
+  } | undefined;
   braveApiKey?: string | undefined;
   dataDir: string;
   timezone: string;
   maxSteps: number;
   tokenBudget: number;
   port: number;
+  heartbeatIntervalMinutes?: number | undefined;
+  postMessageChannelIds?: string[] | undefined;
+  allowedChannelIds?: string[] | undefined;
+  reportChannelId?: string | undefined;
+  adminUserIds?: string[] | undefined;
 }
 ```
 
-`llmModel` は常に canonical な selector 文字列を保持し、`llmModelSelector` は Agent 層が利用する構造化済み情報を保持する。
+`llmModel` / `postResponseLlmModel` は常に canonical な selector 文字列を保持する。
+`postMessageChannelIds` は `ALLOWED_CHANNEL_IDS` 由来の「送信可能チャンネル」のみを保持し、
+`allowedChannelIds` は `REPORT_CHANNEL_ID` をマージした bot 全体の許可チャンネル一覧を保持する。
 
 ## `loadConfig()` の動作
 
@@ -74,6 +111,7 @@ function loadConfig(): Config {
   // 必須項目が未設定の場合は起動時に Error をスロー
   // 任意項目はデフォルト値を使用
   // LLM selector を parse して canonical 形式へ正規化する
+  // post-response evaluator 用 selector / endpoint も同様に解決する
 }
 ```
 

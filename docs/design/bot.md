@@ -55,7 +55,7 @@ const bot = createBot({
 ## ステータスリアクション (`src/status-reaction.ts`)
 
 - `StatusReactionController` は元メッセージ上のリアクション 1 個だけを保つ reconcile 型 state machine
-- `queued` → `thinking` → tool（`saveMemory` / `recallDiary` は 📝、`webFetch` / `webSearch` は 🔍、`loadSkill` は 📖）→ `thinking` を繰り返す
+- `queued` → `thinking` → tool（`recallDiary` / `userLookup` は 📝、`webFetch` / `webSearch` は 🔍、`loadSkill` は 📖）→ `thinking` を繰り返す
 - 応答投稿完了後は ✅ を付け、2 秒後に除去してクリーンな状態へ戻す
 - エラー時は ❌ に遷移して保持する
 - Agent 層との接続は `AgentLifecycleCallbacks` を経由し、Discord 依存を Bot 層と controller に閉じ込める

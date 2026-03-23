@@ -33,7 +33,7 @@ function assistantToolCallMessage(): ModelMessage {
       {
         type: 'tool-call',
         toolCallId: 'call-1',
-        toolName: 'saveMemory',
+        toolName: 'recallDiary',
         input: { target: 'core' },
       },
     ],
@@ -47,7 +47,7 @@ function toolResultMessage(): ModelMessage {
       {
         type: 'tool-result',
         toolCallId: 'call-1',
-        toolName: 'saveMemory',
+        toolName: 'recallDiary',
         output: { type: 'text', value: 'saved' },
       },
     ],

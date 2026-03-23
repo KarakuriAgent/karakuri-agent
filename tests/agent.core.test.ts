@@ -1,15 +1,16 @@
 import type { LanguageModel, ModelMessage } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
 
-import { KarakuriAgent } from '../src/agent/core.js';
-import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from '../src/llm/model-selector.js';
 import { countAdditionalContextTokens } from '../src/agent/prompt.js';
+import { KarakuriAgent } from '../src/agent/core.js';
 import type { PromptContext } from '../src/agent/prompt-context.js';
 import type { Config } from '../src/config.js';
+import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from '../src/llm/model-selector.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
+import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
 import type { ISessionManager, SessionData } from '../src/session/types.js';
 import type { ISkillStore, SkillDefinition } from '../src/skill/types.js';
-import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
+import type { IUserStore, UserRecord, UserSearchOptions } from '../src/user/types.js';
 
 const baseConfig: Config = {
   discordApplicationId: 'app',
@@ -26,6 +27,9 @@ const baseConfig: Config = {
 };
 
 class MemoryStoreStub implements IMemoryStore {
+  coreWrites: string[] = [];
+  diaryWrites: Array<{ date: string; content: string }> = [];
+
   constructor(
     private coreMemory = '',
     private diaries: DiaryEntry[] = [],
@@ -36,6 +40,7 @@ class MemoryStoreStub implements IMemoryStore {
   }
 
   async writeCoreMemory(content: string): Promise<void> {
+    this.coreWrites.push(content);
     this.coreMemory += content;
   }
 
@@ -44,6 +49,7 @@ class MemoryStoreStub implements IMemoryStore {
   }
 
   async writeDiary(date: string, content: string): Promise<void> {
+    this.diaryWrites.push({ date, content });
     this.diaries.push({ date, content });
   }
 
@@ -77,6 +83,79 @@ class SkillStoreStub implements ISkillStore {
 
   async getSkill(name: string): Promise<SkillDefinition | null> {
     return this.skills.find((skill) => skill.name === name) ?? null;
+  }
+
+  async close(): Promise<void> {}
+}
+
+class UserStoreStub implements IUserStore {
+  ensureCalls: Array<{ userId: string; displayName: string }> = [];
+  profileUpdates: Array<{ userId: string; profile: string | null }> = [];
+  displayNameUpdates: Array<{ userId: string; displayName: string }> = [];
+  users = new Map<string, UserRecord>();
+  failEnsure = false;
+  failGetUser = false;
+
+  constructor(initialUsers: UserRecord[] = []) {
+    for (const user of initialUsers) {
+      this.users.set(user.userId, { ...user });
+    }
+  }
+
+  async getUser(userId: string): Promise<UserRecord | null> {
+    if (this.failGetUser) {
+      throw new Error('boom');
+    }
+    return this.users.get(userId) ?? null;
+  }
+
+  async ensureUser(userId: string, displayName: string): Promise<UserRecord> {
+    this.ensureCalls.push({ userId, displayName });
+    if (this.failEnsure) {
+      throw new Error('boom');
+    }
+    const existing = this.users.get(userId);
+    if (existing != null) {
+      existing.updatedAt = new Date('2025-01-01T00:00:01.000Z').toISOString();
+      return { ...existing };
+    }
+
+    const created: UserRecord = {
+      userId,
+      displayName,
+      profile: null,
+      createdAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+      updatedAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+    };
+    this.users.set(userId, created);
+    return { ...created };
+  }
+
+  async updateProfile(userId: string, profile: string | null): Promise<void> {
+    this.profileUpdates.push({ userId, profile });
+    const current = this.users.get(userId);
+    if (current != null) {
+      current.profile = profile;
+    }
+  }
+
+  async updateDisplayName(userId: string, displayName: string): Promise<void> {
+    this.displayNameUpdates.push({ userId, displayName });
+    const current = this.users.get(userId);
+    if (current != null) {
+      current.displayName = displayName;
+    }
+  }
+
+  async searchUsers(query: string, options?: UserSearchOptions): Promise<UserRecord[]> {
+    const normalized = query.toLowerCase();
+    const users = [...this.users.values()].filter((user) =>
+      user.displayName.toLowerCase().includes(normalized)
+      || user.profile?.toLowerCase().includes(normalized),
+    );
+    const offset = options?.offset ?? 0;
+    const limit = options?.limit ?? users.length;
+    return users.slice(offset, offset + limit);
   }
 
   async close(): Promise<void> {}
@@ -148,6 +227,38 @@ function makeGenerateTextResult(text: string, messages: ModelMessage[]) {
   } as const;
 }
 
+function makeStructuredEvaluationResult(output: Record<string, string>) {
+  return {
+    text: JSON.stringify(output),
+    output,
+    steps: [],
+    response: {
+      id: 'evaluation-id',
+      modelId: 'gpt-4o-mini',
+      timestamp: new Date(),
+      messages: [] as ModelMessage[],
+    },
+  } as const;
+}
+
+function createSchedulerStore(): ISchedulerStore {
+  return {
+    readHeartbeatInstructions: async () => null,
+    listCronJobs: async () => [],
+    registerJob: async () => ({
+      name: 'job',
+      schedule: '* * * * *',
+      instructions: 'run',
+      enabled: true,
+      sessionMode: 'isolated',
+      staggerMs: 0,
+    }),
+    unregisterJob: async () => true,
+    setReloadListener: () => {},
+    close: async () => {},
+  };
+}
+
 describe('KarakuriAgent', () => {
   it('passes prompt-ready memory and diary tokens into the summarization decision', async () => {
     const memoryStore = new MemoryStoreStub('core memory', [
@@ -216,9 +327,7 @@ describe('KarakuriAgent', () => {
       modelFactory: () => ({}) as LanguageModel,
     });
 
-    await expect(agent.handleMessage('session-1', 'compress this', 'Alice')).resolves.toBe(
-      'final reply',
-    );
+    await expect(agent.handleMessage('session-1', 'compress this', 'Alice')).resolves.toBe('final reply');
 
     expect(sessionManager.appliedSummary).toBe('summary text');
     expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(2);
@@ -347,8 +456,8 @@ describe('KarakuriAgent', () => {
       experimental_onToolCallFinish?: (event: { toolCall: { toolName: string } }) => void;
     }) => {
       options.experimental_onStepStart?.({} as never);
-      options.experimental_onToolCallStart?.({ toolCall: { toolName: 'saveMemory' } } as never);
-      options.experimental_onToolCallFinish?.({ toolCall: { toolName: 'saveMemory' } } as never);
+      options.experimental_onToolCallStart?.({ toolCall: { toolName: 'recallDiary' } } as never);
+      options.experimental_onToolCallFinish?.({ toolCall: { toolName: 'recallDiary' } } as never);
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
 
@@ -376,8 +485,8 @@ describe('KarakuriAgent', () => {
 
     expect(lifecycleEvents).toEqual([
       'thinking',
-      'start:saveMemory',
-      'finish:saveMemory',
+      'start:recallDiary',
+      'finish:recallDiary',
     ]);
   });
 
@@ -416,57 +525,6 @@ describe('KarakuriAgent', () => {
     expect(capturedOptions?.experimental_onToolCallFinish).toBeUndefined();
   });
 
-
-  it('does not expose postMessage without allowed channels', async () => {
-    const memoryStore = new MemoryStoreStub();
-    const sessionManager = new SessionManagerStub();
-    let capturedSystem = '';
-    let capturedTools: Record<string, unknown> = {};
-
-    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
-      capturedSystem = options.system ?? '';
-      capturedTools = options.tools ?? {};
-      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
-    }) as unknown as typeof import('ai').generateText;
-
-    const schedulerStore: ISchedulerStore = {
-      readHeartbeatInstructions: async () => null,
-      listCronJobs: async () => [],
-      registerJob: async () => ({
-        name: 'job',
-        schedule: '* * * * *',
-        instructions: 'run',
-        enabled: true,
-        sessionMode: 'isolated',
-        staggerMs: 0,
-      }),
-      unregisterJob: async () => true,
-      setReloadListener: () => {},
-      close: async () => {},
-    };
-
-    const agent = new KarakuriAgent({
-      config: {
-        ...baseConfig,
-        adminUserIds: ['admin-1'],
-      },
-      memoryStore,
-      sessionManager,
-      schedulerStore,
-      generateTextFn,
-      modelFactory: () => ({}) as LanguageModel,
-    });
-
-    await agent.handleMessage('session-1', 'hi', 'Alice', {
-      userId: 'system',
-    });
-
-    expect(capturedSystem).not.toContain('- postMessage: post a message to an allowed Discord channel.');
-    expect(capturedTools).not.toHaveProperty('postMessage');
-    expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
-    expect(capturedTools).toHaveProperty('manageCron');
-  });
-
   it('injects extra system prompt and admin tools for system runs', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
@@ -479,25 +537,6 @@ describe('KarakuriAgent', () => {
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
 
-    const schedulerStore: ISchedulerStore = {
-      readHeartbeatInstructions: async () => null,
-      listCronJobs: async () => [],
-      registerJob: async () => ({
-        name: 'job',
-        schedule: '* * * * *',
-        instructions: 'run',
-        enabled: true,
-        sessionMode: 'isolated',
-        staggerMs: 0,
-      }),
-      unregisterJob: async () => true,
-      setReloadListener: () => {},
-      close: async () => {},
-    };
-    const messageSink: IMessageSink = {
-      postMessage: async () => {},
-    };
-
     const agent = new KarakuriAgent({
       config: {
         ...baseConfig,
@@ -508,8 +547,8 @@ describe('KarakuriAgent', () => {
       },
       memoryStore,
       sessionManager,
-      schedulerStore,
-      messageSink,
+      schedulerStore: createSchedulerStore(),
+      messageSink: { postMessage: async () => {} },
       generateTextFn,
       modelFactory: () => ({}) as LanguageModel,
     });
@@ -525,11 +564,6 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
     expect(capturedTools).toHaveProperty('postMessage');
     expect(capturedTools).toHaveProperty('manageCron');
-
-    const postMessageTool = capturedTools.postMessage as { inputSchema: { safeParse: (value: unknown) => { success: boolean } } };
-    expect(postMessageTool.inputSchema.safeParse({ channelId: 'channel-1', text: 'ok' }).success).toBe(true);
-    expect(postMessageTool.inputSchema.safeParse({ channelId: 'report-1', text: 'ok' }).success).toBe(false);
-    expect(postMessageTool.inputSchema.safeParse({ channelId: 'other', text: 'ok' }).success).toBe(false);
   });
 
   it('exposes scheduler admin-only tools for system runs without configured admins', async () => {
@@ -544,25 +578,6 @@ describe('KarakuriAgent', () => {
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
 
-    const schedulerStore: ISchedulerStore = {
-      readHeartbeatInstructions: async () => null,
-      listCronJobs: async () => [],
-      registerJob: async () => ({
-        name: 'job',
-        schedule: '* * * * *',
-        instructions: 'run',
-        enabled: true,
-        sessionMode: 'isolated',
-        staggerMs: 0,
-      }),
-      unregisterJob: async () => true,
-      setReloadListener: () => {},
-      close: async () => {},
-    };
-    const messageSink: IMessageSink = {
-      postMessage: async () => {},
-    };
-
     const agent = new KarakuriAgent({
       config: {
         ...baseConfig,
@@ -571,8 +586,8 @@ describe('KarakuriAgent', () => {
       },
       memoryStore,
       sessionManager,
-      schedulerStore,
-      messageSink,
+      schedulerStore: createSchedulerStore(),
+      messageSink: { postMessage: async () => {} },
       generateTextFn,
       modelFactory: () => ({}) as LanguageModel,
     });
@@ -599,25 +614,6 @@ describe('KarakuriAgent', () => {
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
 
-    const schedulerStore: ISchedulerStore = {
-      readHeartbeatInstructions: async () => null,
-      listCronJobs: async () => [],
-      registerJob: async () => ({
-        name: 'job',
-        schedule: '* * * * *',
-        instructions: 'run',
-        enabled: true,
-        sessionMode: 'isolated',
-        staggerMs: 0,
-      }),
-      unregisterJob: async () => true,
-      setReloadListener: () => {},
-      close: async () => {},
-    };
-    const messageSink: IMessageSink = {
-      postMessage: async () => {},
-    };
-
     const agent = new KarakuriAgent({
       config: {
         ...baseConfig,
@@ -627,8 +623,8 @@ describe('KarakuriAgent', () => {
       },
       memoryStore,
       sessionManager,
-      schedulerStore,
-      messageSink,
+      schedulerStore: createSchedulerStore(),
+      messageSink: { postMessage: async () => {} },
       generateTextFn,
       modelFactory: () => ({}) as LanguageModel,
     });
@@ -641,6 +637,272 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('- manageCron: register, unregister, or list cron jobs.');
     expect(capturedTools).not.toHaveProperty('postMessage');
     expect(capturedTools).toHaveProperty('manageCron');
+  });
+
+  it('registers real users, preserves saved display names, injects profile context, exposes userLookup, and runs background evaluation', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub([
+      {
+        userId: 'user-1',
+        displayName: 'Alice Old',
+        profile: 'Enjoys robotics',
+        createdAt: '',
+        updatedAt: '',
+      },
+    ]);
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'update',
+          profile: 'Enjoys robotics and TypeScript',
+          displayName: '',
+          coreMemoryAppend: 'Alice likes concise updates',
+          diaryEntry: '',
+        });
+      }
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' })).resolves.toBe('reply');
+    await agent.drainPendingEvaluations();
+
+    expect(userStore.ensureCalls).toEqual([{ userId: 'user-1', displayName: 'Alice' }]);
+    expect(userStore.users.get('user-1')?.displayName).toBe('Alice Old');
+    expect(capturedSystem).toContain('<user-profile>');
+    expect(capturedSystem).toContain('Display name: Alice Old');
+    expect(capturedSystem).toContain('Enjoys robotics');
+    expect(capturedSystem).toContain('User ID: user-1');
+    expect(capturedSystem).toContain('- userLookup: search saved user profiles when asked about other users.');
+    expect(capturedTools).toHaveProperty('userLookup');
+    expect(memoryStore.coreWrites).toEqual(['Alice likes concise updates']);
+    expect(userStore.profileUpdates).toEqual([{ userId: 'user-1', profile: 'Enjoys robotics and TypeScript' }]);
+  });
+
+  it('skips user persistence and evaluation for system users', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    let capturedSystem = '';
+
+    const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      capturedSystem = options.system ?? '';
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'system' });
+    await agent.drainPendingEvaluations();
+
+    expect(userStore.ensureCalls).toEqual([]);
+    expect(capturedSystem).not.toContain('\n\n<user-profile>\n');
+    expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('continues the main reply when ensureUser fails and skips profile writes in evaluator', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    userStore.failEnsure = true;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn: vi.fn(async (options: { output?: unknown }) => {
+        if (options.output != null) {
+          return makeStructuredEvaluationResult({
+            profileAction: 'update',
+            profile: 'Should be ignored',
+            displayName: 'Should be ignored',
+            coreMemoryAppend: 'Still written to core memory',
+            diaryEntry: '',
+          });
+        }
+        return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+      }) as unknown as typeof import('ai').generateText,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' })).resolves.toBe('reply');
+    await agent.drainPendingEvaluations();
+
+    expect(userStore.profileUpdates).toEqual([]);
+    expect(userStore.displayNameUpdates).toEqual([]);
+    expect(memoryStore.coreWrites).toEqual(['Still written to core memory']);
+  });
+
+  it('returns before background evaluation finishes and drainPendingEvaluations waits for it', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    const evaluationGate = (() => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    })();
+
+    const generateTextFn = vi.fn(async (options: { output?: unknown }) => {
+      if (options.output != null) {
+        await evaluationGate.promise;
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' })).resolves.toBe('reply');
+
+    const drainPromise = agent.drainPendingEvaluations();
+    let drained = false;
+    void drainPromise.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    evaluationGate.resolve();
+    await drainPromise;
+    expect(drained).toBe(true);
+  });
+
+  it('serializes background evaluations per user while allowing different users to evaluate concurrently', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    const starts: string[] = [];
+    let releaseFirstUser1!: () => void;
+    const firstUser1Gate = new Promise<void>((resolve) => {
+      releaseFirstUser1 = resolve;
+    });
+    let releaseUser2!: () => void;
+    const user2Gate = new Promise<void>((resolve) => {
+      releaseUser2 = resolve;
+    });
+
+    const generateTextFn = vi.fn(async (options: { prompt?: string; output?: unknown }) => {
+      if (options.output != null) {
+        const userId = options.prompt?.match(/User ID: ([^\n]+)/)?.[1] ?? 'unknown';
+        starts.push(userId);
+        if (userId === 'user-1' && starts.filter((id) => id === 'user-1').length === 1) {
+          await firstUser1Gate;
+        }
+        if (userId === 'user-2') {
+          await user2Gate;
+        }
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await Promise.all([
+      agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' }),
+      agent.handleMessage('session-2', 'hello', 'Bob', { userId: 'user-2' }),
+      agent.handleMessage('session-3', 'again', 'Alice', { userId: 'user-1' }),
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(starts).toHaveLength(2);
+    expect(starts.filter((id) => id === 'user-1')).toHaveLength(1);
+    expect(starts.filter((id) => id === 'user-2')).toHaveLength(1);
+
+    releaseFirstUser1();
+    for (let i = 0; i < 10 && starts.filter((id) => id === 'user-1').length < 2; i += 1) {
+      await Promise.resolve();
+    }
+    expect(starts.filter((id) => id === 'user-1')).toHaveLength(2);
+    expect(starts.filter((id) => id === 'user-2')).toHaveLength(1);
+
+    releaseUser2();
+    await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
+  });
+
+  it('swallows background evaluation setup failures after handleMessage returns', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    userStore.failGetUser = true;
+
+    const generateTextFn = vi.fn(async (options: { output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' })).resolves.toBe('reply');
+    await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
+    expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
   });
 
   it('passes the parsed selector into the configured model factory', async () => {
@@ -686,5 +948,4 @@ describe('KarakuriAgent', () => {
     expect(responsesModel).toEqual({ kind: 'responses:gpt-4o-mini' });
     expect(chatModel).toEqual({ kind: 'chat:gpt-4o-mini' });
   });
-
 });

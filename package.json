@@ -22,6 +22,7 @@
     "@chat-adapter/discord": "4.20.2",
     "@mozilla/readability": "0.6.0",
     "ai": "6.0.116",
+    "better-sqlite3": "^11.10.0",
     "chat": "4.20.2",
     "croner": "^8.1.2",
     "dotenv": "17.3.1",
@@ -30,6 +31,7 @@
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "25.5.0",
     "@types/turndown": "5.0.6",
     "tsx": "4.21.0",

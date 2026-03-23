@@ -241,7 +241,7 @@ describe('StatusReactionController', () => {
 
     controller.setQueued();
     controller.setThinking();
-    controller.setTool('saveMemory');
+    controller.setTool('userLookup');
     controller.done();
     await controller.waitForCompletion();
 
