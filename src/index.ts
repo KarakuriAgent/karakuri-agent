@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { pathToFileURL } from 'node:url';
 
 import { KarakuriAgent } from './agent/core.js';
 import { FilePromptContextStore } from './agent/prompt-context.js';
-import { createBot } from './bot.js';
+import { createBot, type BotRuntime } from './bot.js';
 import { loadConfig } from './config.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import { FileMemoryStore } from './memory/store.js';
@@ -119,8 +120,10 @@ async function main(): Promise<void> {
   });
 }
 
-async function handleRequest(
-  bot: ReturnType<typeof createBot>,
+type HttpHandlerBot = Pick<BotRuntime, 'handleWebhook' | 'isGatewayConnected'>;
+
+export async function handleRequest(
+  bot: HttpHandlerBot,
   port: number,
   request: IncomingMessage,
   response: ServerResponse,
@@ -131,8 +134,10 @@ async function handleRequest(
     logger.debug('Request received', { method: request.method, pathname: url.pathname });
 
     let webResponse: Response;
-    if (request.method === 'GET' && url.pathname === '/healthz') {
-      webResponse = new Response('ok');
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/healthz') {
+      webResponse = bot.isGatewayConnected()
+        ? new Response('ok')
+        : new Response('discord gateway unavailable', { status: 503 });
     } else if (url.pathname.startsWith('/webhooks/')) {
       const platform = url.pathname.slice('/webhooks/'.length);
       webResponse = await bot.handleWebhook(platform, webRequest);
@@ -256,7 +261,9 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-void main().catch((error) => {
-  logger.error('Fatal error', error);
-  process.exit(1);
-});
+if (process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch((error) => {
+    logger.error('Fatal error', error);
+    process.exit(1);
+  });
+}

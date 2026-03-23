@@ -1,5 +1,5 @@
 import { createDiscordAdapter, type DiscordAdapter } from '@chat-adapter/discord';
-import { Chat, type Message, type Thread } from 'chat';
+import { Chat, type Logger as ChatLogger, type Message, type Thread } from 'chat';
 
 import type { Config } from './config.js';
 import type { AgentLifecycleCallbacks, IAgent } from './agent/core.js';
@@ -7,14 +7,16 @@ import type { IMessageSink } from './scheduler/types.js';
 import { StatusReactionController } from './status-reaction.js';
 import { createFileStateAdapter } from './state/file-state.js';
 import { formatError } from './utils/error.js';
-import { createLogger } from './utils/logger.js';
+import { createLogger, type Logger as AppLogger } from './utils/logger.js';
 import { splitMessageForDiscord } from './utils/message-splitter.js';
 import { KeyedMutex } from './utils/mutex.js';
+import { waitForAbort, waitForDuration } from './utils/async.js';
 import { reportSafely } from './utils/report.js';
 
 const logger = createLogger('Bot');
 
 const GATEWAY_LISTENER_DURATION_MS = 10 * 60 * 1_000;
+const GATEWAY_CONNECTED_HEURISTIC_MS = 5_000;
 const GATEWAY_RESTART_DELAY_MS = 1_000;
 const ATTACHMENT_WARNING =
   '添付ファイルは現在未対応のため、テキスト部分のみを処理しました。';
@@ -32,6 +34,7 @@ type KarakuriChat = Chat<KarakuriAdapters>;
 export interface BotRuntime {
   chat: KarakuriChat;
   initialize(): Promise<void>;
+  isGatewayConnected(): boolean;
   handleWebhook(platform: string, request: Request): Promise<Response>;
   startGatewayLoop(): Promise<void>;
   shutdown(): Promise<void>;
@@ -44,12 +47,14 @@ export interface CreateBotOptions {
 export function createBot(config: Config, agent: IAgent, options?: CreateBotOptions): BotRuntime {
   const threadMutex = new KeyedMutex();
   const inFlightHandlers = new Set<Promise<void>>();
+  let gatewayConnected = false;
   const chat = new Chat<KarakuriAdapters>({
     userName: 'karakuri-agent',
     adapters: {
       discord: createDiscordAdapter({
         applicationId: config.discordApplicationId,
         botToken: config.discordBotToken,
+        logger: createChatLogger(logger),
         publicKey: config.discordPublicKey,
         userName: 'karakuri-agent',
       }),
@@ -154,6 +159,9 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
     async initialize(): Promise<void> {
       await initialize();
     },
+    isGatewayConnected(): boolean {
+      return gatewayConnected;
+    },
     async handleWebhook(platform: string, request: Request): Promise<Response> {
       const webhookHandler = chat.webhooks[platform as keyof typeof chat.webhooks];
       if (webhookHandler == null) {
@@ -185,6 +193,9 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
       gatewayLoopPromise = runGatewayLoop(
         chat,
         gatewayAbortController.signal,
+        (connected) => {
+          gatewayConnected = connected;
+        },
       ).finally(() => {
         gatewayLoopPromise = null;
         gatewayAbortController = null;
@@ -192,6 +203,7 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
     },
     async shutdown(): Promise<void> {
       logger.info('Shutting down bot...');
+      gatewayConnected = false;
       gatewayAbortController?.abort();
       await gatewayLoopPromise;
       await Promise.allSettled([...inFlightHandlers]);
@@ -201,7 +213,11 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
   };
 }
 
-async function runGatewayLoop(chat: KarakuriChat, signal: AbortSignal): Promise<void> {
+async function runGatewayLoop(
+  chat: KarakuriChat,
+  signal: AbortSignal,
+  setGatewayConnected: (connected: boolean) => void,
+): Promise<void> {
   const adapter = chat.getAdapter('discord');
 
   while (!signal.aborted) {
@@ -219,6 +235,7 @@ async function runGatewayLoop(chat: KarakuriChat, signal: AbortSignal): Promise<
       );
 
       if (!response.ok) {
+        setGatewayConnected(false);
         if (signal.aborted) {
           break;
         }
@@ -232,22 +249,96 @@ async function runGatewayLoop(chat: KarakuriChat, signal: AbortSignal): Promise<
       }
 
       if (listenerTask == null) {
+        setGatewayConnected(false);
         logger.error('Discord gateway listener did not return a background task');
         await delay(GATEWAY_RESTART_DELAY_MS, signal);
         continue;
       }
 
+      const gatewayState = await waitForGatewayHealthy(listenerTask, signal);
+      if (gatewayState !== 'healthy') {
+        if (gatewayState === 'aborted' || signal.aborted) {
+          await listenerTask.catch(() => {});
+          break;
+        }
+
+        setGatewayConnected(false);
+        try {
+          await listenerTask;
+          logger.error('Discord gateway listener exited before surviving the 5-second health window');
+        } catch (error) {
+          logger.error('Discord gateway listener crashed before surviving the 5-second health window', error);
+        }
+        await delay(GATEWAY_RESTART_DELAY_MS, signal);
+        continue;
+      }
+
+      if (signal.aborted) {
+        break;
+      }
+
+      setGatewayConnected(true);
       await listenerTask;
+
+      if (signal.aborted) {
+        break;
+      }
+
       logger.debug('Gateway listener session ended normally');
     } catch (error) {
       if (signal.aborted) {
         break;
       }
 
+      setGatewayConnected(false);
       logger.error('Discord gateway listener crashed', error);
       await delay(GATEWAY_RESTART_DELAY_MS, signal);
     }
   }
+}
+
+async function waitForGatewayHealthy(
+  listenerTask: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<'healthy' | 'listener-ended' | 'aborted'> {
+  const abortWait = waitForAbort(signal);
+  const healthWindowWait = waitForDuration(GATEWAY_CONNECTED_HEURISTIC_MS);
+
+  try {
+    return await Promise.race([
+      healthWindowWait.promise.then(() => 'healthy' as const),
+      abortWait.promise,
+      listenerTask.then(
+        () => 'listener-ended' as const,
+        () => 'listener-ended' as const,
+      ),
+    ]);
+  } finally {
+    healthWindowWait.cleanup();
+    abortWait.cleanup();
+  }
+}
+
+function createChatLogger(baseLogger: AppLogger): ChatLogger {
+  const chatLogger: ChatLogger = {
+    child(): ChatLogger {
+      return chatLogger;
+    },
+    debug(message: string, ...args: unknown[]): void {
+      baseLogger.debug(message, ...args);
+    },
+    info(message: string, ...args: unknown[]): void {
+      baseLogger.info(message, ...args);
+    },
+    warn(message: string, ...args: unknown[]): void {
+      baseLogger.warn(message, ...args);
+    },
+    error(message: string, ...args: unknown[]): void {
+      baseLogger.error(message, ...args);
+    },
+  };
+
+  return chatLogger;
 }
 
 async function handleThreadMessage(
@@ -346,3 +437,4 @@ async function delay(durationMs: number, signal: AbortSignal): Promise<void> {
     signal.addEventListener('abort', onAbort, { once: true });
   });
 }
+

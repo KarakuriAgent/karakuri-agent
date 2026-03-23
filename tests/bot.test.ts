@@ -6,16 +6,18 @@ import type { Config } from '../src/config.js';
 import { DEFAULT_LLM_MODEL, parseModelSelector } from '../src/llm/model-selector.js';
 import { DONE_REACTION_DURATION_MS, STATUS_EMOJI } from '../src/status-reaction.js';
 
-const { initializeMock, shutdownMock, startGatewayListenerMock } = vi.hoisted(() => ({
+const { createDiscordAdapterMock, initializeMock, shutdownMock, startGatewayListenerMock } = vi.hoisted(() => ({
+  createDiscordAdapterMock: vi.fn((config) => ({
+    ...config,
+    startGatewayListener: startGatewayListenerMock,
+  })),
   initializeMock: vi.fn(async () => {}),
   shutdownMock: vi.fn(async () => {}),
   startGatewayListenerMock: vi.fn(),
 }));
 
 vi.mock('@chat-adapter/discord', () => ({
-  createDiscordAdapter: vi.fn(() => ({
-    startGatewayListener: startGatewayListenerMock,
-  })),
+  createDiscordAdapter: createDiscordAdapterMock,
 }));
 
 vi.mock('chat', () => {
@@ -102,6 +104,24 @@ function createDeferred<T = void>() {
   return { promise, resolve };
 }
 
+function createAbortableListenerTask(signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
+async function waitForGatewayConnected(bot: { isGatewayConnected(): boolean }): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (bot.isGatewayConnected()) {
+      return;
+    }
+
+    await Promise.resolve();
+  }
+
+  throw new Error('gateway did not become connected');
+}
+
 function createMockThread() {
   const reactionEvents: string[] = [];
   const adapter = {
@@ -143,6 +163,7 @@ function createMessage(overrides: Partial<{
 
 describe('createBot', () => {
   beforeEach(() => {
+    createDiscordAdapterMock.mockClear();
     startGatewayListenerMock.mockReset();
     initializeMock.mockClear();
     shutdownMock.mockClear();
@@ -189,6 +210,215 @@ describe('createBot', () => {
     );
 
     await bot.shutdown();
+  });
+
+  it('marks the gateway connected after the listener survives five seconds', async () => {
+    vi.useFakeTimers();
+
+    startGatewayListenerMock.mockImplementationOnce(
+      async (
+        handlers: { waitUntil(task: Promise<unknown>): void },
+        _durationMs: number,
+        signal: AbortSignal,
+      ) => {
+        handlers.waitUntil(createAbortableListenerTask(signal));
+        return new Response(null, { status: 200 });
+      },
+    );
+
+    const bot = createBot(baseConfig, agentStub);
+    await bot.startGatewayLoop();
+
+    expect(bot.isGatewayConnected()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(bot.isGatewayConnected()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await waitForGatewayConnected(bot);
+
+    await bot.shutdown();
+  });
+
+  it('keeps the gateway disconnected when the listener exits before the readiness window elapses', async () => {
+    vi.useFakeTimers();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    startGatewayListenerMock
+      .mockImplementationOnce(async (handlers: { waitUntil(task: Promise<unknown>): void }) => {
+        handlers.waitUntil(Promise.resolve());
+        return new Response(null, { status: 200 });
+      })
+      .mockImplementationOnce(
+        async (
+          handlers: { waitUntil(task: Promise<unknown>): void },
+          _durationMs: number,
+          signal: AbortSignal,
+        ) => {
+          handlers.waitUntil(createAbortableListenerTask(signal));
+          return new Response(null, { status: 200 });
+        },
+      );
+
+    const bot = createBot(baseConfig, agentStub);
+    await bot.startGatewayLoop();
+
+    await Promise.resolve();
+    expect(bot.isGatewayConnected()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(startGatewayListenerMock).toHaveBeenCalledTimes(2);
+    expect(bot.isGatewayConnected()).toBe(false);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Discord gateway listener exited before surviving the 5-second health window'),
+    );
+
+    await bot.shutdown();
+  });
+
+  // 実 adapter は内部で例外を catch して resolve するため、本番では early-exit ログ側が通る。
+  // このテストは adapter が将来 reject するケースへの防御パスを検証する。
+  it('logs the original error when the listener task rejects before the readiness window', async () => {
+    vi.useFakeTimers();
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const startupError = new Error('CRITICAL FAILURE');
+
+    startGatewayListenerMock
+      .mockImplementationOnce(async (handlers: { waitUntil(task: Promise<unknown>): void }) => {
+        handlers.waitUntil(Promise.reject(startupError));
+        return new Response(null, { status: 200 });
+      })
+      .mockImplementationOnce(
+        async (
+          handlers: { waitUntil(task: Promise<unknown>): void },
+          _durationMs: number,
+          signal: AbortSignal,
+        ) => {
+          handlers.waitUntil(createAbortableListenerTask(signal));
+          return new Response(null, { status: 200 });
+        },
+      );
+
+    const bot = createBot(baseConfig, agentStub);
+    await bot.startGatewayLoop();
+
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(startGatewayListenerMock).toHaveBeenCalledTimes(2);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Discord gateway listener crashed before surviving the 5-second health window'),
+      startupError,
+    );
+
+    await bot.shutdown();
+  });
+
+  it('keeps the gateway connected while replacing an expired healthy listener session', async () => {
+    vi.useFakeTimers();
+    const firstSession = createDeferred<void>();
+    const secondStart = createDeferred<Response>();
+
+    startGatewayListenerMock
+      .mockImplementationOnce(async (handlers: { waitUntil(task: Promise<unknown>): void }) => {
+        handlers.waitUntil(firstSession.promise);
+        return new Response(null, { status: 200 });
+      })
+      .mockImplementationOnce(async () => secondStart.promise)
+      .mockImplementationOnce(
+        async (
+          handlers: { waitUntil(task: Promise<unknown>): void },
+          _durationMs: number,
+          signal: AbortSignal,
+        ) => {
+          handlers.waitUntil(createAbortableListenerTask(signal));
+          return new Response(null, { status: 200 });
+        },
+      );
+
+    const bot = createBot(baseConfig, agentStub);
+    await bot.startGatewayLoop();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await waitForGatewayConnected(bot);
+
+    firstSession.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(startGatewayListenerMock).toHaveBeenCalledTimes(2);
+    expect(bot.isGatewayConnected()).toBe(true);
+
+    secondStart.resolve(new Response('gateway failed', { status: 500 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(startGatewayListenerMock).toHaveBeenCalledTimes(3);
+    expect(bot.isGatewayConnected()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await waitForGatewayConnected(bot);
+
+    await bot.shutdown();
+  });
+
+  it('marks the gateway disconnected on shutdown after a ready session', async () => {
+    vi.useFakeTimers();
+    startGatewayListenerMock.mockImplementationOnce(
+      async (
+        handlers: { waitUntil(task: Promise<unknown>): void },
+        _durationMs: number,
+        signal: AbortSignal,
+      ) => {
+        handlers.waitUntil(createAbortableListenerTask(signal));
+        return new Response(null, { status: 200 });
+      },
+    );
+
+    const bot = createBot(baseConfig, agentStub);
+    await bot.startGatewayLoop();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await waitForGatewayConnected(bot);
+
+    await bot.shutdown();
+
+    expect(bot.isGatewayConnected()).toBe(false);
+  });
+
+  it('waits for the listener task when shutdown occurs during the readiness window', async () => {
+    vi.useFakeTimers();
+    let listenerCleanedUp = false;
+
+    startGatewayListenerMock.mockImplementationOnce(
+      async (
+        handlers: { waitUntil(task: Promise<unknown>): void },
+        _durationMs: number,
+        signal: AbortSignal,
+      ) => {
+        handlers.waitUntil(
+          createAbortableListenerTask(signal).then(() => {
+            listenerCleanedUp = true;
+          }),
+        );
+        return new Response(null, { status: 200 });
+      },
+    );
+
+    const bot = createBot(baseConfig, agentStub);
+    await bot.startGatewayLoop();
+
+    // Shutdown before the 5-second readiness window elapses
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(bot.isGatewayConnected()).toBe(false);
+
+    await bot.shutdown();
+
+    expect(bot.isGatewayConnected()).toBe(false);
+    expect(listenerCleanedUp).toBe(true);
   });
 
   it('serializes concurrent messages on the same thread', async () => {
