@@ -312,22 +312,22 @@ describe('loadConfig', () => {
     });
   });
 
-  it('omits karakuri-world settings when either env var is missing or blank', () => {
-    expect(loadConfig({
+  it('throws when only KARAKURI_WORLD_API_BASE_URL is set', () => {
+    expect(() => loadConfig({
       ...validEnv,
       KARAKURI_WORLD_API_BASE_URL: 'https://example.com/world/',
-    }).karakuriWorld).toBeUndefined();
+    })).toThrow('Partial karakuri-world configuration');
+  });
 
-    expect(loadConfig({
+  it('throws when only KARAKURI_WORLD_API_KEY is set', () => {
+    expect(() => loadConfig({
       ...validEnv,
       KARAKURI_WORLD_API_KEY: 'world-key',
-    }).karakuriWorld).toBeUndefined();
+    })).toThrow('Partial karakuri-world configuration');
+  });
 
-    expect(loadConfig({
-      ...validEnv,
-      KARAKURI_WORLD_API_BASE_URL: 'https://example.com/world/',
-      KARAKURI_WORLD_API_KEY: '   ',
-    }).karakuriWorld).toBeUndefined();
+  it('omits karakuri-world settings when both env vars are absent', () => {
+    expect(loadConfig(validEnv).karakuriWorld).toBeUndefined();
   });
 
   it('rejects invalid KARAKURI_WORLD_API_BASE_URL with the correct label', () => {

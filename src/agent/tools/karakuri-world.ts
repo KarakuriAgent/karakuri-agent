@@ -1,6 +1,7 @@
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 
+import type { ApiCredentials } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
 
 const nodeIdSchema = z.string().regex(/^\d+-\d+$/);
@@ -260,9 +261,7 @@ type KarakuriWorldOperation = KarakuriWorldInput['operation'];
 type KarakuriWorldToolInput<TOperation extends KarakuriWorldOperation> =
   Omit<Extract<KarakuriWorldInput, { operation: TOperation }>, 'operation'>;
 
-export interface CreateKarakuriWorldToolsOptions {
-  apiBaseUrl: string;
-  apiKey: string;
+export interface CreateKarakuriWorldToolsOptions extends ApiCredentials {
   fetch?: typeof fetch;
 }
 
@@ -360,6 +359,10 @@ async function readResponseBody(response: Response): Promise<unknown> {
   try {
     return JSON.parse(text) as unknown;
   } catch {
+    logger.debug('Response body is not valid JSON, returning raw text', {
+      contentLength: text.length,
+      prefix: text.slice(0, 120),
+    });
     return text;
   }
 }
@@ -579,7 +582,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/move',
+          path: 'api/agents/move',
           body: { target_node_id: input.target_node_id },
           responseSchema: moveResponseSchema,
         });
@@ -588,7 +591,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/action',
+          path: 'api/agents/action',
           body: { action_id: input.action_id },
           responseSchema: actionResponseSchema,
         });
@@ -597,7 +600,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/wait',
+          path: 'api/agents/wait',
           body: { duration_ms: input.duration_ms },
           responseSchema: waitResponseSchema,
         });
@@ -606,7 +609,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/conversation/start',
+          path: 'api/agents/conversation/start',
           body: {
             target_agent_id: input.target_agent_id,
             message: input.message,
@@ -618,7 +621,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/conversation/accept',
+          path: 'api/agents/conversation/accept',
           body: { conversation_id: input.conversation_id },
           responseSchema: okResponseSchema,
         });
@@ -627,7 +630,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/conversation/reject',
+          path: 'api/agents/conversation/reject',
           body: { conversation_id: input.conversation_id },
           responseSchema: okResponseSchema,
         });
@@ -636,7 +639,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/conversation/speak',
+          path: 'api/agents/conversation/speak',
           body: {
             conversation_id: input.conversation_id,
             message: input.message,
@@ -648,7 +651,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'POST',
-          path: 'agents/server-event/select',
+          path: 'api/agents/server-event/select',
           body: {
             server_event_id: input.server_event_id,
             choice_id: input.choice_id,
@@ -660,7 +663,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'GET',
-          path: 'agents/actions',
+          path: 'api/agents/actions',
           responseSchema: availableActionsResponseSchema,
         });
       case 'get_perception':
@@ -668,7 +671,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'GET',
-          path: 'agents/perception',
+          path: 'api/agents/perception',
           responseSchema: perceptionResponseSchema,
         });
       case 'get_map':
@@ -676,7 +679,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'GET',
-          path: 'agents/map',
+          path: 'api/agents/map',
           responseSchema: mapResponseSchema,
         });
       case 'get_world_agents':
@@ -684,7 +687,7 @@ async function executeKarakuriWorldOperation(
           ...context,
           operation: input.operation,
           method: 'GET',
-          path: 'agents/world-agents',
+          path: 'api/agents/world-agents',
           responseSchema: worldAgentsResponseSchema,
         });
     }

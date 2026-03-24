@@ -21,6 +21,7 @@ export function createLoadSkillTool({ skillStore, tools, gatedToolSets }: LoadSk
     execute: async ({ name }) => {
       const skill = await skillStore.getSkill(name);
       if (skill == null) {
+        logger.debug('Skill not found', { name });
         return {
           loaded: false,
           name,
@@ -29,6 +30,10 @@ export function createLoadSkillTool({ skillStore, tools, gatedToolSets }: LoadSk
 
       const skillTools = gatedToolSets.get(name);
       if (skill.allowedTools != null && skillTools == null) {
+        logger.warn('Skill tools unavailable', {
+          skillName: skill.name,
+          requiredTools: skill.allowedTools,
+        });
         return {
           loaded: false,
           name: skill.name,
@@ -41,9 +46,14 @@ export function createLoadSkillTool({ skillStore, tools, gatedToolSets }: LoadSk
           const existing = tools[toolName];
           if (existing != null && existing !== skillTools[toolName]) {
             logger.error('Gated tool name conflict', { skillName: name, toolName });
-            throw new Error(`Gated tool name conflict: "${toolName}" already exists in the tool set`);
+            return {
+              loaded: false,
+              name: skill.name,
+              error: `Internal tool name conflict for "${toolName}". This is a configuration error.`,
+            };
           }
         }
+        // Mutates the shared tools object so newly registered tools are visible to subsequent LLM steps.
         Object.assign(tools, skillTools);
       }
 

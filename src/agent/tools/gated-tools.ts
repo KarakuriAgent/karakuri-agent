@@ -1,5 +1,6 @@
 import type { ToolSet } from 'ai';
 
+import type { ApiCredentials } from '../../config.js';
 import type { SkillDefinition } from '../../skill/types.js';
 import { createLogger } from '../../utils/logger.js';
 import { createKarakuriWorldTools } from './karakuri-world.js';
@@ -7,10 +8,7 @@ import { createKarakuriWorldTools } from './karakuri-world.js';
 const logger = createLogger('GatedTools');
 
 export interface AvailableGatedToolSources {
-  karakuriWorld?: {
-    apiBaseUrl: string;
-    apiKey: string;
-  } | undefined;
+  karakuriWorld?: ApiCredentials | undefined;
 }
 
 export function buildGatedToolSets(
@@ -85,7 +83,7 @@ function getMatchedAllowedToolNames(
     }
 
     if (options?.logUnmatched !== false) {
-      logger.warn('Skill references unknown gated tool', {
+      logger.error('Skill references unknown gated tool — check spelling in allowed-tools', {
         skillName: skill.name,
         toolName,
       });

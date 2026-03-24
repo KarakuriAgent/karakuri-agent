@@ -95,6 +95,8 @@ const agentStub: IAgent = {
   },
 };
 
+const localWebhookUrl = 'http://127.0.0.1:3000/webhooks/discord';
+
 function createDeferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((nextResolve) => {
@@ -197,9 +199,16 @@ describe('createBot', () => {
       );
 
     const bot = createBot(baseConfig, agentStub);
-    await bot.startGatewayLoop();
+    await bot.startGatewayLoop(localWebhookUrl);
 
     expect(startGatewayListenerMock).toHaveBeenCalledTimes(1);
+    expect(startGatewayListenerMock).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ waitUntil: expect.any(Function) }),
+      600_000,
+      expect.any(AbortSignal),
+      localWebhookUrl,
+    );
 
     await vi.advanceTimersByTimeAsync(1_000);
 
@@ -227,7 +236,7 @@ describe('createBot', () => {
     );
 
     const bot = createBot(baseConfig, agentStub);
-    await bot.startGatewayLoop();
+    await bot.startGatewayLoop(localWebhookUrl);
 
     expect(bot.isGatewayConnected()).toBe(false);
 
@@ -261,7 +270,7 @@ describe('createBot', () => {
       );
 
     const bot = createBot(baseConfig, agentStub);
-    await bot.startGatewayLoop();
+    await bot.startGatewayLoop(localWebhookUrl);
 
     await Promise.resolve();
     expect(bot.isGatewayConnected()).toBe(false);
@@ -301,7 +310,7 @@ describe('createBot', () => {
       );
 
     const bot = createBot(baseConfig, agentStub);
-    await bot.startGatewayLoop();
+    await bot.startGatewayLoop(localWebhookUrl);
 
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(1_000);
@@ -338,7 +347,7 @@ describe('createBot', () => {
       );
 
     const bot = createBot(baseConfig, agentStub);
-    await bot.startGatewayLoop();
+    await bot.startGatewayLoop(localWebhookUrl);
 
     await vi.advanceTimersByTimeAsync(5_000);
     await waitForGatewayConnected(bot);
@@ -379,7 +388,7 @@ describe('createBot', () => {
     );
 
     const bot = createBot(baseConfig, agentStub);
-    await bot.startGatewayLoop();
+    await bot.startGatewayLoop(localWebhookUrl);
 
     await vi.advanceTimersByTimeAsync(5_000);
     await waitForGatewayConnected(bot);
@@ -409,7 +418,7 @@ describe('createBot', () => {
     );
 
     const bot = createBot(baseConfig, agentStub);
-    await bot.startGatewayLoop();
+    await bot.startGatewayLoop(localWebhookUrl);
 
     // Shutdown before the 5-second readiness window elapses
     await vi.advanceTimersByTimeAsync(1_000);

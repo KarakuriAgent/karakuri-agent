@@ -1,5 +1,6 @@
 import type { ToolSet } from 'ai';
 
+import type { ApiCredentials } from '../../config.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
@@ -17,10 +18,7 @@ import { createWebSearchTool } from './web-search.js';
 export interface CreateAgentToolsOptions {
   memoryStore: IMemoryStore;
   braveApiKey?: string | undefined;
-  karakuriWorld?: {
-    apiBaseUrl: string;
-    apiKey: string;
-  } | undefined;
+  karakuriWorld?: ApiCredentials | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   messageSink?: IMessageSink | undefined;
@@ -92,6 +90,8 @@ export function createAgentTools({
   const gatedToolSets = buildGatedToolSets(skills, { karakuriWorld });
 
   if (skillStore != null && skills.length > 0) {
+    // loadSkill.execute() mutates this tools object to dynamically register gated tools.
+    // This is intentional and scoped to a single handleMessage() turn — tools is recreated per turn.
     tools.loadSkill = createLoadSkillTool({ skillStore, tools, gatedToolSets });
   }
 

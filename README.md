@@ -35,6 +35,7 @@ Discord Developer Portal では `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` 
 Interactions Endpoint を `POST /webhooks/discord` に向ける。通常メッセージ受信には
 Gateway 接続も必要なため、`npm run dev` / `npm run start` は HTTP サーバーと
 Discord Gateway listener を同時に起動する。
+Gateway listener にはローカルの `/webhooks/discord` URL を渡し、Discord bot メッセージも webhook forwarding 経由で受信する。
 
 ## スクリプト
 
@@ -92,7 +93,7 @@ npm run docker:dev
 - `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は追加スキル定義
 - `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、`data/cron/*/CRON.md` で Cron ジョブを定義できる
 - スキルが有効なときだけ `loadSkill` ツールが公開され、一覧だけをシステムプロンプトへ注入する
-- `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`KARAKURI_WORLD_*` 設定時は `karakuri_world_*` 12 ツールをスキル経由で遅延公開する
+- `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`KARAKURI_WORLD_*` 設定時は `karakuri_world_*` ツール群をスキル経由で遅延公開する
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は private / loopback / link-local 宛てや、そこへ向かう redirect を拒否して SSRF を抑止する
 - `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う

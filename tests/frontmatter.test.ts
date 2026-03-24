@@ -65,4 +65,16 @@ describe('parseSkillMarkdown', () => {
       parseSkillMarkdown(`---\nname: code-review\ndescription: Review code safely\n---\n`),
     ).toThrow(/body must not be empty/);
   });
+
+  it('rejects invalid tool names in allowed-tools', () => {
+    expect(() =>
+      parseSkillMarkdown(`---\nname: karakuri-world\ndescription: Explore the world\nallowed-tools: karakuri_world_get_maps, Invalid-Tool\n---\nObserve first.`),
+    ).toThrow(/Invalid tool name/);
+  });
+
+  it('rejects tool names starting with a digit', () => {
+    expect(() =>
+      parseSkillMarkdown(`---\nname: karakuri-world\ndescription: Explore the world\nallowed-tools: 1bad_name\n---\nObserve first.`),
+    ).toThrow(/Invalid tool name/);
+  });
 });

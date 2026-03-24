@@ -171,7 +171,7 @@ describe('loadSkill tool', () => {
     expect(tools).toHaveProperty('karakuri_world_get_map');
   });
 
-  it('throws on tool name conflict with a different tool source', async () => {
+  it('returns a structured error on tool name conflict with a different tool source', async () => {
     const conflictingTool = tool({
       description: 'conflicting',
       inputSchema: z.object({}),
@@ -205,7 +205,11 @@ describe('loadSkill tool', () => {
     await expect(toolInstance.execute!(
       { name: 'karakuri-world' },
       DEFAULT_OPTIONS,
-    )).rejects.toThrow('Gated tool name conflict');
+    )).resolves.toEqual({
+      loaded: false,
+      name: 'karakuri-world',
+      error: expect.stringContaining('tool name conflict'),
+    });
   });
 
   it('validates non-empty names', () => {

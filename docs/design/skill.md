@@ -28,7 +28,7 @@ interface ISkillStore {
 
 ```text
 {dataDir}/skills/
-└── code-review/
+└── karakuri-world/
     └── SKILL.md
 ```
 
@@ -36,13 +36,12 @@ interface ISkillStore {
 
 ```yaml
 ---
-name: code-review
-description: コードレビューを行う
-enabled: true
+name: karakuri-world
+description: karakuri-world の companion agent 用スタータースキル
 allowed-tools: karakuri_world_get_perception, karakuri_world_move
 ---
 
-セキュリティ、型安全性、パフォーマンスを優先してレビューする。
+Discord 通知を起点に、内蔵の karakuri-world 系ツールを使って観察と情報整理を進める。
 ```
 
 ### frontmatter ルール

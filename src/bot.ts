@@ -36,7 +36,7 @@ export interface BotRuntime {
   initialize(): Promise<void>;
   isGatewayConnected(): boolean;
   handleWebhook(platform: string, request: Request): Promise<Response>;
-  startGatewayLoop(): Promise<void>;
+  startGatewayLoop(webhookUrl: string): Promise<void>;
   shutdown(): Promise<void>;
 }
 
@@ -181,7 +181,7 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
 
       return webhookHandler(request);
     },
-    async startGatewayLoop(): Promise<void> {
+    async startGatewayLoop(webhookUrl: string): Promise<void> {
       await initialize();
       logger.debug('Starting gateway listener');
 
@@ -196,6 +196,7 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
         (connected) => {
           gatewayConnected = connected;
         },
+        webhookUrl,
       ).finally(() => {
         gatewayLoopPromise = null;
         gatewayAbortController = null;
@@ -217,6 +218,7 @@ async function runGatewayLoop(
   chat: KarakuriChat,
   signal: AbortSignal,
   setGatewayConnected: (connected: boolean) => void,
+  webhookUrl: string,
 ): Promise<void> {
   const adapter = chat.getAdapter('discord');
 
@@ -232,6 +234,7 @@ async function runGatewayLoop(
         },
         GATEWAY_LISTENER_DURATION_MS,
         signal,
+        webhookUrl,
       );
 
       if (!response.ok) {
@@ -437,4 +440,3 @@ async function delay(durationMs: number, signal: AbortSignal): Promise<void> {
     signal.addEventListener('abort', onAbort, { once: true });
   });
 }
-

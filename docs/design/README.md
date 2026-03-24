@@ -44,12 +44,14 @@ karakuri-agent/
 │   │   ├── prompt.ts           # システムプロンプト構築（AGENT/RULES/skills + メモリ注入）
 │   │   ├── prompt-context.ts   # AGENT.md / RULES.md の eager reload
 │   │   └── tools/
-│   │       ├── index.ts        # ツールレジストリ
-│   │       ├── load-skill.ts   # スキル本文ロードツール
-│   │       │   │       ├── recall-diary.ts # 日記検索ツール
-│   │       ├── user-lookup.ts  # 保存済みユーザープロフィール検索
-│   │       ├── web-fetch.ts    # URL取得 + Readability/Turndown
-│   │       └── web-search.ts   # Brave Search API 連携
+│   │       ├── index.ts           # ツールレジストリ
+│   │       ├── gated-tools.ts     # スキル→ToolSet マッピング（動的ツール解決）
+│   │       ├── karakuri-world.ts  # karakuri-world API クライアント + ツール定義
+│   │       ├── load-skill.ts      # スキル本文ロード + 動的ツール登録
+│   │       ├── recall-diary.ts    # 日記検索ツール
+│   │       ├── user-lookup.ts     # 保存済みユーザープロフィール検索
+│   │       ├── web-fetch.ts       # URL取得 + Readability/Turndown
+│   │       └── web-search.ts      # Brave Search API 連携
 │   ├── memory/
 │   │   ├── store.ts            # IMemoryStore + FileMemoryStore (write-through cache + watcher + mutex + atomic write)
 │   │   └── types.ts

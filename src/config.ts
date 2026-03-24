@@ -26,7 +26,7 @@ const configSchema = z.object({
   postResponseLlmBaseUrl: z.string().trim().optional(),
   postResponseLlmModel: z.string().trim().optional(),
   braveApiKey: z.string().trim().min(1).optional(),
-  karakuriWorldApiBaseUrl: z.string().trim().optional(),
+  karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
@@ -38,6 +38,11 @@ const configSchema = z.object({
   reportChannelId: z.string().trim().min(1).optional(),
   adminUserIds: z.string().optional(),
 });
+
+export interface ApiCredentials {
+  apiBaseUrl: string;
+  apiKey: string;
+}
 
 export interface Config {
   discordApplicationId: string;
@@ -52,10 +57,7 @@ export interface Config {
   postResponseLlmModel?: string | undefined;
   postResponseLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
-  karakuriWorld?: {
-    apiBaseUrl: string;
-    apiKey: string;
-  } | undefined;
+  karakuriWorld?: ApiCredentials | undefined;
   dataDir: string;
   timezone: string;
   maxSteps: number;
@@ -90,7 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     postResponseLlmBaseUrl: env.POST_RESPONSE_LLM_BASE_URL,
     postResponseLlmModel: env.POST_RESPONSE_LLM_MODEL,
     braveApiKey: env.BRAVE_API_KEY || undefined,
-    karakuriWorldApiBaseUrl: env.KARAKURI_WORLD_API_BASE_URL,
+    karakuriWorldApiBaseUrl: normalizeOptionalString(env.KARAKURI_WORLD_API_BASE_URL),
     karakuriWorldApiKey: normalizeOptionalString(env.KARAKURI_WORLD_API_KEY),
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
@@ -121,6 +123,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const mergedAllowedChannelIds = reportChannelId != null
       ? [...new Set([...(postMessageChannelIds ?? []), reportChannelId])]
       : postMessageChannelIds;
+    if ((karakuriWorldApiBaseUrl != null) !== (karakuriWorldApiKey != null)) {
+      throw new Error(
+        'Partial karakuri-world configuration: both KARAKURI_WORLD_API_BASE_URL and KARAKURI_WORLD_API_KEY must be set. '
+        + `Currently set: ${karakuriWorldApiBaseUrl != null ? 'KARAKURI_WORLD_API_BASE_URL' : 'KARAKURI_WORLD_API_KEY'}`,
+      );
+    }
+    const karakuriWorld = karakuriWorldApiBaseUrl != null && karakuriWorldApiKey != null
+      ? { apiBaseUrl: karakuriWorldApiBaseUrl, apiKey: karakuriWorldApiKey }
+      : undefined;
     const config = {
       ...parsed,
       llmBaseUrl,
@@ -135,26 +146,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       allowedChannelIds: mergedAllowedChannelIds,
       reportChannelId,
       adminUserIds: parseIdList(parsed.adminUserIds),
-      ...(karakuriWorldApiBaseUrl != null && karakuriWorldApiKey != null
-        ? {
-            karakuriWorld: {
-              apiBaseUrl: karakuriWorldApiBaseUrl,
-              apiKey: karakuriWorldApiKey,
-            },
-          }
-        : {}),
-      ...((karakuriWorldApiBaseUrl != null) !== (karakuriWorldApiKey != null)
-        ? (() => {
-            logger.warn(
-              'Partial karakuri-world configuration: both KARAKURI_WORLD_API_BASE_URL and KARAKURI_WORLD_API_KEY must be set',
-              {
-                hasBaseUrl: karakuriWorldApiBaseUrl != null,
-                hasApiKey: karakuriWorldApiKey != null,
-              },
-            );
-            return {};
-          })()
-        : {}),
+      ...(karakuriWorld != null ? { karakuriWorld } : {}),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,

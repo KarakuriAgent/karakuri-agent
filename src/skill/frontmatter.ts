@@ -2,6 +2,7 @@ import type { SkillDefinition } from './types.js';
 
 const FRONTMATTER_DELIMITER = '---';
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 const QUOTED_VALUE_PATTERN = /^("([\s\S]*)"|'([\s\S]*)')$/;
 
 export function parseSkillMarkdown(markdown: string): SkillDefinition {
@@ -111,6 +112,12 @@ function parseOptionalCsvList(metadata: Map<string, string>, key: string): strin
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+
+  for (const item of items) {
+    if (!TOOL_NAME_PATTERN.test(item)) {
+      throw new Error(`Invalid tool name in ${key}: "${item}" must match /^[a-z][a-z0-9_]*$/`);
+    }
+  }
 
   return items.length > 0 ? items : undefined;
 }

@@ -31,7 +31,7 @@ const EXPECTED_TOOL_NAMES = [
 describe('karakuri-world tools', () => {
   it('exports dedicated operation-specific tools and keeps the combined schema strict', () => {
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch: vi.fn(),
     });
@@ -63,7 +63,7 @@ describe('karakuri-world tools', () => {
         },
       ));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api/',
+      apiBaseUrl: 'https://example.com/',
       apiKey: 'secret',
       fetch,
     });
@@ -109,7 +109,7 @@ describe('karakuri-world tools', () => {
         },
       ));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -171,7 +171,7 @@ describe('karakuri-world tools', () => {
         },
       ));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -220,7 +220,7 @@ describe('karakuri-world tools', () => {
         }),
       );
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -239,7 +239,7 @@ describe('karakuri-world tools', () => {
       .fn<typeof globalThis.fetch>()
       .mockRejectedValueOnce(transientError);
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -269,7 +269,7 @@ describe('karakuri-world tools', () => {
           }),
         );
       const tools = createKarakuriWorldTools({
-        apiBaseUrl: 'https://example.com/api',
+        apiBaseUrl: 'https://example.com',
         apiKey: 'secret',
         fetch,
       });
@@ -294,7 +294,7 @@ describe('karakuri-world tools', () => {
         headers: { 'content-type': 'application/json' },
       }));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -338,7 +338,7 @@ describe('karakuri-world tools', () => {
         },
       ));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -366,7 +366,7 @@ describe('karakuri-world tools', () => {
         },
       ));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -397,7 +397,7 @@ describe('karakuri-world tools', () => {
         },
       ));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -433,7 +433,7 @@ describe('karakuri-world tools', () => {
         },
       ));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
@@ -453,6 +453,68 @@ describe('karakuri-world tools', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('throws with the raw text message for non-JSON error responses', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        '<html><body>502 Bad Gateway</body></html>',
+        {
+          status: 502,
+          statusText: 'Bad Gateway',
+          headers: { 'content-type': 'text/html' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    let thrownError: unknown;
+    try {
+      await tools.karakuri_world_get_perception!.execute!({}, DEFAULT_OPTIONS);
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError).toBeInstanceOf(KarakuriWorldApiError);
+    expect(thrownError).toMatchObject({
+      status: 502,
+      code: undefined,
+      apiMessage: '<html><body>502 Bad Gateway</body></html>',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to statusText for empty non-JSON error responses', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        '',
+        {
+          status: 500,
+          statusText: 'Internal Server Error',
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    let thrownError: unknown;
+    try {
+      await tools.karakuri_world_get_perception!.execute!({}, DEFAULT_OPTIONS);
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError).toBeInstanceOf(KarakuriWorldApiError);
+    expect(thrownError).toMatchObject({
+      status: 500,
+      code: undefined,
+      apiMessage: 'Internal Server Error',
+    });
+  });
+
   it('throws response validation errors when a successful payload is malformed', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(JSON.stringify({ status: 'ok' }), {
@@ -460,7 +522,7 @@ describe('karakuri-world tools', () => {
         headers: { 'content-type': 'application/json' },
       }));
     const tools = createKarakuriWorldTools({
-      apiBaseUrl: 'https://example.com/api',
+      apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch,
     });
