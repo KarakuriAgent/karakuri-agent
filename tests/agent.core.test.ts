@@ -9,7 +9,7 @@ import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from 
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
 import type { ISessionManager, SessionData } from '../src/session/types.js';
-import type { ISkillStore, SkillDefinition } from '../src/skill/types.js';
+import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../src/skill/types.js';
 import type { IUserStore, UserRecord, UserSearchOptions } from '../src/user/types.js';
 
 const baseConfig: Config = {
@@ -75,14 +75,21 @@ class PromptContextStoreStub {
 }
 
 class SkillStoreStub implements ISkillStore {
+  listOptions: SkillFilterOptions | undefined;
+  getOptions: SkillFilterOptions | undefined;
+
   constructor(private readonly skills: SkillDefinition[] = []) {}
 
-  async listSkills(): Promise<SkillDefinition[]> {
-    return this.skills.map((skill) => ({ ...skill }));
+  async listSkills(options?: SkillFilterOptions): Promise<SkillDefinition[]> {
+    this.listOptions = options;
+    return this.skills
+      .filter((skill) => options?.includeSystemOnly === true || !skill.systemOnly)
+      .map((skill) => ({ ...skill }));
   }
 
-  async getSkill(name: string): Promise<SkillDefinition | null> {
-    return this.skills.find((skill) => skill.name === name) ?? null;
+  async getSkill(name: string, options?: SkillFilterOptions): Promise<SkillDefinition | null> {
+    this.getOptions = options;
+    return this.skills.find((skill) => skill.name === name && (options?.includeSystemOnly === true || !skill.systemOnly)) ?? null;
   }
 
   async close(): Promise<void> {}
@@ -277,7 +284,7 @@ describe('KarakuriAgent', () => {
         name: 'code-review',
         description: 'Review code',
         instructions: 'Check security first.',
-        enabled: true,
+        systemOnly: false,
       },
     ]);
 
@@ -302,7 +309,7 @@ describe('KarakuriAgent', () => {
             name: 'code-review',
             description: 'Review code',
             instructions: 'Check security first.',
-            enabled: true,
+            systemOnly: false,
           },
         ],
       }),
@@ -362,6 +369,92 @@ describe('KarakuriAgent', () => {
     expect(sessionManager.session.messages).toContainEqual(assistantMessage('reply'));
   });
 
+
+  it('hides system-only skills from normal users', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+    const skillStore = new SkillStoreStub([
+      {
+        name: 'system-skill',
+        description: 'System automation',
+        instructions: 'Run scheduled maintenance.',
+        systemOnly: true,
+      },
+    ]);
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      skillStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hello', 'Alice', { userId: 'user-123' });
+
+    expect(skillStore.listOptions).toBeUndefined();
+    expect(capturedSystem).not.toContain('system-skill');
+    expect(capturedSystem).not.toContain('Available skills');
+    expect(capturedTools).not.toHaveProperty('loadSkill');
+  });
+
+  it('includes system-only skills for the system user and allows loading them', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+    const skillStore = new SkillStoreStub([
+      {
+        name: 'system-skill',
+        description: 'System automation',
+        instructions: 'Run scheduled maintenance.',
+        systemOnly: true,
+      },
+    ]);
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      skillStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'run maintenance', 'System', { userId: 'system' });
+
+    expect(skillStore.listOptions).toEqual({ includeSystemOnly: true });
+    expect(capturedSystem).toContain('Available skills:\n- system-skill: System automation');
+    expect(capturedTools).toHaveProperty('loadSkill');
+
+    const loadSkillTool = capturedTools.loadSkill as { execute: (input: { name: string }, options: unknown) => Promise<unknown> };
+    await expect(loadSkillTool.execute(
+      { name: 'system-skill' },
+      { toolCallId: 'tool-1', messages: [] },
+    )).resolves.toEqual({
+      loaded: true,
+      name: 'system-skill',
+      description: 'System automation',
+      instructions: 'Run scheduled maintenance.',
+    });
+    expect(skillStore.getOptions).toEqual({ includeSystemOnly: true });
+  });
+
   it('injects prompt context, skill listings, and the loadSkill tool when skills are available', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
@@ -387,7 +480,7 @@ describe('KarakuriAgent', () => {
           name: 'code-review',
           description: 'Review code',
           instructions: 'Check security first.',
-          enabled: true,
+          systemOnly: false,
         },
       ]),
       generateTextFn,
@@ -430,7 +523,7 @@ describe('KarakuriAgent', () => {
           name: 'karakuri-world',
           description: 'Explore the world',
           instructions: 'Observe first.',
-          enabled: true,
+          systemOnly: false,
           allowedTools: ['karakuri_world_get_map'],
         },
       ]),
@@ -480,7 +573,7 @@ describe('KarakuriAgent', () => {
           name: 'karakuri-world',
           description: 'Explore the world',
           instructions: 'Observe first.',
-          enabled: true,
+          systemOnly: false,
           allowedTools: ['karakuri_world_get_map'],
         },
       ]),

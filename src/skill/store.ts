@@ -5,7 +5,7 @@ import { readFileIfExists } from '../utils/file.js';
 import { FileWatcher, type WatchDisposable } from '../utils/file-watcher.js';
 import { createLogger } from '../utils/logger.js';
 import { parseSkillMarkdown } from './frontmatter.js';
-import type { ISkillStore, SkillDefinition } from './types.js';
+import type { ISkillStore, SkillDefinition, SkillFilterOptions } from './types.js';
 
 const logger = createLogger('SkillStore');
 
@@ -16,32 +16,46 @@ export interface FileSkillStoreOptions {
   watcher?: FileWatcher;
 }
 
-interface SkillLoadEntry {
+interface SkillSource {
+  dir: string;
+  systemOnly: boolean;
+}
+
+interface SkillDirectoryEntry {
   directory: string;
+  systemOnly: boolean;
+}
+
+interface SkillLoadEntry extends SkillDirectoryEntry {
   skill: SkillDefinition | null;
   failed: boolean;
 }
 
 export class FileSkillStore implements ISkillStore {
-  private readonly skillsDir: string;
+  private readonly skillSources: SkillSource[];
   private readonly watcher: FileWatcher;
   private readonly ownsWatcher: boolean;
   private readonly childWatchers = new Map<string, WatchDisposable>();
   private readonly skills = new Map<string, SkillDefinition>();
   private readonly directoryToName = new Map<string, string>();
-  private readonly rootWatcher: WatchDisposable;
+  private readonly rootWatchers: WatchDisposable[];
   private reloadGeneration = 0;
 
-  private constructor({ skillsDir, watcher }: { skillsDir: string; watcher?: FileWatcher }) {
-    this.skillsDir = skillsDir;
+  private constructor({ skillSources, watcher }: { skillSources: SkillSource[]; watcher?: FileWatcher }) {
+    this.skillSources = skillSources;
     this.watcher = watcher ?? new FileWatcher();
     this.ownsWatcher = watcher == null;
-    this.rootWatcher = this.watcher.watch(this.skillsDir, () => this.reloadRuntime(), { debounceMs: 50 });
+    this.rootWatchers = this.skillSources.map((source) =>
+      this.watcher.watch(source.dir, () => this.reloadRuntime(), { debounceMs: 50 }),
+    );
   }
 
   static async create(options: FileSkillStoreOptions): Promise<FileSkillStore> {
     const store = new FileSkillStore({
-      skillsDir: join(options.dataDir, 'skills'),
+      skillSources: [
+        { dir: join(options.dataDir, 'skills'), systemOnly: false },
+        { dir: join(options.dataDir, 'system-skills'), systemOnly: true },
+      ],
       ...(options.watcher != null ? { watcher: options.watcher } : {}),
     });
 
@@ -55,16 +69,20 @@ export class FileSkillStore implements ISkillStore {
     }
   }
 
-  async listSkills(): Promise<SkillDefinition[]> {
+  async listSkills(options?: SkillFilterOptions): Promise<SkillDefinition[]> {
     return [...this.skills.values()]
-      .filter((skill) => skill.enabled)
+      .filter((skill) => options?.includeSystemOnly === true || !skill.systemOnly)
       .sort((left, right) => left.name.localeCompare(right.name))
       .map((skill) => ({ ...skill }));
   }
 
-  async getSkill(name: string): Promise<SkillDefinition | null> {
+  async getSkill(name: string, options?: SkillFilterOptions): Promise<SkillDefinition | null> {
     const skill = this.skills.get(name);
-    if (skill == null || !skill.enabled) {
+    if (skill == null) {
+      return null;
+    }
+
+    if (skill.systemOnly && options?.includeSystemOnly !== true) {
       return null;
     }
 
@@ -72,7 +90,9 @@ export class FileSkillStore implements ISkillStore {
   }
 
   async close(): Promise<void> {
-    this.rootWatcher.unsubscribe();
+    for (const disposable of this.rootWatchers) {
+      disposable.unsubscribe();
+    }
     for (const disposable of this.childWatchers.values()) {
       disposable.unsubscribe();
     }
@@ -98,26 +118,33 @@ export class FileSkillStore implements ISkillStore {
 
   private async reload({ failOnError }: { failOnError: boolean }): Promise<void> {
     const generation = ++this.reloadGeneration;
-    const directories = await listSkillDirectories(this.skillsDir);
+    const directoryEntries = (await Promise.all(
+      this.skillSources.map(async (source) =>
+        (await listSkillDirectories(source.dir)).map((directory) => ({
+          directory,
+          systemOnly: source.systemOnly,
+        })),
+      ),
+    )).flat();
 
     if (generation !== this.reloadGeneration) {
       return;
     }
 
-    this.syncChildWatchers(directories);
+    this.syncChildWatchers(directoryEntries.map((entry) => entry.directory));
 
-    const entries = await loadSkillEntries(directories, { failOnError });
+    const entries = await loadSkillEntries(directoryEntries, { failOnError });
 
     if (generation !== this.reloadGeneration) {
       return;
     }
 
-    const parsedSkills = entries
-      .map((entry) => entry.skill)
-      .filter((skill): skill is SkillDefinition => skill != null);
-    ensureUniqueSkillNames(parsedSkills);
+    const loadedEntries = entries.filter(
+      (entry): entry is SkillLoadEntry & { skill: SkillDefinition } => entry.skill != null,
+    );
+    ensureUniqueSkillNames(loadedEntries);
 
-    this.applyEntries(entries, new Set(directories));
+    this.applyEntries(entries, new Set(directoryEntries.map((entry) => entry.directory)));
     logger.debug('Skills reloaded', { skillCount: this.skills.size });
   }
 
@@ -176,25 +203,30 @@ export class FileSkillStore implements ISkillStore {
 }
 
 async function loadSkillEntries(
-  directories: string[],
+  directories: SkillDirectoryEntry[],
   { failOnError }: { failOnError: boolean },
 ): Promise<SkillLoadEntry[]> {
   return Promise.all(
-    directories.map(async (directory): Promise<SkillLoadEntry> => {
+    directories.map(async ({ directory, systemOnly }): Promise<SkillLoadEntry> => {
       const filePath = join(directory, SKILL_FILE_NAME);
       const markdown = await readFileIfExists(filePath);
       if (markdown == null) {
-        return { directory, skill: null, failed: false };
+        return { directory, systemOnly, skill: null, failed: false };
       }
 
       try {
-        return { directory, skill: parseSkillMarkdown(markdown), failed: false };
+        return {
+          directory,
+          systemOnly,
+          skill: { ...parseSkillMarkdown(markdown), systemOnly },
+          failed: false,
+        };
       } catch (error) {
         if (failOnError) {
           throw error;
         }
         logger.warn(`Skipping invalid SKILL.md in ${directory}`, error);
-        return { directory, skill: null, failed: true };
+        return { directory, systemOnly, skill: null, failed: true };
       }
     }),
   );
@@ -217,16 +249,15 @@ async function listSkillDirectories(skillsDir: string): Promise<string[]> {
   }
 }
 
-function ensureUniqueSkillNames(skills: SkillDefinition[]): SkillDefinition[] {
-  const names = new Set<string>();
+function ensureUniqueSkillNames(entries: Array<{ directory: string; skill: SkillDefinition }>): void {
+  const seen = new Map<string, string>();
 
-  for (const skill of skills) {
-    if (names.has(skill.name)) {
-      throw new Error(`Duplicate skill name: ${skill.name}`);
+  for (const { directory, skill } of entries) {
+    const existing = seen.get(skill.name);
+    if (existing != null) {
+      throw new Error(`Duplicate skill name "${skill.name}" found in ${existing} and ${directory}`);
     }
 
-    names.add(skill.name);
+    seen.set(skill.name, directory);
   }
-
-  return skills;
 }

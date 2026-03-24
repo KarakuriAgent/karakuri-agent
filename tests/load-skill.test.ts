@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import { createLoadSkillTool } from '../src/agent/tools/load-skill.js';
-import type { ISkillStore, SkillDefinition } from '../src/skill/types.js';
+import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../src/skill/types.js';
 
 const DEFAULT_OPTIONS: ToolExecutionOptions = {
   toolCallId: 'tool-1',
@@ -13,11 +13,11 @@ const DEFAULT_OPTIONS: ToolExecutionOptions = {
 
 function createSkillStoreStub(skills: SkillDefinition[]): ISkillStore {
   return {
-    async listSkills() {
-      return skills;
+    async listSkills(options?: SkillFilterOptions) {
+      return skills.filter((skill) => options?.includeSystemOnly === true || !skill.systemOnly);
     },
-    async getSkill(name: string) {
-      return skills.find((skill) => skill.name === name) ?? null;
+    async getSkill(name: string, options?: SkillFilterOptions) {
+      return skills.find((skill) => skill.name === name && (options?.includeSystemOnly === true || !skill.systemOnly)) ?? null;
     },
     async close() {},
   };
@@ -42,7 +42,7 @@ describe('loadSkill tool', () => {
           name: 'code-review',
           description: 'Review code',
           instructions: 'Check security first.',
-          enabled: true,
+          systemOnly: false,
         },
       ]),
       tools,
@@ -75,7 +75,7 @@ describe('loadSkill tool', () => {
           name: 'karakuri-world',
           description: 'Explore the world',
           instructions: 'Observe first.',
-          enabled: true,
+          systemOnly: false,
           allowedTools: ['karakuri_world_get_map'],
         },
       ]),
@@ -104,7 +104,7 @@ describe('loadSkill tool', () => {
           name: 'karakuri-world',
           description: 'Explore the world',
           instructions: 'Observe first.',
-          enabled: true,
+          systemOnly: false,
           allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
         },
       ]),
@@ -140,6 +140,55 @@ describe('loadSkill tool', () => {
     });
   });
 
+  it('does not load system-only skills by default', async () => {
+    const toolInstance = createLoadSkillTool({
+      skillStore: createSkillStoreStub([
+        {
+          name: 'system-skill',
+          description: 'System only',
+          instructions: 'Only for system.',
+          systemOnly: true,
+        },
+      ]),
+      tools: createNoopToolSet(),
+      gatedToolSets: new Map(),
+    });
+
+    await expect(toolInstance.execute!(
+      { name: 'system-skill' },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({
+      loaded: false,
+      name: 'system-skill',
+    });
+  });
+
+  it('loads system-only skills when explicitly allowed', async () => {
+    const toolInstance = createLoadSkillTool({
+      skillStore: createSkillStoreStub([
+        {
+          name: 'system-skill',
+          description: 'System only',
+          instructions: 'Only for system.',
+          systemOnly: true,
+        },
+      ]),
+      tools: createNoopToolSet(),
+      gatedToolSets: new Map(),
+      includeSystemOnly: true,
+    });
+
+    await expect(toolInstance.execute!(
+      { name: 'system-skill' },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({
+      loaded: true,
+      name: 'system-skill',
+      description: 'System only',
+      instructions: 'Only for system.',
+    });
+  });
+
   it('allows re-loading the same skill in the same turn without collision error', async () => {
     const tools = createNoopToolSet();
     const unlockedTools: ToolSet = {
@@ -155,7 +204,7 @@ describe('loadSkill tool', () => {
           name: 'karakuri-world',
           description: 'Explore the world',
           instructions: 'Observe first.',
-          enabled: true,
+          systemOnly: false,
           allowedTools: ['karakuri_world_get_map'],
         },
       ]),
@@ -194,7 +243,7 @@ describe('loadSkill tool', () => {
           name: 'karakuri-world',
           description: 'Explore the world',
           instructions: 'Observe first.',
-          enabled: true,
+          systemOnly: false,
           allowedTools: ['karakuri_world_get_map'],
         },
       ]),
