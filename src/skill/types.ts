@@ -3,6 +3,7 @@ export interface SkillDefinition {
   description: string;
   instructions: string;
   enabled: boolean;
+  allowedTools?: string[];
 }
 
 export interface ISkillStore {

@@ -12,6 +12,7 @@ import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
 import { createAgentTools } from './tools/index.js';
 import { hasAdminToolAccess } from './tools/admin-auth.js';
+import { filterSkillsToAvailableTools } from './tools/gated-tools.js';
 import type { IPromptContextStore } from './prompt-context.js';
 import {
   buildSystemPrompt,
@@ -157,6 +158,9 @@ export class KarakuriAgent implements IAgent {
       && this.messageSink != null;
     const hasManageCron = hasAdminAccess && this.schedulerStore != null;
     const hasUserLookup = this.userStore != null;
+    const effectiveSkills = filterSkillsToAvailableTools(skills, {
+      karakuriWorld: this.config.karakuriWorld,
+    });
 
     const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
       agentInstructions: promptContext.agentInstructions,
@@ -168,7 +172,7 @@ export class KarakuriAgent implements IAgent {
             userProfile: promptUserProfile,
           }
         : {}),
-      skills,
+      skills: effectiveSkills,
       hasWebSearch: this.config.braveApiKey != null,
       hasUserLookup,
       hasPostMessage,
@@ -200,7 +204,7 @@ export class KarakuriAgent implements IAgent {
         : {}),
       recentDiaries,
       summary: session.summary,
-      skills,
+      skills: effectiveSkills,
       hasWebSearch: this.config.braveApiKey != null,
       hasUserLookup,
       hasPostMessage,
@@ -218,6 +222,7 @@ export class KarakuriAgent implements IAgent {
     const tools = createAgentTools({
       memoryStore: this.memoryStore,
       braveApiKey: this.config.braveApiKey,
+      karakuriWorld: this.config.karakuriWorld,
       postMessageEnabled: hasPostMessage,
       postMessageChannelIds: this.config.postMessageChannelIds,
       reportChannelId: this.config.reportChannelId,
@@ -227,7 +232,7 @@ export class KarakuriAgent implements IAgent {
       ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
       ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
       ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
-      skills,
+      skills: effectiveSkills,
     });
     const lifecycle = options?.lifecycle;
     const result = await this.generateTextFn({

@@ -1,8 +1,11 @@
+import type { ToolSet } from 'ai';
+
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
 import type { IUserStore } from '../../user/types.js';
 import { hasAdminToolAccess } from './admin-auth.js';
+import { buildGatedToolSets } from './gated-tools.js';
 import { createLoadSkillTool } from './load-skill.js';
 import { createManageCronTool } from './manage-cron.js';
 import { createPostMessageTool } from './post-message.js';
@@ -14,6 +17,10 @@ import { createWebSearchTool } from './web-search.js';
 export interface CreateAgentToolsOptions {
   memoryStore: IMemoryStore;
   braveApiKey?: string | undefined;
+  karakuriWorld?: {
+    apiBaseUrl: string;
+    apiKey: string;
+  } | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   messageSink?: IMessageSink | undefined;
@@ -29,6 +36,7 @@ export interface CreateAgentToolsOptions {
 export function createAgentTools({
   memoryStore,
   braveApiKey,
+  karakuriWorld,
   skillStore,
   skills = [],
   messageSink,
@@ -39,13 +47,13 @@ export function createAgentTools({
   adminUserIds = [],
   userId,
   userStore,
-}: CreateAgentToolsOptions) {
+}: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
     && hasAdminAccess;
   const manageCronEnabled = hasAdminAccess && schedulerStore != null;
 
-  return {
+  const tools: ToolSet = {
     recallDiary: createRecallDiaryTool({ memoryStore }),
     webFetch: createWebFetchTool(),
     ...(braveApiKey != null
@@ -56,11 +64,6 @@ export function createAgentTools({
     ...(userStore != null
       ? {
           userLookup: createUserLookupTool({ userStore }),
-        }
-      : {}),
-    ...(skillStore != null && skills.length > 0
-      ? {
-          loadSkill: createLoadSkillTool({ skillStore }),
         }
       : {}),
     ...(shouldExposePostMessage && messageSink != null
@@ -85,6 +88,14 @@ export function createAgentTools({
         }
       : {}),
   };
+
+  const gatedToolSets = buildGatedToolSets(skills, { karakuriWorld });
+
+  if (skillStore != null && skills.length > 0) {
+    tools.loadSkill = createLoadSkillTool({ skillStore, tools, gatedToolSets });
+  }
+
+  return tools;
 }
 
 export type AgentToolSet = ReturnType<typeof createAgentTools>;

@@ -145,6 +145,7 @@ interface IAgent {
 | `name`     | `string` | 取得する skill の名前    |
 
 - enabled な skill が 1 つ以上あるときのみ公開
+- `allowedTools` を持つ skill では、本文返却と同時に対応する skill-gated tool を現在ターンの `tools` オブジェクトへ動的登録する
 - 本文の全文は必要になったときだけロードさせ、システムプロンプトには skill 一覧のみ注入する
 
 ## 要約処理 (`Agent.summarizeSession`)
@@ -185,6 +186,7 @@ Profile:
 [enabled skills がある場合]
 Available skills:
 - ...
+  - skill に `allowed-tools` がある場合は `(tools: ...)` も表示
 
 [ツール使用説明]
 ```
@@ -215,7 +217,7 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 | 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
 | システムプロンプト構築 | memory / user-profile / diary / summary がタグ付きで正しく組み立てられる |
-| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill が想定どおり呼ばれる |
+| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill / karakuri-world skill-gated tools が想定どおり呼ばれる |
 | lifecycle callback 配線 | AgentLifecycleCallbacks が generateText の step/tool callback へ同期で橋渡しされる |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 | post-response evaluation | reply を先に返しつつ evaluator がバックグラウンドで動き、drainPendingEvaluations で待機できる |

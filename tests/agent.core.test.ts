@@ -399,8 +399,101 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('You are custom.');
     expect(capturedSystem).toContain('Be precise.');
     expect(capturedSystem).toContain('Available skills:\n- code-review: Review code');
-    expect(capturedSystem).toContain('- loadSkill: load the full content of a skill by name.');
+    expect(capturedSystem).toContain('- loadSkill: load the full content of a skill by name. Use when a skill is relevant to the user\'s request.');
     expect(capturedTools).toHaveProperty('loadSkill');
+  });
+
+  it('unlocks karakuri-world tools after loadSkill runs', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([
+        {
+          name: 'karakuri-world',
+          description: 'Explore the world',
+          instructions: 'Observe first.',
+          enabled: true,
+          allowedTools: ['karakuri_world_get_map'],
+        },
+      ]),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(capturedSystem).toContain('Available skills:\n- karakuri-world: Explore the world (tools: karakuri_world_get_map)');
+    expect(capturedSystem).toContain('Some skills unlock additional tools');
+    expect(capturedTools).toHaveProperty('loadSkill');
+    expect(capturedTools).not.toHaveProperty('karakuri_world_get_map');
+
+    const loadSkillTool = capturedTools.loadSkill as { execute: (input: { name: string }, options: unknown) => Promise<unknown> };
+    await expect(loadSkillTool.execute(
+      { name: 'karakuri-world' },
+      { toolCallId: 'tool-1', messages: [] },
+    )).resolves.toEqual({
+      loaded: true,
+      name: 'karakuri-world',
+      description: 'Explore the world',
+      allowedTools: ['karakuri_world_get_map'],
+      instructions: 'Observe first.',
+    });
+    expect(capturedTools).toHaveProperty('karakuri_world_get_map');
+  });
+
+  it('omits unavailable gated tools from prompts and loadSkill results', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([
+        {
+          name: 'karakuri-world',
+          description: 'Explore the world',
+          instructions: 'Observe first.',
+          enabled: true,
+          allowedTools: ['karakuri_world_get_map'],
+        },
+      ]),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(capturedSystem).not.toContain('Available skills:');
+    expect(capturedSystem).not.toContain('(tools: karakuri_world_get_map)');
+    expect(capturedSystem).not.toContain('Some skills unlock additional tools');
+    expect(capturedTools).not.toHaveProperty('loadSkill');
   });
 
   it('always exposes webFetch and only enables webSearch when BRAVE_API_KEY is configured', async () => {

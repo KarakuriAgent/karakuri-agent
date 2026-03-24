@@ -26,6 +26,8 @@ const configSchema = z.object({
   postResponseLlmBaseUrl: z.string().trim().optional(),
   postResponseLlmModel: z.string().trim().optional(),
   braveApiKey: z.string().trim().min(1).optional(),
+  karakuriWorldApiBaseUrl: z.string().trim().optional(),
+  karakuriWorldApiKey: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
   maxSteps: z.coerce.number().int().positive().default(10),
@@ -50,6 +52,10 @@ export interface Config {
   postResponseLlmModel?: string | undefined;
   postResponseLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
+  karakuriWorld?: {
+    apiBaseUrl: string;
+    apiKey: string;
+  } | undefined;
   dataDir: string;
   timezone: string;
   maxSteps: number;
@@ -84,6 +90,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     postResponseLlmBaseUrl: env.POST_RESPONSE_LLM_BASE_URL,
     postResponseLlmModel: env.POST_RESPONSE_LLM_MODEL,
     braveApiKey: env.BRAVE_API_KEY || undefined,
+    karakuriWorldApiBaseUrl: env.KARAKURI_WORLD_API_BASE_URL,
+    karakuriWorldApiKey: normalizeOptionalString(env.KARAKURI_WORLD_API_KEY),
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
     maxSteps: env.MAX_STEPS ?? env.AGENT_MAX_STEPS,
@@ -100,6 +108,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     assertValidTimezone(parsed.timezone);
     const llmBaseUrl = normalizeBaseUrl(parsed.llmBaseUrl);
     const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
+    const karakuriWorldApiBaseUrl = normalizeBaseUrl(parsed.karakuriWorldApiBaseUrl, 'KARAKURI_WORLD_API_BASE_URL');
+    const karakuriWorldApiKey = normalizeOptionalString(parsed.karakuriWorldApiKey);
 
     const llmModelSelector = parseModelSelector(parsed.llmModel);
     const postResponseLlmModel = normalizeOptionalString(parsed.postResponseLlmModel);
@@ -125,6 +135,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       allowedChannelIds: mergedAllowedChannelIds,
       reportChannelId,
       adminUserIds: parseIdList(parsed.adminUserIds),
+      ...(karakuriWorldApiBaseUrl != null && karakuriWorldApiKey != null
+        ? {
+            karakuriWorld: {
+              apiBaseUrl: karakuriWorldApiBaseUrl,
+              apiKey: karakuriWorldApiKey,
+            },
+          }
+        : {}),
+      ...((karakuriWorldApiBaseUrl != null) !== (karakuriWorldApiKey != null)
+        ? (() => {
+            logger.warn(
+              'Partial karakuri-world configuration: both KARAKURI_WORLD_API_BASE_URL and KARAKURI_WORLD_API_KEY must be set',
+              {
+                hasBaseUrl: karakuriWorldApiBaseUrl != null,
+                hasApiKey: karakuriWorldApiKey != null,
+              },
+            );
+            return {};
+          })()
+        : {}),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,
@@ -133,6 +163,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmProvider: config.llmModelSelector.provider,
       llmApi: config.llmModelSelector.api,
       hasPostResponseModel: config.postResponseLlmModelSelector != null,
+      hasKarakuriWorld: config.karakuriWorld != null,
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,

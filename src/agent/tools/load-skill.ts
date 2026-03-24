@@ -1,13 +1,18 @@
-import { tool } from 'ai';
+import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 
 import type { ISkillStore } from '../../skill/types.js';
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('LoadSkill');
 
 export interface LoadSkillToolOptions {
   skillStore: ISkillStore;
+  tools: ToolSet;
+  gatedToolSets: ReadonlyMap<string, ToolSet>;
 }
 
-export function createLoadSkillTool({ skillStore }: LoadSkillToolOptions) {
+export function createLoadSkillTool({ skillStore, tools, gatedToolSets }: LoadSkillToolOptions) {
   return tool({
     description: 'Load the full instructions for an available skill by name when it is relevant to the request.',
     inputSchema: z.object({
@@ -22,10 +27,33 @@ export function createLoadSkillTool({ skillStore }: LoadSkillToolOptions) {
         };
       }
 
+      const skillTools = gatedToolSets.get(name);
+      if (skill.allowedTools != null && skillTools == null) {
+        return {
+          loaded: false,
+          name: skill.name,
+          unavailable: true,
+        };
+      }
+
+      if (skillTools != null) {
+        for (const toolName of Object.keys(skillTools)) {
+          const existing = tools[toolName];
+          if (existing != null && existing !== skillTools[toolName]) {
+            logger.error('Gated tool name conflict', { skillName: name, toolName });
+            throw new Error(`Gated tool name conflict: "${toolName}" already exists in the tool set`);
+          }
+        }
+        Object.assign(tools, skillTools);
+      }
+
+      const allowedTools = skillTools != null ? Object.keys(skillTools) : undefined;
+
       return {
         loaded: true,
         name: skill.name,
         description: skill.description,
+        ...(allowedTools != null && allowedTools.length > 0 ? { allowedTools } : {}),
         instructions: skill.instructions,
       };
     },

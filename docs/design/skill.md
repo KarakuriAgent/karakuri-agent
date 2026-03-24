@@ -14,6 +14,7 @@ interface SkillDefinition {
   description: string;
   instructions: string;
   enabled: boolean;
+  allowedTools?: string[];
 }
 
 interface ISkillStore {
@@ -38,6 +39,7 @@ interface ISkillStore {
 name: code-review
 description: コードレビューを行う
 enabled: true
+allowed-tools: karakuri_world_get_perception, karakuri_world_move
 ---
 
 セキュリティ、型安全性、パフォーマンスを優先してレビューする。
@@ -48,6 +50,7 @@ enabled: true
 - `name`: 必須。`/^[a-z0-9][a-z0-9-]*$/` を満たす
 - `description`: 必須。スキル一覧に表示する短い説明
 - `enabled`: 任意。省略時は `true`
+- `allowed-tools`: 任意。`,` 区切りのツール名一覧。`loadSkill` 後に追加公開する skill-gated tool を表す
 - 不明なキー、重複キー、空値、空本文はすべて **fail-closed**
 
 ## 実装: `FileSkillStore` (`src/skill/store.ts`)
@@ -74,8 +77,10 @@ enabled: true
 
 ## Agent 層との統合
 
-- `buildSystemPrompt()` には enabled skill の一覧だけを注入する
+- `buildSystemPrompt()` には enabled skill の一覧だけを注入し、`allowed-tools` があれば `(tools: ...)` も表示する
 - `createAgentTools()` は enabled skill が 1 つ以上あるときだけ `loadSkill` を追加する
+- skill-gated tool は初期 `tools` には含めず、`loadSkill(name)` 実行時に `allowedTools` に対応するツールだけを動的登録する
+- `handleMessage()` ごとに `tools` オブジェクトを作り直すため、skill-gated tool はターンをまたいで保持されない
 - `loadSkill(name)` は本文をそのまま返し、モデルに必要なときだけ詳細を読ませる
 
 ## 信頼境界
@@ -87,7 +92,7 @@ enabled: true
 
 | テストケース | 検証内容 |
 | --- | --- |
-| frontmatter 正常系 | `name` / `description` / `enabled` / 本文が正しくパースされる |
+| frontmatter 正常系 | `name` / `description` / `enabled` / `allowed-tools` / 本文が正しくパースされる |
 | frontmatter 異常系 | unknown key / invalid boolean / 空本文で fail-closed になる |
 | store 初期ロード | 有効スキルが読み込まれる |
 | runtime reload | 編集後に eager reload される |
