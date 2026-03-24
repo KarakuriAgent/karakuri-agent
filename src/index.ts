@@ -6,6 +6,8 @@ import { FilePromptContextStore } from './agent/prompt-context.js';
 import { createBot, type BotRuntime } from './bot.js';
 import { loadConfig } from './config.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
+import { CompositeMemoryStore } from './memory/composite-store.js';
+import { SqliteDiaryStore } from './memory/diary-store.js';
 import { FileMemoryStore } from './memory/store.js';
 import { FileSessionManager } from './session/manager.js';
 import { FileSkillStore } from './skill/store.js';
@@ -27,7 +29,9 @@ async function main(): Promise<void> {
     api: config.llmModelSelector.api,
     port: config.port,
   });
-  const memoryStore = new FileMemoryStore({ dataDir: config.dataDir, timezone: config.timezone });
+  const coreMemoryStore = new FileMemoryStore({ dataDir: config.dataDir });
+  const diaryStore = new SqliteDiaryStore({ dataDir: config.dataDir, timezone: config.timezone });
+  const memoryStore = new CompositeMemoryStore(coreMemoryStore, diaryStore);
   const userStore = new SqliteUserStore({ dataDir: config.dataDir });
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
