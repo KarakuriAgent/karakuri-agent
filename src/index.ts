@@ -71,7 +71,8 @@ async function main(): Promise<void> {
   });
 
   await listen(server, config.port);
-  await bot.startGatewayLoop();
+  const localWebhookUrl = `http://127.0.0.1:${config.port}/webhooks/discord`;
+  await bot.startGatewayLoop(localWebhookUrl);
   logger.debug('Gateway loop started');
 
   logger.info(`Karakuri-Agent listening on http://127.0.0.1:${config.port}`);

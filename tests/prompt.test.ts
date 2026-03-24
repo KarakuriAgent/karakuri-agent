@@ -159,6 +159,29 @@ describe('prompt helper sections', () => {
     ])).toBe('Available skills:\n- a: A\n- b: B');
   });
 
+  it('shows allowed tools in the skill list when present', () => {
+    expect(buildSkillListSection([
+      {
+        name: 'karakuri-world',
+        description: 'Explore the world',
+        instructions: 'Observe first.',
+        enabled: true,
+        allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
+      },
+    ])).toBe('Available skills:\n- karakuri-world: Explore the world (tools: karakuri_world_get_map, karakuri_world_move)');
+  });
+
+  it('omits tool listings when effective skills have no available tools', () => {
+    expect(buildSkillListSection([
+      {
+        name: 'karakuri-world',
+        description: 'Explore the world',
+        instructions: 'Observe first.',
+        enabled: true,
+      },
+    ])).toBe('Available skills:\n- karakuri-world: Explore the world');
+  });
+
   it('adds optional tool guidance only when enabled', () => {
     expect(buildToolGuidance()).toContain('- recallDiary: fetch a diary entry for a specific YYYY-MM-DD date.');
     expect(buildToolGuidance()).not.toContain('saveMemory');
@@ -166,7 +189,24 @@ describe('prompt helper sections', () => {
     expect(buildToolGuidance([], { hasUserLookup: true })).toContain('- userLookup: search saved user profiles when asked about other users.');
     expect(buildToolGuidance([
       { name: 'b', description: 'B', instructions: 'B', enabled: true },
-    ])).toContain('- loadSkill: load the full content of a skill by name.');
+    ])).toContain("- loadSkill: load the full content of a skill by name. Use when a skill is relevant to the user's request.");
+    expect(buildToolGuidance([
+      {
+        name: 'karakuri-world',
+        description: 'Explore the world',
+        instructions: 'Observe first.',
+        enabled: true,
+        allowedTools: ['karakuri_world_get_map'],
+      },
+    ])).toContain('Some skills unlock additional tools');
+    expect(buildToolGuidance([
+      {
+        name: 'karakuri-world',
+        description: 'Explore the world',
+        instructions: 'Observe first.',
+        enabled: true,
+      },
+    ])).toContain("- loadSkill: load the full content of a skill by name. Use when a skill is relevant to the user's request.");
   });
 });
 

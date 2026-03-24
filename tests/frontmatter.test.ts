@@ -12,6 +12,29 @@ describe('parseSkillMarkdown', () => {
     });
   });
 
+  it('parses allowed-tools as a CSV list', () => {
+    expect(parseSkillMarkdown(`---\nname: karakuri-world\ndescription: Explore the world\nallowed-tools: karakuri_world_get_map, karakuri_world_move , karakuri_world_wait\n---\nObserve first.`)).toEqual({
+      name: 'karakuri-world',
+      description: 'Explore the world',
+      enabled: true,
+      allowedTools: [
+        'karakuri_world_get_map',
+        'karakuri_world_move',
+        'karakuri_world_wait',
+      ],
+      instructions: 'Observe first.',
+    });
+  });
+
+  it('omits allowedTools when allowed-tools is blank after parsing', () => {
+    expect(parseSkillMarkdown(`---\nname: karakuri-world\ndescription: Explore the world\nallowed-tools:  ,   ,\n---\nObserve first.`)).toEqual({
+      name: 'karakuri-world',
+      description: 'Explore the world',
+      enabled: true,
+      instructions: 'Observe first.',
+    });
+  });
+
   it('defaults enabled to true when omitted', () => {
     expect(parseSkillMarkdown(`---\nname: schedule-helper\ndescription: Help with schedules\n---\nUse timezones.`).enabled).toBe(true);
   });
@@ -41,5 +64,17 @@ describe('parseSkillMarkdown', () => {
     expect(() =>
       parseSkillMarkdown(`---\nname: code-review\ndescription: Review code safely\n---\n`),
     ).toThrow(/body must not be empty/);
+  });
+
+  it('rejects invalid tool names in allowed-tools', () => {
+    expect(() =>
+      parseSkillMarkdown(`---\nname: karakuri-world\ndescription: Explore the world\nallowed-tools: karakuri_world_get_maps, Invalid-Tool\n---\nObserve first.`),
+    ).toThrow(/Invalid tool name/);
+  });
+
+  it('rejects tool names starting with a digit', () => {
+    expect(() =>
+      parseSkillMarkdown(`---\nname: karakuri-world\ndescription: Explore the world\nallowed-tools: 1bad_name\n---\nObserve first.`),
+    ).toThrow(/Invalid tool name/);
   });
 });

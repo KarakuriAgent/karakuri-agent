@@ -55,6 +55,30 @@ describe('FileSkillStore', () => {
     await store.close();
   });
 
+  it('round-trips allowed-tools metadata from SKILL.md', async () => {
+    const dataDir = await createDataDir();
+    await writeSkill(dataDir, 'karakuri-world', `---
+name: karakuri-world
+description: Explore the world
+allowed-tools: karakuri_world_get_map, karakuri_world_move
+---
+Observe first.`);
+
+    const store = await FileSkillStore.create({ dataDir });
+
+    await expect(store.listSkills()).resolves.toEqual([
+      {
+        name: 'karakuri-world',
+        description: 'Explore the world',
+        enabled: true,
+        allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
+        instructions: 'Observe first.',
+      },
+    ]);
+
+    await store.close();
+  });
+
   it('eagerly reloads skill edits and keeps last-known-good on runtime parse failure', async () => {
     const dataDir = await createDataDir();
     await writeSkill(dataDir, 'code-review', `---\nname: code-review\ndescription: Review code\n---\nFirst version.`);

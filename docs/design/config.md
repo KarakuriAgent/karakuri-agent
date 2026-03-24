@@ -21,6 +21,8 @@
 | `POST_RESPONSE_LLM_BASE_URL` |  | fallback to `LLM_BASE_URL` | ポストレスポンス evaluator 専用 Base URL |
 | `POST_RESPONSE_LLM_MODEL` |  | fallback to `LLM_MODEL` | ポストレスポンス evaluator 専用モデルセレクタ |
 | `BRAVE_API_KEY` |  | - | Brave Search API キー（設定時のみ `webSearch` を有効化） |
+| `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（`KARAKURI_WORLD_API_KEY` と両方あるときのみ skill-gated tool を有効化） |
+| `KARAKURI_WORLD_API_KEY` |  | - | karakuri-world API の Bearer token |
 | `DATA_DIR` |  | `./data` | memory / session / user / bot state ファイルの保存ディレクトリ |
 | `TIMEZONE` |  | `Asia/Tokyo` | diary 日付の基準タイムゾーン |
 | `MAX_STEPS` |  | `10` | ツールループの最大ステップ数 |
@@ -86,6 +88,10 @@ interface Config {
     selector: string;
   } | undefined;
   braveApiKey?: string | undefined;
+  karakuriWorld?: {
+    apiBaseUrl: string;
+    apiKey: string;
+  } | undefined;
   dataDir: string;
   timezone: string;
   maxSteps: number;
@@ -102,6 +108,7 @@ interface Config {
 `llmModel` / `postResponseLlmModel` は常に canonical な selector 文字列を保持する。
 `postMessageChannelIds` は `ALLOWED_CHANNEL_IDS` 由来の「送信可能チャンネル」のみを保持し、
 `allowedChannelIds` は `REPORT_CHANNEL_ID` をマージした bot 全体の許可チャンネル一覧を保持する。
+`karakuriWorld` は `KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` が両方そろったときだけ含まれる。
 
 ## `loadConfig()` の動作
 

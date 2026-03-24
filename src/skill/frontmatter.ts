@@ -2,6 +2,7 @@ import type { SkillDefinition } from './types.js';
 
 const FRONTMATTER_DELIMITER = '---';
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 const QUOTED_VALUE_PATTERN = /^("([\s\S]*)"|'([\s\S]*)')$/;
 
 export function parseSkillMarkdown(markdown: string): SkillDefinition {
@@ -27,6 +28,7 @@ export function parseSkillMarkdown(markdown: string): SkillDefinition {
   const name = parseRequiredString(metadata, 'name');
   const description = parseRequiredString(metadata, 'description');
   const enabled = parseOptionalBoolean(metadata, 'enabled') ?? true;
+  const allowedTools = parseOptionalCsvList(metadata, 'allowed-tools');
 
   if (!SKILL_NAME_PATTERN.test(name)) {
     throw new Error('Skill name must match /^[a-z0-9][a-z0-9-]*$/');
@@ -39,6 +41,7 @@ export function parseSkillMarkdown(markdown: string): SkillDefinition {
     description,
     instructions: body,
     enabled,
+    ...(allowedTools != null ? { allowedTools } : {}),
   };
 }
 
@@ -99,9 +102,29 @@ function parseOptionalBoolean(metadata: Map<string, string>, key: string): boole
   throw new Error(`Frontmatter ${key} must be true or false`);
 }
 
+function parseOptionalCsvList(metadata: Map<string, string>, key: string): string[] | undefined {
+  const value = metadata.get(key)?.trim();
+  if (value == null || value.length === 0) {
+    return undefined;
+  }
+
+  const items = value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+
+  for (const item of items) {
+    if (!TOOL_NAME_PATTERN.test(item)) {
+      throw new Error(`Invalid tool name in ${key}: "${item}" must match /^[a-z][a-z0-9_]*$/`);
+    }
+  }
+
+  return items.length > 0 ? items : undefined;
+}
+
 function assertNoUnknownKeys(metadata: Map<string, string>): void {
   for (const key of metadata.keys()) {
-    if (!['name', 'description', 'enabled'].includes(key)) {
+    if (!['name', 'description', 'enabled', 'allowed-tools'].includes(key)) {
       throw new Error(`Unknown frontmatter key: ${key}`);
     }
   }

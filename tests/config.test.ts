@@ -298,6 +298,46 @@ describe('loadConfig', () => {
     expect(config.braveApiKey).toBeUndefined();
   });
 
+
+  it('loads karakuri-world settings only when both env vars are set', () => {
+    const config = loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://example.com/world/',
+      KARAKURI_WORLD_API_KEY: 'world-key',
+    });
+
+    expect(config.karakuriWorld).toEqual({
+      apiBaseUrl: 'https://example.com/world',
+      apiKey: 'world-key',
+    });
+  });
+
+  it('throws when only KARAKURI_WORLD_API_BASE_URL is set', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://example.com/world/',
+    })).toThrow('Partial karakuri-world configuration');
+  });
+
+  it('throws when only KARAKURI_WORLD_API_KEY is set', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_KEY: 'world-key',
+    })).toThrow('Partial karakuri-world configuration');
+  });
+
+  it('omits karakuri-world settings when both env vars are absent', () => {
+    expect(loadConfig(validEnv).karakuriWorld).toBeUndefined();
+  });
+
+  it('rejects invalid KARAKURI_WORLD_API_BASE_URL with the correct label', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'not-a-url',
+      KARAKURI_WORLD_API_KEY: 'world-key',
+    })).toThrow('KARAKURI_WORLD_API_BASE_URL must be a valid URL');
+  });
+
   it('throws when a required field is missing', () => {
     expect(() => loadConfig({
       DISCORD_APPLICATION_ID: 'app',
