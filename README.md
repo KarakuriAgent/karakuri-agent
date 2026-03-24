@@ -7,7 +7,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 - ファイルベースのコアメモリ・セッション管理（write-through キャッシュ付き）
 - SQLite による日記永続化と直近範囲検索
 - SQLite によるユーザー情報・プロフィール永続化と応答後の自動評価更新
-- `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
+- `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` / `data/system-skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
@@ -91,9 +91,10 @@ npm run docker:dev
 
 ## 実装メモ
 
-- `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は追加スキル定義
+- `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は全ユーザー向けスキル、`data/system-skills/*/SKILL.md` は `userId === 'system'`（Cron / Heartbeat）でのみ見える system 専用スキル定義
 - `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、`data/cron/*/CRON.md` で Cron ジョブを定義できる
-- スキルが有効なときだけ `loadSkill` ツールが公開され、一覧だけをシステムプロンプトへ注入する
+- 1 つ以上のスキルが存在するときだけ `loadSkill` ツールが公開され、システムプロンプトには利用可能なスキル一覧だけを注入する
+- 通常ユーザーには `data/skills/*/SKILL.md` のみ公開され、`data/system-skills/*/SKILL.md` は `userId === 'system'` のときだけ一覧表示・`loadSkill` 対象になる
 - `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`KARAKURI_WORLD_*` 設定時は `karakuri_world_*` ツール群をスキル経由で遅延公開する
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は private / loopback / link-local 宛てや、そこへ向かう redirect を拒否して SSRF を抑止する

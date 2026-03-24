@@ -18,7 +18,7 @@ function makeSkill(overrides: Partial<SkillDefinition> & Pick<SkillDefinition, '
   return {
     description: 'test skill',
     instructions: 'do something',
-    enabled: true,
+    systemOnly: false,
     ...overrides,
   };
 }
@@ -122,7 +122,7 @@ describe('filterSkillsToAvailableTools', () => {
       name: 'plain-skill',
       description: 'test skill',
       instructions: 'do something',
-      enabled: true,
+      systemOnly: false,
     }]);
   });
 

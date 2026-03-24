@@ -5,7 +5,9 @@ const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*$/;
 const QUOTED_VALUE_PATTERN = /^("([\s\S]*)"|'([\s\S]*)')$/;
 
-export function parseSkillMarkdown(markdown: string): SkillDefinition {
+export type ParsedSkill = Omit<SkillDefinition, 'systemOnly'>;
+
+export function parseSkillMarkdown(markdown: string): ParsedSkill {
   const normalized = markdown.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
 
   if (!normalized.startsWith(`${FRONTMATTER_DELIMITER}\n`)) {
@@ -27,7 +29,6 @@ export function parseSkillMarkdown(markdown: string): SkillDefinition {
   const metadata = parseFrontmatter(frontmatterBlock);
   const name = parseRequiredString(metadata, 'name');
   const description = parseRequiredString(metadata, 'description');
-  const enabled = parseOptionalBoolean(metadata, 'enabled') ?? true;
   const allowedTools = parseOptionalCsvList(metadata, 'allowed-tools');
 
   if (!SKILL_NAME_PATTERN.test(name)) {
@@ -40,7 +41,6 @@ export function parseSkillMarkdown(markdown: string): SkillDefinition {
     name,
     description,
     instructions: body,
-    enabled,
     ...(allowedTools != null ? { allowedTools } : {}),
   };
 }
@@ -85,23 +85,6 @@ function parseRequiredString(metadata: Map<string, string>, key: string): string
   return value;
 }
 
-function parseOptionalBoolean(metadata: Map<string, string>, key: string): boolean | undefined {
-  const value = metadata.get(key);
-  if (value == null) {
-    return undefined;
-  }
-
-  if (value === 'true') {
-    return true;
-  }
-
-  if (value === 'false') {
-    return false;
-  }
-
-  throw new Error(`Frontmatter ${key} must be true or false`);
-}
-
 function parseOptionalCsvList(metadata: Map<string, string>, key: string): string[] | undefined {
   const value = metadata.get(key)?.trim();
   if (value == null || value.length === 0) {
@@ -124,7 +107,7 @@ function parseOptionalCsvList(metadata: Map<string, string>, key: string): strin
 
 function assertNoUnknownKeys(metadata: Map<string, string>): void {
   for (const key of metadata.keys()) {
-    if (!['name', 'description', 'enabled', 'allowed-tools'].includes(key)) {
+    if (!['name', 'description', 'allowed-tools'].includes(key)) {
       throw new Error(`Unknown frontmatter key: ${key}`);
     }
   }

@@ -2,12 +2,16 @@ export interface SkillDefinition {
   name: string;
   description: string;
   instructions: string;
-  enabled: boolean;
   allowedTools?: string[];
+  systemOnly: boolean;
+}
+
+export interface SkillFilterOptions {
+  includeSystemOnly?: boolean;
 }
 
 export interface ISkillStore {
-  listSkills(): Promise<SkillDefinition[]>;
-  getSkill(name: string): Promise<SkillDefinition | null>;
+  listSkills(options?: SkillFilterOptions): Promise<SkillDefinition[]>;
+  getSkill(name: string, options?: SkillFilterOptions): Promise<SkillDefinition | null>;
   close(): Promise<void>;
 }

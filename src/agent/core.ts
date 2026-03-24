@@ -142,11 +142,12 @@ export class KarakuriAgent implements IAgent {
       },
     ]);
 
+    const isSystemUser = userId === 'system';
     const [coreMemory, recentDiaries, promptContext, skills, ensuredUser] = await Promise.all([
       this.memoryStore.readCoreMemory(),
       this.memoryStore.getRecentDiaries(this.recentDiaryCount),
       this.promptContextStore?.read() ?? Promise.resolve({ agentInstructions: null, rules: null }),
-      this.skillStore?.listSkills() ?? Promise.resolve([]),
+      this.skillStore?.listSkills(isSystemUser ? { includeSystemOnly: true } : undefined) ?? Promise.resolve([]),
       ensuredUserPromise,
     ]);
 
@@ -233,6 +234,7 @@ export class KarakuriAgent implements IAgent {
       ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
       ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
       skills: effectiveSkills,
+      includeSystemOnly: isSystemUser,
     });
     const lifecycle = options?.lifecycle;
     const result = await this.generateTextFn({

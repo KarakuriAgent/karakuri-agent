@@ -103,7 +103,7 @@ describe('buildSystemPrompt', () => {
           name: 'code-review',
           description: 'Review code',
           instructions: 'Check security first.',
-          enabled: true,
+          systemOnly: false,
         },
       ],
       hasUserLookup: true,
@@ -154,8 +154,8 @@ describe('prompt helper sections', () => {
 
   it('lists skills sorted by name', () => {
     expect(buildSkillListSection([
-      { name: 'b', description: 'B', instructions: 'B', enabled: true },
-      { name: 'a', description: 'A', instructions: 'A', enabled: true },
+      { name: 'b', description: 'B', instructions: 'B', systemOnly: false },
+      { name: 'a', description: 'A', instructions: 'A', systemOnly: false },
     ])).toBe('Available skills:\n- a: A\n- b: B');
   });
 
@@ -165,7 +165,7 @@ describe('prompt helper sections', () => {
         name: 'karakuri-world',
         description: 'Explore the world',
         instructions: 'Observe first.',
-        enabled: true,
+        systemOnly: false,
         allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
       },
     ])).toBe('Available skills:\n- karakuri-world: Explore the world (tools: karakuri_world_get_map, karakuri_world_move)');
@@ -177,7 +177,7 @@ describe('prompt helper sections', () => {
         name: 'karakuri-world',
         description: 'Explore the world',
         instructions: 'Observe first.',
-        enabled: true,
+        systemOnly: false,
       },
     ])).toBe('Available skills:\n- karakuri-world: Explore the world');
   });
@@ -188,14 +188,14 @@ describe('prompt helper sections', () => {
     expect(buildToolGuidance([], { hasWebSearch: true })).toContain('- webSearch: search the web via Brave Search.');
     expect(buildToolGuidance([], { hasUserLookup: true })).toContain('- userLookup: search saved user profiles when asked about other users.');
     expect(buildToolGuidance([
-      { name: 'b', description: 'B', instructions: 'B', enabled: true },
+      { name: 'b', description: 'B', instructions: 'B', systemOnly: false },
     ])).toContain("- loadSkill: load the full content of a skill by name. Use when a skill is relevant to the user's request.");
     expect(buildToolGuidance([
       {
         name: 'karakuri-world',
         description: 'Explore the world',
         instructions: 'Observe first.',
-        enabled: true,
+        systemOnly: false,
         allowedTools: ['karakuri_world_get_map'],
       },
     ])).toContain('Some skills unlock additional tools');
@@ -204,7 +204,7 @@ describe('prompt helper sections', () => {
         name: 'karakuri-world',
         description: 'Explore the world',
         instructions: 'Observe first.',
-        enabled: true,
+        systemOnly: false,
       },
     ])).toContain("- loadSkill: load the full content of a skill by name. Use when a skill is relevant to the user's request.");
   });
@@ -244,7 +244,7 @@ describe('countAdditionalContextTokens', () => {
       userName: 'Alice',
       userId: 'user-1',
       userProfile: 'Likes diagrams',
-      skills: [{ name: 'code-review', description: 'Review code', instructions: 'Check security first.', enabled: true }],
+      skills: [{ name: 'code-review', description: 'Review code', instructions: 'Check security first.', systemOnly: false }],
       hasUserLookup: true,
     });
     expect(tokens).toBeGreaterThan(0);

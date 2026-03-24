@@ -10,18 +10,27 @@ export interface LoadSkillToolOptions {
   skillStore: ISkillStore;
   tools: ToolSet;
   gatedToolSets: ReadonlyMap<string, ToolSet>;
+  includeSystemOnly?: boolean;
 }
 
-export function createLoadSkillTool({ skillStore, tools, gatedToolSets }: LoadSkillToolOptions) {
+export function createLoadSkillTool({
+  skillStore,
+  tools,
+  gatedToolSets,
+  includeSystemOnly,
+}: LoadSkillToolOptions) {
   return tool({
     description: 'Load the full instructions for an available skill by name when it is relevant to the request.',
     inputSchema: z.object({
       name: z.string().trim().min(1).describe('Skill name to load.'),
     }),
     execute: async ({ name }) => {
-      const skill = await skillStore.getSkill(name);
+      const skill = await skillStore.getSkill(
+        name,
+        includeSystemOnly != null ? { includeSystemOnly } : undefined,
+      );
       if (skill == null) {
-        logger.debug('Skill not found', { name });
+        logger.debug('Skill not found or not accessible', { name, includeSystemOnly });
         return {
           loaded: false,
           name,
@@ -53,7 +62,6 @@ export function createLoadSkillTool({ skillStore, tools, gatedToolSets }: LoadSk
             };
           }
         }
-        // Mutates the shared tools object so newly registered tools are visible to subsequent LLM steps.
         Object.assign(tools, skillTools);
       }
 

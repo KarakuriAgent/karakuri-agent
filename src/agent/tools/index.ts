@@ -29,6 +29,7 @@ export interface CreateAgentToolsOptions {
   adminUserIds?: string[] | undefined;
   userId?: string | undefined;
   userStore?: IUserStore | undefined;
+  includeSystemOnly?: boolean | undefined;
 }
 
 export function createAgentTools({
@@ -45,6 +46,7 @@ export function createAgentTools({
   adminUserIds = [],
   userId,
   userStore,
+  includeSystemOnly,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
@@ -92,7 +94,12 @@ export function createAgentTools({
   if (skillStore != null && skills.length > 0) {
     // loadSkill.execute() mutates this tools object to dynamically register gated tools.
     // This is intentional and scoped to a single handleMessage() turn — tools is recreated per turn.
-    tools.loadSkill = createLoadSkillTool({ skillStore, tools, gatedToolSets });
+    tools.loadSkill = createLoadSkillTool({
+      skillStore,
+      tools,
+      gatedToolSets,
+      ...(includeSystemOnly != null ? { includeSystemOnly } : {}),
+    });
   }
 
   return tools;

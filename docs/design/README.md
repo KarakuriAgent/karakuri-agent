@@ -14,7 +14,7 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                 │                      ├── OpenAI-compatible LLM (via @ai-sdk/openai, selector-based routing)
                 │                      ├── Tools (recallDiary, userLookup*, webFetch, webSearch*, loadSkill*, skill-gated tools*)
                 │                      ├── Prompt Context (AGENT.md / RULES.md, eager reload)
-                │                      ├── Skills (data/skills/*/SKILL.md, eager reload)
+                │                      ├── Skills (data/skills/* + data/system-skills/*, eager reload)
                 │                      ├── Memory (CompositeMemoryStore: file core + SQLite diary)
                 │                      └── Session (file-based, write-through cache + turn単位管理)
                 │
@@ -22,7 +22,7 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                     └── thread subscriptionの永続化
 ```
 
-`webSearch*` は `BRAVE_API_KEY` 設定時のみ、`loadSkill*` は有効なスキルが存在するときのみ有効化される。skill-gated tools は `loadSkill` 実行後かつ対応環境変数がそろったときのみ使える。
+`webSearch*` は `BRAVE_API_KEY` 設定時のみ、`loadSkill*` は 1 つ以上のスキルが存在するときのみ公開される。skill-gated tools は `loadSkill` 実行後かつ対応環境変数がそろったときのみ使える。`data/skills/*/SKILL.md` は全ユーザー向け、`data/system-skills/*/SKILL.md` は `userId === 'system'`（cron / heartbeat）でのみ参照される。
 
 各層はインターフェースで抽象化し、実装の差し替えを容易にする:
 
@@ -81,8 +81,10 @@ karakuri-agent/
 │   │       └── memory.md       # 重要な記憶（常時システムプロンプトに注入）
 │   ├── AGENT.md                # 任意: trusted なエージェント人格
 │   ├── RULES.md                # 任意: trusted な行動ルール
-│   └── skills/
-│       └── */SKILL.md          # 任意: trusted なスキル定義
+│   ├── skills/
+│   │   └── */SKILL.md          # 任意: 全ユーザー向け trusted skill 定義
+│   ├── system-skills/
+│   │   └── */SKILL.md          # 任意: `userId === 'system'` 専用 trusted skill 定義
 │   ├── state/
 │   │   └── chat-state.json     # Chat SDK の subscription / cache / history state
 │   └── sessions/

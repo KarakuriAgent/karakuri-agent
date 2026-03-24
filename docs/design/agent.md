@@ -45,7 +45,7 @@ interface IAgent {
    （セッション読み込み＋追加を一括処理。履歴には Discord から来た生の userName を残す）
         ↓
 2. 要約チェック（トークン予算）
-   a. coreMemory, recentDiaries, AGENT.md / RULES.md, enabled skills, ensured user を取得
+   a. coreMemory, recentDiaries, AGENT.md / RULES.md, skills, ensured user を取得
    b. additionalTokens = tokens(可変長の trusted prompt context
       + "<memory>...</memory>"
       + "<user-profile>...</user-profile>"
@@ -68,7 +68,7 @@ interface IAgent {
    │    └── Profile: 保存済みプロフィール
    ├── <diary> ... </diary>            直近3日分の diary（自動注入）
    ├── session.summary（あれば注入）
-   ├── Available skills（enabled skill の一覧）
+   ├── Available skills（通常は shared skills、system user のときは system skills も含む）
    └── ツール使用説明
         ↓
 4. generateText() + tools + stopWhen: stepCountIs(n)
@@ -144,7 +144,8 @@ interface IAgent {
 | ---------- | -------- | ------------------------ |
 | `name`     | `string` | 取得する skill の名前    |
 
-- enabled な skill が 1 つ以上あるときのみ公開
+- 利用可能な skill が 1 つ以上あるときのみ公開
+- 通常ユーザーの `loadSkill` は shared skill のみ、system user の `loadSkill` は system skill も取得できる
 - `allowedTools` を持つ skill では、本文返却と同時に対応する skill-gated tool を現在ターンの `tools` オブジェクトへ動的登録する
 - 本文の全文は必要になったときだけロードさせ、システムプロンプトには skill 一覧のみ注入する
 
@@ -183,7 +184,7 @@ Profile:
 {summary の内容}
 </summary>
 
-[enabled skills がある場合]
+[skills がある場合]
 Available skills:
 - ...
   - skill に `allowed-tools` がある場合は `(tools: ...)` も表示
