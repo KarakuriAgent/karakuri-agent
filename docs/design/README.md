@@ -15,7 +15,7 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                 │                      ├── Tools (recallDiary, userLookup*, webFetch, webSearch*, loadSkill*, skill-gated tools*)
                 │                      ├── Prompt Context (AGENT.md / RULES.md, eager reload)
                 │                      ├── Skills (data/skills/*/SKILL.md, eager reload)
-                │                      ├── Memory (file-based, write-through cache + watcher + mutex付き)
+                │                      ├── Memory (CompositeMemoryStore: file core + SQLite diary)
                 │                      └── Session (file-based, write-through cache + turn単位管理)
                 │
                 └── State (JSON file-backed custom adapter)
@@ -30,7 +30,7 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
 | ------- | ------------------ | --------------------------- | ----------------------- |
 | Channel | Chat SDK adapters  | Discord                     | Slack, Web 等            |
 | Agent   | `IAgent`           | generateText + OpenAI-compatible LLM | モデル/API切替、スキル追加  |
-| Memory  | `IMemoryStore`     | ファイルベース (write-through cache + mutex 付き) | SQLite, object storage |
+| Memory  | `IMemoryStore`     | CompositeMemoryStore（file core + SQLite diary） | object storage, external DB |
 | Session | `ISessionManager`  | JSON ファイル (write-through cache) | Redis, DB |
 
 ## プロジェクト構造
@@ -53,7 +53,9 @@ karakuri-agent/
 │   │       ├── web-fetch.ts       # URL取得 + Readability/Turndown
 │   │       └── web-search.ts      # Brave Search API 連携
 │   ├── memory/
-│   │   ├── store.ts            # IMemoryStore + FileMemoryStore (write-through cache + watcher + mutex + atomic write)
+│   │   ├── composite-store.ts  # IMemoryStore + CompositeMemoryStore
+│   │   ├── diary-store.ts      # SqliteDiaryStore (SQLite diary)
+│   │   ├── store.ts            # FileMemoryStore (core memory only)
 │   │   └── types.ts
 │   ├── skill/
 │   │   ├── frontmatter.ts      # SKILL.md frontmatter parser
@@ -73,11 +75,10 @@ karakuri-agent/
 │   └── index.ts                # エントリポイント
 ├── tests/                      # Memory / Session / Agent / utility unit test
 ├── data/                       # .gitignoreで全体を除外
+│   ├── diary.db                # 日記（直近3日分は自動注入）
 │   ├── memory/
-│   │   ├── core/
-│   │   │   └── memory.md       # 重要な記憶（常時システムプロンプトに注入）
-│   │   └── diary/
-│   │       └── YYYY-MM-DD.md   # 日記（直近3日分は自動注入）
+│   │   └── core/
+│   │       └── memory.md       # 重要な記憶（常時システムプロンプトに注入）
 │   ├── AGENT.md                # 任意: trusted なエージェント人格
 │   ├── RULES.md                # 任意: trusted な行動ルール
 │   └── skills/
@@ -152,10 +153,13 @@ karakuri-agent/
 
 ### Phase 2: Memory 層
 
-- `src/memory/types.ts` (IMemoryStore)
-- `src/memory/store.ts` (FileMemoryStore: write-through cache + mutex + atomic write)
+- `src/memory/types.ts` (IMemoryStore / ICoreMemoryStore / IDiaryStore)
+- `src/memory/store.ts` (FileMemoryStore: core memory file store)
+- `src/memory/diary-store.ts` (SqliteDiaryStore: diary SQLite store)
+- `src/memory/composite-store.ts` (CompositeMemoryStore)
 - `data/memory/core/memory.md`（空 or 初期内容）
-- **unit test**: read/write/append/concurrent write
+- `data/diary.db`
+- **unit test**: core read/write/append/concurrent write, diary append/range/date listing
 
 ### Phase 3: Session 層
 
@@ -186,7 +190,7 @@ karakuri-agent/
 - `npm run dev` で起動
 - Discord でメッセージ送信 → 応答確認（メンション不要）
 - 再起動後の follow-up 継続確認（永続 state）
-- メモリ保存・読み込み確認（memory.md, diary）
+- メモリ保存・読み込み確認（memory.md, diary.db）
 - ユーザー情報保存確認（users.db, user profile prompt, userLookup）
 - ボット再起動後のメモリ永続化確認
 - 長い会話でセッション要約が動作するか確認（turn 単位で壊れないか）
@@ -197,7 +201,7 @@ karakuri-agent/
 1. **Chat SDK は beta**: exact version 固定 + lockfile コミット必須。破壊的変更に備える
 2. **Discord Gateway 接続**: Chat SDK の Discord アダプターが長時間稼働で安定するか Phase 0 で検証。問題時は discord.js 直接使用にフォールバック
 3. **AI SDK v6 API**: `stopWhen: stepCountIs(n)`, `ModelMessage` 型を使用（ai-sdk.dev/docs で確認済み）
-4. **ファイル I/O 競合**: memory.md・当日 diary は全スレッド共有。mutex + atomic write 必須
+4. **永続化競合**: memory.md は mutex + atomic write、diary は SQLite WAL で整合性を保つ
 5. **Prompt injection**: memory/diary/user profile 内容はタグで区切り、instruction 部分と明確分離する
 6. **コンテキスト予算**: メッセージ件数ではなくトークン予算ベースで要約トリガー管理
 7. **Timezone**: diary 日付は `config.timezone`（デフォルト `Asia/Tokyo`）基準

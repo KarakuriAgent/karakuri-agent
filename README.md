@@ -4,7 +4,8 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 
 ## 特徴
 
-- ファイルベースのメモリ・セッション管理（write-through キャッシュ付き）
+- ファイルベースのコアメモリ・セッション管理（write-through キャッシュ付き）
+- SQLite による日記永続化と直近範囲検索
 - SQLite によるユーザー情報・プロフィール永続化と応答後の自動評価更新
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
@@ -101,7 +102,8 @@ npm run docker:dev
 - Heartbeat は `ALLOWED_CHANNEL_IDS` 設定時のみ有効化され、`REPORT_CHANNEL_ID` は空欄のままでも省略設定として扱われる
 - `REPORT_CHANNEL_ID` を設定すると Heartbeat / Cron の実行成否、`manageCron` による登録/解除、チャット処理エラー詳細を自動投稿する（エージェント応答本文は自動投稿しない）
 - Chat SDK の state は `DATA_DIR/state/chat-state.json` に保存するカスタム JSON アダプターを使用
-- Memory / Session も `data/` 配下にファイル保存
+- コアメモリ / Session は `data/` 配下にファイル保存し、日記は `DATA_DIR/diary.db` に保存する
+- 初回起動時は旧 `DATA_DIR/memory/diary/*.md` を検出すると `diary.db` へ一度だけ自動インポートする
 - ユーザー情報は `DATA_DIR/users.db` に保存され、`userLookup` ツールと `<user-profile>` コンテキストに利用される
 - 元メッセージへのリアクションで `queued` / `thinking` / tool 実行中 / `done` / `error` を表示し、`done` は 2 秒後に自動除去する
 - 添付ファイルは未対応。添付付きメッセージはテキスト部分のみ処理し、注意メッセージを返す
