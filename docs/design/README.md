@@ -22,7 +22,7 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                     └── thread subscriptionの永続化
 ```
 
-`webSearch*` は `BRAVE_API_KEY` 設定時のみ、`loadSkill*` は 1 つ以上のスキルが存在するときのみ公開される。skill-gated tools は `loadSkill` 実行後かつ対応環境変数がそろったときのみ使える。`data/skills/*/SKILL.md` は全ユーザー向け、`data/system-skills/*/SKILL.md` は `userId === 'system'`（cron / heartbeat）でのみ参照される。
+`webSearch*` は `BRAVE_API_KEY` 設定時のみ、`loadSkill*` は 1 つ以上のスキルが存在するときのみ公開される。skill-gated tools は `loadSkill` 実行後かつ対応環境変数がそろったときのみ使える。現状は `KARAKURI_WORLD_*` で `karakuri_world_*`、`SNS_*` で Mastodon 向け `sns_*` ツール群を遅延公開する。`data/skills/*/SKILL.md` は全ユーザー向け、`data/system-skills/*/SKILL.md` は `userId === 'system'`（cron / heartbeat）でのみ参照される。標準添付の SNS skill は `data/system-skills` 配下なので、SNS は既定では automation 専用であり、対話ユーザーに公開したい場合は運用側で shared skill を追加する。
 
 各層はインターフェースで抽象化し、実装の差し替えを容易にする:
 
@@ -47,11 +47,16 @@ karakuri-agent/
 │   │       ├── index.ts           # ツールレジストリ
 │   │       ├── gated-tools.ts     # スキル→ToolSet マッピング（動的ツール解決）
 │   │       ├── karakuri-world.ts  # karakuri-world API クライアント + ツール定義
+│   │       ├── sns.ts             # Mastodon 向け SNS ツール定義（skill-gated）
 │   │       ├── load-skill.ts      # スキル本文ロード + 動的ツール登録
 │   │       ├── recall-diary.ts    # 日記検索ツール
 │   │       ├── user-lookup.ts     # 保存済みユーザープロフィール検索
 │   │       ├── web-fetch.ts       # URL取得 + Readability/Turndown
 │   │       └── web-search.ts      # Brave Search API 連携
+│   ├── sns/
+│   │   ├── index.ts               # SNS provider factory
+│   │   ├── mastodon.ts            # Mastodon API 実装
+│   │   └── types.ts               # SNS provider 共通型
 │   ├── memory/
 │   │   ├── composite-store.ts  # IMemoryStore + CompositeMemoryStore
 │   │   ├── diary-store.ts      # SqliteDiaryStore (SQLite diary)
