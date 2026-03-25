@@ -161,6 +161,7 @@ export class KarakuriAgent implements IAgent {
     const hasUserLookup = this.userStore != null;
     const effectiveSkills = filterSkillsToAvailableTools(skills, {
       karakuriWorld: this.config.karakuriWorld,
+      sns: this.config.sns,
     });
 
     const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
@@ -224,6 +225,7 @@ export class KarakuriAgent implements IAgent {
       memoryStore: this.memoryStore,
       braveApiKey: this.config.braveApiKey,
       karakuriWorld: this.config.karakuriWorld,
+      sns: this.config.sns,
       postMessageEnabled: hasPostMessage,
       postMessageChannelIds: this.config.postMessageChannelIds,
       reportChannelId: this.config.reportChannelId,

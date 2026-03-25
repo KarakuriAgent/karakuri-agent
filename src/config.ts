@@ -28,6 +28,9 @@ const configSchema = z.object({
   braveApiKey: z.string().trim().min(1).optional(),
   karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
+  snsProvider: z.enum(['mastodon']).optional(),
+  snsInstanceUrl: z.string().trim().min(1).optional(),
+  snsAccessToken: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
   maxSteps: z.coerce.number().int().positive().default(10),
@@ -44,6 +47,14 @@ export interface ApiCredentials {
   apiKey: string;
 }
 
+export type SnsProviderType = 'mastodon';
+
+export interface SnsCredentials {
+  provider: SnsProviderType;
+  instanceUrl: string;
+  accessToken: string;
+}
+
 export interface Config {
   discordApplicationId: string;
   discordBotToken: string;
@@ -58,6 +69,7 @@ export interface Config {
   postResponseLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
   karakuriWorld?: ApiCredentials | undefined;
+  sns?: SnsCredentials | undefined;
   dataDir: string;
   timezone: string;
   maxSteps: number;
@@ -94,6 +106,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     braveApiKey: env.BRAVE_API_KEY || undefined,
     karakuriWorldApiBaseUrl: normalizeOptionalString(env.KARAKURI_WORLD_API_BASE_URL),
     karakuriWorldApiKey: normalizeOptionalString(env.KARAKURI_WORLD_API_KEY),
+    snsProvider: normalizeOptionalString(env.SNS_PROVIDER),
+    snsInstanceUrl: normalizeOptionalString(env.SNS_INSTANCE_URL),
+    snsAccessToken: normalizeOptionalString(env.SNS_ACCESS_TOKEN),
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
     maxSteps: env.MAX_STEPS ?? env.AGENT_MAX_STEPS,
@@ -112,6 +127,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
     const karakuriWorldApiBaseUrl = normalizeBaseUrl(parsed.karakuriWorldApiBaseUrl, 'KARAKURI_WORLD_API_BASE_URL');
     const karakuriWorldApiKey = normalizeOptionalString(parsed.karakuriWorldApiKey);
+    const snsInstanceUrl = normalizeBaseUrl(parsed.snsInstanceUrl, 'SNS_INSTANCE_URL');
+    const snsAccessToken = normalizeOptionalString(parsed.snsAccessToken);
 
     const llmModelSelector = parseModelSelector(parsed.llmModel);
     const postResponseLlmModel = normalizeOptionalString(parsed.postResponseLlmModel);
@@ -132,6 +149,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const karakuriWorld = karakuriWorldApiBaseUrl != null && karakuriWorldApiKey != null
       ? { apiBaseUrl: karakuriWorldApiBaseUrl, apiKey: karakuriWorldApiKey }
       : undefined;
+    const snsFields = [parsed.snsProvider, snsInstanceUrl, snsAccessToken];
+    const snsSetCount = snsFields.filter((value) => value != null).length;
+    if (snsSetCount > 0 && snsSetCount < 3) {
+      throw new Error(
+        'Partial SNS configuration: all of SNS_PROVIDER, SNS_INSTANCE_URL, and SNS_ACCESS_TOKEN must be set.',
+      );
+    }
+    const sns = parsed.snsProvider != null && snsInstanceUrl != null && snsAccessToken != null
+      ? {
+          provider: parsed.snsProvider,
+          instanceUrl: snsInstanceUrl,
+          accessToken: snsAccessToken,
+        }
+      : undefined;
     const config = {
       ...parsed,
       llmBaseUrl,
@@ -147,6 +178,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       reportChannelId,
       adminUserIds: parseIdList(parsed.adminUserIds),
       ...(karakuriWorld != null ? { karakuriWorld } : {}),
+      ...(sns != null ? { sns } : {}),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,
@@ -156,6 +188,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmApi: config.llmModelSelector.api,
       hasPostResponseModel: config.postResponseLlmModelSelector != null,
       hasKarakuriWorld: config.karakuriWorld != null,
+      hasSns: config.sns != null,
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,

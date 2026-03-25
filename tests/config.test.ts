@@ -338,6 +338,57 @@ describe('loadConfig', () => {
     })).toThrow('KARAKURI_WORLD_API_BASE_URL must be a valid URL');
   });
 
+  it('loads SNS settings only when all three env vars are set', () => {
+    const config = loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'mastodon',
+      SNS_INSTANCE_URL: 'https://social.example/',
+      SNS_ACCESS_TOKEN: 'sns-token',
+    });
+
+    expect(config.sns).toEqual({
+      provider: 'mastodon',
+      instanceUrl: 'https://social.example',
+      accessToken: 'sns-token',
+    });
+  });
+
+  it('omits SNS settings when all three env vars are absent', () => {
+    expect(loadConfig(validEnv).sns).toBeUndefined();
+  });
+
+  it('throws when SNS configuration is only partially set', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'mastodon',
+      SNS_INSTANCE_URL: 'https://social.example',
+    })).toThrow('Partial SNS configuration');
+
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_INSTANCE_URL: 'https://social.example',
+      SNS_ACCESS_TOKEN: 'sns-token',
+    })).toThrow('Partial SNS configuration');
+  });
+
+  it('rejects invalid SNS_INSTANCE_URL with the correct label', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'mastodon',
+      SNS_INSTANCE_URL: 'not-a-url',
+      SNS_ACCESS_TOKEN: 'sns-token',
+    })).toThrow('SNS_INSTANCE_URL must be a valid URL');
+  });
+
+  it('rejects invalid SNS_PROVIDER values', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'x',
+      SNS_INSTANCE_URL: 'https://social.example',
+      SNS_ACCESS_TOKEN: 'sns-token',
+    })).toThrow(/Invalid configuration: .*mastodon/i);
+  });
+
   it('throws when a required field is missing', () => {
     expect(() => loadConfig({
       DISCORD_APPLICATION_ID: 'app',

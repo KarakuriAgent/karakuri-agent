@@ -73,6 +73,7 @@ describe('webFetch tool', () => {
       },
     });
     expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.dispatcher).toBeDefined();
   });
 
   it('validates that only http and https URLs are accepted', () => {
@@ -320,6 +321,32 @@ describe('webFetch tool', () => {
     }
 
     expect(result.error).toContain('Blocked URL target');
+    expect(fetchFn).toHaveBeenCalledOnce();
+  });
+
+  it('rejects redirects that switch to disallowed schemes', async () => {
+    const fetchFn = vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: {
+        location: 'ftp://example.com/archive.zip',
+      },
+    }));
+    const tool = createWebFetchTool({
+      fetchFn: fetchFn as unknown as typeof globalThis.fetch,
+      lookupFn: createPublicLookup(),
+    });
+
+    const result = await tool.execute!(
+      { url: 'https://example.com/post' },
+      toolContext,
+    ) as WebFetchResult;
+
+    expect(result.success).toBe(false);
+    if (result.success) {
+      return;
+    }
+
+    expect(result.error).toContain('http or https');
     expect(fetchFn).toHaveBeenCalledOnce();
   });
 });

@@ -1,6 +1,6 @@
 import type { ToolSet } from 'ai';
 
-import type { ApiCredentials } from '../../config.js';
+import type { ApiCredentials, SnsCredentials } from '../../config.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
@@ -19,6 +19,7 @@ export interface CreateAgentToolsOptions {
   memoryStore: IMemoryStore;
   braveApiKey?: string | undefined;
   karakuriWorld?: ApiCredentials | undefined;
+  sns?: SnsCredentials | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   messageSink?: IMessageSink | undefined;
@@ -36,6 +37,7 @@ export function createAgentTools({
   memoryStore,
   braveApiKey,
   karakuriWorld,
+  sns,
   skillStore,
   skills = [],
   messageSink,
@@ -89,7 +91,7 @@ export function createAgentTools({
       : {}),
   };
 
-  const gatedToolSets = buildGatedToolSets(skills, { karakuriWorld });
+  const gatedToolSets = buildGatedToolSets(skills, { karakuriWorld, sns });
 
   if (skillStore != null && skills.length > 0) {
     // loadSkill.execute() mutates this tools object to dynamically register gated tools.

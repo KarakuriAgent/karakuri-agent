@@ -12,6 +12,14 @@ const KARAKURI_WORLD_CREDS = {
   },
 };
 
+const SNS_CREDS = {
+  sns: {
+    provider: 'mastodon' as const,
+    instanceUrl: 'https://social.example',
+    accessToken: 'secret',
+  },
+};
+
 const NO_CREDS = {};
 
 function makeSkill(overrides: Partial<SkillDefinition> & Pick<SkillDefinition, 'name'>): SkillDefinition {
@@ -110,6 +118,20 @@ describe('buildGatedToolSets', () => {
     expect(result.has('plain-skill')).toBe(false);
     expect(result.has('missing-tools')).toBe(false);
   });
+
+  it('builds a tool set for SNS skills when SNS credentials are configured', () => {
+    const skills = [
+      makeSkill({
+        name: 'sns',
+        allowedTools: ['sns_get_timeline', 'sns_post'],
+      }),
+    ];
+
+    const result = buildGatedToolSets(skills, SNS_CREDS);
+
+    expect(result.size).toBe(1);
+    expect(Object.keys(result.get('sns')!)).toEqual(['sns_get_timeline', 'sns_post']);
+  });
 });
 
 describe('filterSkillsToAvailableTools', () => {
@@ -198,5 +220,17 @@ describe('filterSkillsToAvailableTools', () => {
     const result = filterSkillsToAvailableTools(skills, KARAKURI_WORLD_CREDS);
 
     expect(result).toHaveLength(0);
+  });
+
+  it('filters out SNS skills when SNS credentials are unavailable', () => {
+    const skills = [
+      makeSkill({
+        name: 'sns',
+        allowedTools: ['sns_get_timeline'],
+      }),
+    ];
+
+    expect(filterSkillsToAvailableTools(skills, NO_CREDS)).toHaveLength(0);
+    expect(filterSkillsToAvailableTools(skills, SNS_CREDS)[0]!.allowedTools).toEqual(['sns_get_timeline']);
   });
 });

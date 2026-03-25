@@ -124,8 +124,8 @@ interface IAgent {
 
 - 常に有効
 - HTML / XHTML のみを対象に fetch し、Readability + Turndown で Markdown に変換する
-- タイムアウト 15 秒、本文 2 MB、出力 20,000 文字で制限する
-- private / loopback / link-local 宛てや、そこへ到達する redirect は SSRF 対策として拒否する
+- タイムアウト 15 秒、本文 2 MB、出力 20,000 文字で制限する。タイムアウトには DNS 解決も含める
+- 各 redirect hop を再検証し、`http` / `https` 以外のスキームや private / loopback / link-local 宛てへの遷移は SSRF 対策として拒否する
 - Readability で本文抽出できない場合はフォールバック文字列を返す
 
 ### `webSearch` (`src/agent/tools/web-search.ts`)
@@ -148,6 +148,27 @@ interface IAgent {
 - 通常ユーザーの `loadSkill` は shared skill のみ、system user の `loadSkill` は system skill も取得できる
 - `allowedTools` を持つ skill では、本文返却と同時に対応する skill-gated tool を現在ターンの `tools` オブジェクトへ動的登録する
 - 本文の全文は必要になったときだけロードさせ、システムプロンプトには skill 一覧のみ注入する
+
+### `sns_*` skill-gated tools (`src/agent/tools/sns.ts`, `src/sns/*`)
+
+- `SNS_PROVIDER` / `SNS_INSTANCE_URL` / `SNS_ACCESS_TOKEN` がすべて設定され、かつ対応 skill を `loadSkill` したターンでのみ公開される
+- 標準添付の SNS skill は `data/system-skills/sns/SKILL.md` のみなので、既定では `userId === 'system'` の automation からだけ利用できる。対話ユーザーに公開したい場合は運用側で `data/skills/*` に shared skill を追加する
+- 初期実装 provider は Mastodon
+- 公開ツール:
+  - `sns_post`
+  - `sns_get_post`
+  - `sns_get_timeline`
+  - `sns_search`
+  - `sns_like`
+  - `sns_repost`
+  - `sns_get_notifications`
+  - `sns_upload_media`
+  - `sns_get_thread`
+  - `sns_get_user_posts`
+  - `sns_get_trends`
+- `sns_upload_media` は remote URL を直接渡してアップロードできるが、`webFetch` と同じ SSRF 対策を共有し、`http` / `https` 以外のスキーム、private / loopback / link-local 宛て、およびそれらへ到達する redirect を拒否する
+- `sns_search` は Mastodon `resolve=true` を付けて検索し、連合先のアカウント handle や status URL も解決対象に含める
+- remote media はサイズ上限付きで読み込み、Mastodon が `202 Accepted` を返した場合は `GET /api/v1/media/:id` を短時間ポーリングして ready を待つ。所定回数で ready にならなければエラーにする
 
 ## 要約処理 (`Agent.summarizeSession`)
 
@@ -218,7 +239,7 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 | 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
 | システムプロンプト構築 | memory / user-profile / diary / summary がタグ付きで正しく組み立てられる |
-| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill / karakuri-world skill-gated tools が想定どおり呼ばれる |
+| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill / karakuri-world / sns skill-gated tools が想定どおり呼ばれる |
 | lifecycle callback 配線 | AgentLifecycleCallbacks が generateText の step/tool callback へ同期で橋渡しされる |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 | post-response evaluation | reply を先に返しつつ evaluator がバックグラウンドで動き、drainPendingEvaluations で待機できる |
@@ -227,5 +248,6 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 
 - memory / user-profile / diary / summary はすべてタグで囲い、instruction と分離
 - 応答後の永続化判断はポストレスポンス評価 LLM に集約する
-- `webFetch` は DNS 解決と redirect を検査し、private / loopback / link-local への SSRF を拒否する
+- `webFetch` は DNS 解決と各 redirect hop を検査し、危険なスキームや private / loopback / link-local への SSRF を拒否する。15 秒タイムアウトは DNS 解決も含めて適用する
+- `sns_upload_media` も同じ safe-fetch 実装を共有し、危険なスキームや private 宛て redirect を拒否する。タイムアウトは DNS 解決も含めて適用する
 - ツールのステップ数上限（`stopWhen: stepCountIs(n)`）を設定して無限ループを防ぐ

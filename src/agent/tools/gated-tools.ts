@@ -1,14 +1,16 @@
 import type { ToolSet } from 'ai';
 
-import type { ApiCredentials } from '../../config.js';
+import type { ApiCredentials, SnsCredentials } from '../../config.js';
 import type { SkillDefinition } from '../../skill/types.js';
 import { createLogger } from '../../utils/logger.js';
 import { createKarakuriWorldTools } from './karakuri-world.js';
+import { createSnsTools } from './sns.js';
 
 const logger = createLogger('GatedTools');
 
 export interface AvailableGatedToolSources {
   karakuriWorld?: ApiCredentials | undefined;
+  sns?: SnsCredentials | undefined;
 }
 
 export function buildGatedToolSets(
@@ -63,6 +65,10 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
 
   if (availableToolSources.karakuriWorld != null) {
     Object.assign(allGatedTools, createKarakuriWorldTools(availableToolSources.karakuriWorld));
+  }
+
+  if (availableToolSources.sns != null) {
+    Object.assign(allGatedTools, createSnsTools(availableToolSources.sns));
   }
 
   return allGatedTools;

@@ -10,6 +10,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` / `data/system-skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
+- `sns_*` ツールによる Mastodon 向け SNS 投稿・取得・通知確認・メディアアップロード（skill-gated、同梱スキルは system 専用）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
 - `postMessage` / `manageCron` ツールによる管理者限定のプロアクティブ投稿と Cron 管理
 - `REPORT_CHANNEL_ID` への Heartbeat / Cron 実行結果、Cron 登録変更、チャット処理エラー詳細の通知
@@ -20,7 +21,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 ## セットアップ
 
 1. `cp .env.example .env`
-2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、対応スキルの `loadSkill` 後に karakuri-world 専用ツールが動的に有効化される。必要なら `POST_RESPONSE_LLM_MODEL` / `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` で応答後評価専用モデルを分離できる）
+2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、対応スキルの `loadSkill` 後に karakuri-world 専用ツールが動的に有効化される。`SNS_PROVIDER` / `SNS_INSTANCE_URL` / `SNS_ACCESS_TOKEN` をすべて設定すると、同梱の system 専用 SNS skill を `loadSkill` した automation で Mastodon 用 `sns_*` ツールが動的に有効化される。対話ユーザーにも公開したい場合は、運用側で `data/skills/*/SKILL.md` に shared skill を追加する。必要なら `POST_RESPONSE_LLM_MODEL` / `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` で応答後評価専用モデルを分離できる）
    - `LLM_MODEL` は `openai/gpt-4o` のような OpenAI Responses API セレクタ、または `openai/chat/gpt-4o` のような OpenAI Chat API セレクタで指定する
    - 旧形式の bare model 名（例: `gpt-4o`）も互換用に受け付けるが、内部では `openai/gpt-4o` として扱う
    - `LLM_API_KEY` 未設定時のエラーでは legacy alias の `OPENAI_API_KEY` も案内する
@@ -96,8 +97,11 @@ npm run docker:dev
 - 1 つ以上のスキルが存在するときだけ `loadSkill` ツールが公開され、システムプロンプトには利用可能なスキル一覧だけを注入する
 - 通常ユーザーには `data/skills/*/SKILL.md` のみ公開され、`data/system-skills/*/SKILL.md` は `userId === 'system'` のときだけ一覧表示・`loadSkill` 対象になる
 - `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`KARAKURI_WORLD_*` 設定時は `karakuri_world_*` ツール群をスキル経由で遅延公開する
+- `SNS_*` 設定時は `sns_*` ツール群をスキル経由で遅延公開する。標準添付の SNS skill は `data/system-skills` 配下なので、既定では `userId === 'system'` の automation 専用
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
-- `webFetch` は private / loopback / link-local 宛てや、そこへ向かう redirect を拒否して SSRF を抑止する
+- `webFetch` は各 redirect hop を再検証し、`http` / `https` 以外のスキームや private / loopback / link-local 宛てへの遷移を拒否して SSRF を抑止する。15 秒のタイムアウトは DNS 解決も含めて適用する
+- `sns_upload_media` も `webFetch` と同じ URL 検証を使い、`http` / `https` 以外のスキームや private / loopback / link-local 宛て、そこへ向かう redirect を拒否する。こちらも DNS 解決を含めてタイムアウトを適用する
+- Mastodon のメディア処理が非同期な場合、`sns_upload_media` は `GET /api/v1/media/:id` を短時間ポーリングして ready を確認する。制限時間内に ready にならない場合はエラーとして再試行を促す
 - `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う
 - `postMessage` / `manageCron` は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` が設定された管理者コンテキストでのみ公開される
 - Heartbeat は `ALLOWED_CHANNEL_IDS` 設定時のみ有効化され、`REPORT_CHANNEL_ID` は空欄のままでも省略設定として扱われる
