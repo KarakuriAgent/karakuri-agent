@@ -80,7 +80,10 @@ interface IAgent {
          ↓
 5. result.response.messages を sessionManager に保存して応答文字列を返す
         ↓
-6. real user のときだけ post-response evaluator をバックグラウンド enqueue
+6. post-response evaluator をバックグラウンド enqueue
+   - real user: profile / core memory / diary の永続化判断を含む
+   - system user: userStore へのプロフィール書き込みをスキップし、core memory / diary のみ評価
+   - SNS ツール経由で観測したユーザーにも enqueueSnsUserEvaluation で profile 評価を実行
    - user ごとに直列化（別 user 同士は並行しうる）
    - evaluator 実行直前に currentProfile / currentCoreMemory を再読込
    - `POST_RESPONSE_LLM_*` があれば evaluator 専用 model / client を使用
@@ -157,17 +160,13 @@ interface IAgent {
 - 公開ツール:
   - `sns_post`
   - `sns_get_post`
-  - `sns_get_timeline`
-  - `sns_search`
   - `sns_like`
   - `sns_repost`
-  - `sns_get_notifications`
   - `sns_upload_media`
   - `sns_get_thread`
-  - `sns_get_user_posts`
-  - `sns_get_trends`
+- `loadSkill("sns")` 時に、新着通知・トレンド・直近行動ログを動的コンテキストとして注入する
+- `sns_post` / `sns_like` / `sns_repost` は SQLite の SNS activity store を参照し、重複返信・引用・いいね・リポストを API 呼び出し前に抑止する
 - `sns_upload_media` は remote URL を直接渡してアップロードできるが、`webFetch` と同じ SSRF 対策を共有し、`http` / `https` 以外のスキーム、private / loopback / link-local 宛て、およびそれらへ到達する redirect を拒否する
-- `sns_search` は Mastodon `resolve=true` を付けて検索し、連合先のアカウント handle や status URL も解決対象に含める
 - remote media はサイズ上限付きで読み込み、Mastodon が `202 Accepted` を返した場合は `GET /api/v1/media/:id` を短時間ポーリングして ready を待つ。所定回数で ready にならなければエラーにする
 
 ## 要約処理 (`Agent.summarizeSession`)

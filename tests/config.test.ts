@@ -31,7 +31,7 @@ describe('loadConfig', () => {
     expect(config.maxSteps).toBe(10);
     expect(config.tokenBudget).toBe(8_000);
     expect(config.port).toBe(3_000);
-    expect(config.heartbeatIntervalMinutes).toBe(30);
+    expect(config.heartbeatIntervalMinutes).toBe(120);
     expect(config.braveApiKey).toBeUndefined();
     expect(config.postMessageChannelIds).toBeUndefined();
     expect(config.allowedChannelIds).toBeUndefined();

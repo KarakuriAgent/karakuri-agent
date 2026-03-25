@@ -1,4 +1,45 @@
 export type SnsVisibility = 'public' | 'unlisted' | 'private' | 'direct';
+export type SnsActivityType = SnsActivity['type'];
+
+export interface SnsPostActivity {
+  id: number;
+  type: 'post';
+  postId: string;
+  text: string;
+  replyToId?: string | undefined;
+  quotePostId?: string | undefined;
+  createdAt: string;
+}
+
+export interface SnsLikeActivity {
+  id: number;
+  type: 'like';
+  postId: string;
+  createdAt: string;
+}
+
+export interface SnsRepostActivity {
+  id: number;
+  type: 'repost';
+  postId: string;
+  createdAt: string;
+}
+
+export type SnsActivity = SnsPostActivity | SnsLikeActivity | SnsRepostActivity;
+
+export interface ISnsActivityStore {
+  recordPost(postId: string, text: string, replyToId?: string, quotePostId?: string): Promise<void>;
+  recordLike(postId: string): Promise<void>;
+  recordRepost(postId: string): Promise<void>;
+  hasLiked(postId: string): Promise<boolean>;
+  hasReposted(postId: string): Promise<boolean>;
+  hasReplied(replyToId: string): Promise<boolean>;
+  hasQuoted(postId: string): Promise<boolean>;
+  getRecentActivities(limit?: number): Promise<SnsActivity[]>;
+  getLastNotificationId(): Promise<string | null>;
+  setLastNotificationId(notificationId: string): Promise<void>;
+  close(): Promise<void>;
+}
 
 export interface SnsPost {
   id: string;
@@ -15,6 +56,8 @@ export interface SnsPost {
   likeCount: number;
   replyCount: number;
   mediaUrls?: string[] | undefined;
+  liked?: boolean | undefined;
+  reposted?: boolean | undefined;
 }
 
 export interface SnsNotification {
@@ -62,6 +105,8 @@ export interface SearchResult {
 export interface NotificationParams {
   limit?: number | undefined;
   types?: Array<'mention' | 'like' | 'repost' | 'follow' | 'reply' | 'other'> | undefined;
+  sinceId?: string | undefined;
+  maxId?: string | undefined;
 }
 
 export interface UploadMediaParams {

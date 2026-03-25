@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CronRunner } from '../src/scheduler/cron-runner.js';
 import { HeartbeatRunner } from '../src/scheduler/heartbeat.js';
 
 afterEach(() => {
@@ -213,8 +214,69 @@ describe('HeartbeatRunner', () => {
     await vi.advanceTimersByTimeAsync(60);
 
     expect(agent.handleMessage).toHaveBeenCalledTimes(2);
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[ERROR] [HeartbeatRunner] Heartbeat report failed'), expect.any(Error));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[ERROR] [HeartbeatRunner] Failed to send report message'), expect.any(Error));
 
     await runner.close();
+  });
+
+  it('serializes heartbeat and cron system turns', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+
+    const resolvers: Array<(value: string) => void> = [];
+    const agent = {
+      handleMessage: vi.fn(async () => new Promise<string>((resolve) => {
+        resolvers.push(resolve);
+      })),
+      summarizeSession: vi.fn(async () => 'summary'),
+    };
+    const heartbeatRunner = new HeartbeatRunner({
+      agent,
+      schedulerStore: {
+        readHeartbeatInstructions: vi.fn(async () => 'Check systems.'),
+        listCronJobs: vi.fn(async () => []),
+        registerJob: vi.fn(),
+        unregisterJob: vi.fn(),
+        setReloadListener: vi.fn(),
+        close: vi.fn(async () => {}),
+      },
+      intervalMinutes: 1,
+    });
+    const cronRunner = new CronRunner({
+      agent,
+      schedulerStore: {
+        readHeartbeatInstructions: vi.fn(async () => null),
+        listCronJobs: vi.fn(async () => [{
+          name: 'daily-summary',
+          schedule: '* * * * *',
+          instructions: 'Send summary.',
+          enabled: true,
+          sessionMode: 'isolated' as const,
+          staggerMs: 0,
+          oneshot: false,
+        }]),
+        registerJob: vi.fn(),
+        unregisterJob: vi.fn(async () => true),
+        setReloadListener: vi.fn(),
+        close: vi.fn(async () => {}),
+      },
+      timezone: 'UTC',
+    });
+
+    await heartbeatRunner.sync();
+    await cronRunner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(agent.handleMessage).toHaveBeenCalledTimes(1);
+
+    resolvers.shift()?.('done');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(agent.handleMessage).toHaveBeenCalledTimes(2);
+
+    resolvers.shift()?.('done');
+    await Promise.resolve();
+
+    await Promise.all([heartbeatRunner.close(), cronRunner.close()]);
   });
 });

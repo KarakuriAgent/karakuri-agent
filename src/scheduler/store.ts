@@ -96,6 +96,7 @@ export class FileSchedulerStore implements ISchedulerStore {
       enabled: input.enabled ?? true,
       sessionMode: input.sessionMode ?? 'isolated',
       staggerMs: input.staggerMs ?? 0,
+      oneshot: input.oneshot ?? false,
     });
     const definition = parseCronMarkdown(name, markdown);
     const directory = join(this.cronDir, name);

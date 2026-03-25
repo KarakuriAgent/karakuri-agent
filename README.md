@@ -25,7 +25,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
    - `LLM_MODEL` は `openai/gpt-4o` のような OpenAI Responses API セレクタ、または `openai/chat/gpt-4o` のような OpenAI Chat API セレクタで指定する
    - 旧形式の bare model 名（例: `gpt-4o`）も互換用に受け付けるが、内部では `openai/gpt-4o` として扱う
    - `LLM_API_KEY` 未設定時のエラーでは legacy alias の `OPENAI_API_KEY` も案内する
-   - Heartbeat / Cron を使う場合は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` を設定し、必要に応じて `REPORT_CHANNEL_ID` / `HEARTBEAT_INTERVAL_MINUTES` も指定
+   - Heartbeat / Cron を使う場合は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` を設定し、必要に応じて `REPORT_CHANNEL_ID` / `HEARTBEAT_INTERVAL_MINUTES` も指定（デフォルトは 120 分）
 3. `cp -r data.example data`
 4. `npm install`
 5. `npm run dev`
@@ -97,7 +97,7 @@ npm run docker:dev
 - 1 つ以上のスキルが存在するときだけ `loadSkill` ツールが公開され、システムプロンプトには利用可能なスキル一覧だけを注入する
 - 通常ユーザーには `data/skills/*/SKILL.md` のみ公開され、`data/system-skills/*/SKILL.md` は `userId === 'system'` のときだけ一覧表示・`loadSkill` 対象になる
 - `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`KARAKURI_WORLD_*` 設定時は `karakuri_world_*` ツール群をスキル経由で遅延公開する
-- `SNS_*` 設定時は `sns_*` ツール群をスキル経由で遅延公開する。標準添付の SNS skill は `data/system-skills` 配下なので、既定では `userId === 'system'` の automation 専用
+- `SNS_*` 設定時は `sns_*` ツール群をスキル経由で遅延公開する。標準添付の SNS skill は `loadSkill` 時に新着通知・トレンド・直近行動ログを動的注入し、重複いいね/リポスト/返信/引用をツール層で防ぐ。標準添付の SNS skill は `data/system-skills` 配下なので、既定では `userId === 'system'` の automation 専用
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は各 redirect hop を再検証し、`http` / `https` 以外のスキームや private / loopback / link-local 宛てへの遷移を拒否して SSRF を抑止する。15 秒のタイムアウトは DNS 解決も含めて適用する
 - `sns_upload_media` も `webFetch` と同じ URL 検証を使い、`http` / `https` 以外のスキームや private / loopback / link-local 宛て、そこへ向かう redirect を拒否する。こちらも DNS 解決を含めてタイムアウトを適用する

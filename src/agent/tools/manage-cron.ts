@@ -16,6 +16,7 @@ const manageCronSchema = z.object({
   enabled: z.boolean().optional(),
   sessionMode: z.enum(['isolated', 'shared']).optional(),
   staggerMs: z.number().int().min(0).optional(),
+  oneshot: z.boolean().optional(),
 });
 
 export interface ManageCronToolOptions {
@@ -51,6 +52,7 @@ export function createManageCronTool({
             ...(input.enabled != null ? { enabled: input.enabled } : {}),
             ...(input.sessionMode != null ? { sessionMode: input.sessionMode } : {}),
             ...(input.staggerMs != null ? { staggerMs: input.staggerMs } : {}),
+            ...(input.oneshot != null ? { oneshot: input.oneshot } : {}),
           });
           void reportSafely(
             messageSink,

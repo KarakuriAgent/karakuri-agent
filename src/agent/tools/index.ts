@@ -3,8 +3,12 @@ import type { ToolSet } from 'ai';
 import type { ApiCredentials, SnsCredentials } from '../../config.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
+import type { ISnsActivityStore } from '../../sns/types.js';
+import type { SkillContextRegistry } from '../../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
 import type { IUserStore } from '../../user/types.js';
+import { createLogger } from '../../utils/logger.js';
+import { reportSafely } from '../../utils/report.js';
 import { hasAdminToolAccess } from './admin-auth.js';
 import { buildGatedToolSets } from './gated-tools.js';
 import { createLoadSkillTool } from './load-skill.js';
@@ -15,11 +19,14 @@ import { createUserLookupTool } from './user-lookup.js';
 import { createWebFetchTool } from './web-fetch.js';
 import { createWebSearchTool } from './web-search.js';
 
+const logger = createLogger('AgentTools');
+
 export interface CreateAgentToolsOptions {
   memoryStore: IMemoryStore;
   braveApiKey?: string | undefined;
   karakuriWorld?: ApiCredentials | undefined;
   sns?: SnsCredentials | undefined;
+  snsActivityStore?: ISnsActivityStore | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   messageSink?: IMessageSink | undefined;
@@ -31,6 +38,8 @@ export interface CreateAgentToolsOptions {
   userId?: string | undefined;
   userStore?: IUserStore | undefined;
   includeSystemOnly?: boolean | undefined;
+  contextRegistry?: SkillContextRegistry | undefined;
+  evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
 }
 
 export function createAgentTools({
@@ -38,6 +47,7 @@ export function createAgentTools({
   braveApiKey,
   karakuriWorld,
   sns,
+  snsActivityStore,
   skillStore,
   skills = [],
   messageSink,
@@ -49,6 +59,8 @@ export function createAgentTools({
   userId,
   userStore,
   includeSystemOnly,
+  contextRegistry,
+  evaluateUser,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
@@ -91,16 +103,25 @@ export function createAgentTools({
       : {}),
   };
 
-  const gatedToolSets = buildGatedToolSets(skills, { karakuriWorld, sns });
+  const reportError = messageSink != null && reportChannelId != null
+    ? (message: string) => { void reportSafely(messageSink, reportChannelId, message, logger); }
+    : undefined;
+  const gatedToolSets = buildGatedToolSets(skills, {
+    karakuriWorld,
+    sns,
+    snsActivityStore,
+    userStore,
+    evaluateUser,
+    reportError,
+  });
 
   if (skillStore != null && skills.length > 0) {
-    // loadSkill.execute() mutates this tools object to dynamically register gated tools.
-    // This is intentional and scoped to a single handleMessage() turn — tools is recreated per turn.
     tools.loadSkill = createLoadSkillTool({
       skillStore,
       tools,
       gatedToolSets,
       ...(includeSystemOnly != null ? { includeSystemOnly } : {}),
+      ...(contextRegistry != null ? { contextRegistry } : {}),
     });
   }
 

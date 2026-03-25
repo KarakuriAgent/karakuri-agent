@@ -4,6 +4,7 @@ import type { CronJobDefinition, SchedulerSessionMode } from './types.js';
 
 const FRONTMATTER_DELIMITER = '---';
 const QUOTED_VALUE_PATTERN = /^("([\s\S]*)"|'([\s\S]*)')$/;
+const KNOWN_KEYS = ['schedule', 'session-mode', 'enabled', 'stagger-ms', 'oneshot'];
 
 export const CRON_JOB_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -35,6 +36,7 @@ export function parseCronMarkdown(jobName: string, markdown: string): CronJobDef
   const sessionMode = parseOptionalSessionMode(metadata, 'session-mode') ?? 'isolated';
   const enabled = parseOptionalBoolean(metadata, 'enabled') ?? true;
   const staggerMs = parseOptionalInteger(metadata, 'stagger-ms') ?? 0;
+  const oneshot = parseOptionalBoolean(metadata, 'oneshot') ?? false;
 
   assertValidCronSchedule(schedule);
   assertNoUnknownKeys(metadata);
@@ -46,6 +48,7 @@ export function parseCronMarkdown(jobName: string, markdown: string): CronJobDef
     enabled,
     sessionMode,
     staggerMs,
+    oneshot,
   };
 }
 
@@ -61,6 +64,7 @@ export function renderCronMarkdown(job: CronJobDefinition): string {
     `session-mode: ${job.sessionMode}`,
     `enabled: ${job.enabled ? 'true' : 'false'}`,
     `stagger-ms: ${job.staggerMs}`,
+    ...(job.oneshot ? ['oneshot: true'] : []),
     FRONTMATTER_DELIMITER,
     instructions,
     '',
@@ -151,7 +155,7 @@ function parseOptionalInteger(metadata: Map<string, string>, key: string): numbe
 
 function assertNoUnknownKeys(metadata: Map<string, string>): void {
   for (const key of metadata.keys()) {
-    if (!['schedule', 'session-mode', 'enabled', 'stagger-ms'].includes(key)) {
+    if (!KNOWN_KEYS.includes(key)) {
       throw new Error(`Unknown frontmatter key: ${key}`);
     }
   }

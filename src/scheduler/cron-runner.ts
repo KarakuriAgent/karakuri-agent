@@ -4,10 +4,12 @@ import type { IAgent } from '../agent/core.js';
 import { formatError } from '../utils/error.js';
 import { createLogger } from '../utils/logger.js';
 import { reportSafely } from '../utils/report.js';
+import { runExclusiveSystemTurn } from './system-turn-mutex.js';
 import type { CronJobDefinition, IMessageSink, ISchedulerStore } from './types.js';
 
 const logger = createLogger('CronRunner');
 
+// Break long delays into 24h chunks to avoid setTimeout overflow on 32-bit timer implementations
 const MAX_TIMEOUT_CHUNK_MS = 24 * 60 * 60 * 1_000;
 
 interface CronState {
@@ -16,8 +18,11 @@ interface CronState {
   running: boolean;
   skippedWhileRunning: boolean;
   inFlight: Promise<void> | null;
+  awaitOnClose: boolean;
+  pendingUnregister: Promise<void> | null;
   rescheduleAfterRun: boolean;
   disposed: boolean;
+  oneshotCompleted: boolean;
 }
 
 export interface CronRunnerOptions {
@@ -60,6 +65,18 @@ export class CronRunner {
 
     for (const [name, state] of this.states) {
       const next = nextJobs.get(name);
+      if (state.job.oneshot && state.oneshotCompleted) {
+        if (next == null || !next.enabled) {
+          this.states.delete(name);
+        } else {
+          if (state.pendingUnregister == null) {
+            void this.unregisterOneshotState(state);
+          }
+          nextJobs.delete(name);
+        }
+        continue;
+      }
+
       if (next == null || !next.enabled) {
         this.cancelState(state);
         this.states.delete(name);
@@ -84,8 +101,11 @@ export class CronRunner {
         running: false,
         skippedWhileRunning: false,
         inFlight: null,
+        awaitOnClose: false,
+        pendingUnregister: null,
         rescheduleAfterRun: false,
         disposed: false,
+        oneshotCompleted: false,
       };
       this.states.set(job.name, state);
       this.scheduleNext(state);
@@ -94,15 +114,25 @@ export class CronRunner {
 
   async close(): Promise<void> {
     this.closed = true;
-    const inFlightRuns: Promise<void>[] = [];
-    for (const state of this.states.values()) {
-      this.cancelState(state);
-      if (state.inFlight != null) {
-        inFlightRuns.push(state.inFlight);
+    while (true) {
+      const pendingRuns: Promise<void>[] = [];
+      for (const state of this.states.values()) {
+        this.cancelState(state);
+        if (state.inFlight != null && state.awaitOnClose) {
+          pendingRuns.push(state.inFlight);
+        }
+        if (state.pendingUnregister != null) {
+          pendingRuns.push(state.pendingUnregister);
+        }
       }
+
+      if (pendingRuns.length === 0) {
+        break;
+      }
+
+      await Promise.allSettled(pendingRuns);
     }
     this.states.clear();
-    await Promise.allSettled(inFlightRuns);
   }
 
   private scheduleNext(state: CronState): void {
@@ -160,27 +190,40 @@ export class CronRunner {
 
     try {
       this.scheduleNext(state);
-      run = this.executeJob(state).finally(() => {
-        state.running = false;
-        if (!this.closed && !state.disposed && state.timer == null && (state.skippedWhileRunning || state.rescheduleAfterRun)) {
-          state.skippedWhileRunning = false;
-          state.rescheduleAfterRun = false;
-          this.scheduleNext(state);
+      // During stagger delay, no agent work has started so shutdown can skip the wait.
+      // Once the stagger completes and agent.handleMessage begins, the job must be awaited
+      // during shutdown to avoid interrupting in-progress work.
+      state.awaitOnClose = state.job.staggerMs === 0;
+      run = (async () => {
+        const fired = await this.executeJob(state);
+        if (state.job.oneshot && fired) {
+          await this.unregisterOneshotState(state);
         }
-      });
+      })();
+      state.inFlight = run;
       await run;
-    } catch (error) {
-      if (run == null) {
-        state.running = false;
+    } finally {
+      if (state.inFlight === run) {
+        state.inFlight = null;
       }
-      throw error;
+      state.awaitOnClose = false;
+      state.running = false;
+      if (!this.closed && !state.disposed && state.timer == null && (state.skippedWhileRunning || state.rescheduleAfterRun)) {
+        state.skippedWhileRunning = false;
+        state.rescheduleAfterRun = false;
+        try {
+          this.scheduleNext(state);
+        } catch (error) {
+          logger.error(`Failed to reschedule cron job ${state.job.name}`, error);
+        }
+      }
     }
   }
 
-  private async executeJob(state: CronState): Promise<void> {
+  private async executeJob(state: CronState): Promise<boolean> {
     const { job } = state;
     const startedAt = this.now();
-    let inFlight: Promise<void> | null = null;
+    let fired = false;
 
     try {
       if (job.staggerMs > 0) {
@@ -192,67 +235,75 @@ export class CronRunner {
 
       if (this.closed || state.disposed) {
         logger.debug('Skipping cancelled cron execution after stagger delay', { name: job.name });
-        return;
+        return false;
       }
 
-      inFlight = (async () => {
-        try {
-          const sessionId = job.sessionMode === 'shared'
-            ? `cron:${job.name}`
-            : `cron:${job.name}:${this.now().toISOString()}`;
-          const response = await this.options.agent.handleMessage(
-            sessionId,
-            `(cron tick: ${job.name})`,
-            `cron:${job.name}`,
-            {
-              extraSystemPrompt: job.instructions,
-              userId: 'system',
-            },
-          );
-          logger.debug('Cron run completed', { name: job.name, responseLength: response.trim().length });
-          await reportSafely(
-            this.options.messageSink,
-            this.options.reportChannelId,
-            `✅ Cron ${job.name} succeeded in ${this.now().getTime() - startedAt.getTime()}ms`,
-            {
-              error: (_message, error) => {
-                logger.error(`Cron job ${job.name} report failed`, error);
-              },
-            },
-          );
-        } catch (error) {
-          logger.error(`Cron job ${job.name} failed`, error);
-          await reportSafely(
-            this.options.messageSink,
-            this.options.reportChannelId,
-            `❌ Cron ${job.name} failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`,
-            {
-              error: (_message, reportError) => {
-                logger.error(`Cron job ${job.name} report failed`, reportError);
-              },
-            },
-          );
+      state.awaitOnClose = true;
+      return await runExclusiveSystemTurn(async () => {
+        if (this.closed || state.disposed) {
+          logger.debug('Skipping cancelled cron execution before system turn', { name: job.name });
+          return false;
         }
-      })();
-      state.inFlight = inFlight;
-      await inFlight;
+
+        const sessionId = job.sessionMode === 'shared'
+          ? `cron:${job.name}`
+          : `cron:${job.name}:${this.now().toISOString()}`;
+        fired = true;
+        const response = await this.options.agent.handleMessage(
+          sessionId,
+          `(cron tick: ${job.name})`,
+          `cron:${job.name}`,
+          {
+            extraSystemPrompt: job.instructions,
+            userId: 'system',
+          },
+        );
+        logger.debug('Cron run completed', { name: job.name, responseLength: response.trim().length });
+        await reportSafely(
+          this.options.messageSink,
+          this.options.reportChannelId,
+          `✅ Cron ${job.name} succeeded in ${this.now().getTime() - startedAt.getTime()}ms`,
+          logger,
+        );
+        return true;
+      });
     } catch (error) {
       logger.error(`Cron job ${job.name} failed`, error);
       await reportSafely(
         this.options.messageSink,
         this.options.reportChannelId,
         `❌ Cron ${job.name} failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`,
-        {
-          error: (_message, reportError) => {
-            logger.error(`Cron job ${job.name} report failed`, reportError);
-          },
-        },
+        logger,
       );
+      return fired;
     } finally {
-      if (state.inFlight === inFlight) {
-        state.inFlight = null;
+      if (state.inFlight == null) {
+        state.awaitOnClose = false;
       }
     }
+  }
+
+  private async unregisterOneshotState(state: CronState): Promise<void> {
+    if (state.pendingUnregister != null) {
+      await state.pendingUnregister;
+      return;
+    }
+
+    this.cancelState(state);
+    state.oneshotCompleted = true;
+    // Assign pendingUnregister synchronously before the first await so that concurrent callers
+    // hit the early-return guard at the top of this method (the `pendingUnregister != null` check)
+    state.pendingUnregister = (async () => {
+      try {
+        await this.options.schedulerStore.unregisterJob(state.job.name);
+        this.states.delete(state.job.name);
+      } catch (error) {
+        logger.error(`Failed to unregister oneshot job ${state.job.name}`, error);
+      } finally {
+        state.pendingUnregister = null;
+      }
+    })();
+    await state.pendingUnregister;
   }
 
   private cancelState(state: CronState): void {
@@ -285,7 +336,8 @@ function sameJobDefinition(left: CronJobDefinition, right: CronJobDefinition): b
     && left.instructions === right.instructions
     && left.enabled === right.enabled
     && left.sessionMode === right.sessionMode
-    && left.staggerMs === right.staggerMs;
+    && left.staggerMs === right.staggerMs
+    && left.oneshot === right.oneshot;
 }
 
 function getMsToNextRun(schedule: string, timezone: string, now: Date): number | null {

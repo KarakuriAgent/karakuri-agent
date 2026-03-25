@@ -10,6 +10,10 @@ import { CompositeMemoryStore } from './memory/composite-store.js';
 import { SqliteDiaryStore } from './memory/diary-store.js';
 import { FileMemoryStore } from './memory/store.js';
 import { FileSessionManager } from './session/manager.js';
+import { createSnsProvider } from './sns/index.js';
+import { SnsSkillContextProvider } from './sns/context-provider.js';
+import { SqliteSnsActivityStore } from './sns/activity-store.js';
+import { SkillContextRegistry } from './skill/context-provider.js';
 import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
 import { SqliteUserStore } from './user/store.js';
@@ -33,6 +37,28 @@ async function main(): Promise<void> {
   const diaryStore = new SqliteDiaryStore({ dataDir: config.dataDir, timezone: config.timezone });
   const memoryStore = new CompositeMemoryStore(coreMemoryStore, diaryStore);
   const userStore = new SqliteUserStore({ dataDir: config.dataDir });
+  const snsActivityStore = config.sns != null ? new SqliteSnsActivityStore({ dataDir: config.dataDir }) : undefined;
+  const messageSink = config.allowedChannelIds != null && config.allowedChannelIds.length > 0
+    ? new DiscordMessageSink({
+        botToken: config.discordBotToken,
+        allowedChannelIds: config.allowedChannelIds,
+        reportChannelId: config.reportChannelId,
+      })
+    : undefined;
+  const snsContextRegistry = config.sns != null && snsActivityStore != null
+    ? (() => {
+        const registry = new SkillContextRegistry();
+        const snsReportError = messageSink != null && config.reportChannelId != null
+          ? (message: string) => { void messageSink.postMessage(config.reportChannelId!, message).catch((err) => { logger.error('Failed to report SNS context error', err); }); }
+          : undefined;
+        registry.register('sns', new SnsSkillContextProvider({
+          activityStore: snsActivityStore,
+          snsProvider: createSnsProvider(config.sns),
+          reportError: snsReportError,
+        }));
+        return registry;
+      })()
+    : undefined;
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
     tokenBudget: config.tokenBudget,
@@ -42,13 +68,6 @@ async function main(): Promise<void> {
     FileSkillStore.create({ dataDir: config.dataDir }),
     FileSchedulerStore.create({ dataDir: config.dataDir }),
   ]);
-  const messageSink = config.allowedChannelIds != null && config.allowedChannelIds.length > 0
-    ? new DiscordMessageSink({
-        botToken: config.discordBotToken,
-        allowedChannelIds: config.allowedChannelIds,
-        reportChannelId: config.reportChannelId,
-      })
-    : undefined;
   const agent = new KarakuriAgent({
     config,
     memoryStore,
@@ -58,6 +77,8 @@ async function main(): Promise<void> {
     schedulerStore,
     messageSink,
     userStore,
+    snsActivityStore,
+    snsContextRegistry,
   });
   const scheduler = await createScheduler({
     agent,
@@ -98,6 +119,7 @@ async function main(): Promise<void> {
         closeStores: () => [
           memoryStore.close(),
           userStore.close(),
+          snsActivityStore?.close() ?? Promise.resolve(),
           promptContextStore.close(),
           skillStore.close(),
           schedulerStore.close(),

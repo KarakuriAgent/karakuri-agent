@@ -67,7 +67,7 @@ describe('buildDiarySection', () => {
 describe('buildSummarySection', () => {
   it('wraps summary in <summary> tags', () => {
     const result = buildSummarySection('conversation summary');
-    expect(result).toBe('<summary>\nconversation summary\n</summary>');
+    expect(result).toBe('<summary>\nNote: This summary may reference users other than the current conversation partner.\nconversation summary\n</summary>');
   });
 
   it('returns empty string for blank summaries', () => {

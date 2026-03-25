@@ -5,6 +5,8 @@ import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../ll
 import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import type { ISessionManager } from '../session/types.js';
+import type { ISnsActivityStore } from '../sns/types.js';
+import type { SkillContextRegistry } from '../skill/context-provider.js';
 import type { ISkillStore } from '../skill/types.js';
 import { evaluatePostResponse } from '../user/post-response-evaluator.js';
 import type { IUserStore } from '../user/types.js';
@@ -56,6 +58,8 @@ export interface KarakuriAgentOptions {
   schedulerStore?: ISchedulerStore | undefined;
   messageSink?: IMessageSink | undefined;
   userStore?: IUserStore | undefined;
+  snsActivityStore?: ISnsActivityStore | undefined;
+  snsContextRegistry?: SkillContextRegistry | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
   keepRecentTurns?: number;
@@ -71,6 +75,8 @@ export class KarakuriAgent implements IAgent {
   private readonly schedulerStore: ISchedulerStore | undefined;
   private readonly messageSink: IMessageSink | undefined;
   private readonly userStore: IUserStore | undefined;
+  private readonly snsActivityStore: ISnsActivityStore | undefined;
+  private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly postResponseModelFactory: ((selector: LlmModelSelector) => LanguageModel) | undefined;
@@ -88,6 +94,8 @@ export class KarakuriAgent implements IAgent {
     schedulerStore,
     messageSink,
     userStore,
+    snsActivityStore,
+    snsContextRegistry,
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
@@ -101,6 +109,8 @@ export class KarakuriAgent implements IAgent {
     this.schedulerStore = schedulerStore;
     this.messageSink = messageSink;
     this.userStore = userStore;
+    this.snsActivityStore = snsActivityStore;
+    this.snsContextRegistry = snsContextRegistry;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
@@ -143,17 +153,18 @@ export class KarakuriAgent implements IAgent {
     ]);
 
     const isSystemUser = userId === 'system';
+    const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
+    const includeSystemOnly = isSystemUser || hasAdminAccess;
     const [coreMemory, recentDiaries, promptContext, skills, ensuredUser] = await Promise.all([
       this.memoryStore.readCoreMemory(),
       this.memoryStore.getRecentDiaries(this.recentDiaryCount),
       this.promptContextStore?.read() ?? Promise.resolve({ agentInstructions: null, rules: null }),
-      this.skillStore?.listSkills(isSystemUser ? { includeSystemOnly: true } : undefined) ?? Promise.resolve([]),
+      this.skillStore?.listSkills(includeSystemOnly ? { includeSystemOnly: true } : undefined) ?? Promise.resolve([]),
       ensuredUserPromise,
     ]);
 
     const promptUserName = isRealUser ? ensuredUser?.displayName ?? userName : undefined;
     const promptUserProfile = isRealUser ? ensuredUser?.profile ?? null : undefined;
-    const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
       && this.messageSink != null;
@@ -162,6 +173,8 @@ export class KarakuriAgent implements IAgent {
     const effectiveSkills = filterSkillsToAvailableTools(skills, {
       karakuriWorld: this.config.karakuriWorld,
       sns: this.config.sns,
+      snsActivityStore: this.snsActivityStore,
+      userStore: this.userStore,
     });
 
     const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
@@ -235,8 +248,15 @@ export class KarakuriAgent implements IAgent {
       ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
       ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
       ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
+      ...(this.snsActivityStore != null ? { snsActivityStore: this.snsActivityStore } : {}),
+      ...(this.snsContextRegistry != null ? { contextRegistry: this.snsContextRegistry } : {}),
+      ...(isSystemUser && this.snsActivityStore != null ? {
+        evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
+          this.enqueueSnsUserEvaluation({ userId: snsUserId, userName: displayName, postText });
+        },
+      } : {}),
       skills: effectiveSkills,
-      includeSystemOnly: isSystemUser,
+      includeSystemOnly,
     });
     const lifecycle = options?.lifecycle;
     const result = await this.generateTextFn({
@@ -279,6 +299,14 @@ export class KarakuriAgent implements IAgent {
         userMessage,
         assistantResponse: result.text,
       });
+    } else if (isSystemUser) {
+      this.enqueuePostResponseEvaluation({
+        userId: 'system',
+        userName,
+        userMessage,
+        assistantResponse: result.text,
+        skipUserStore: true,
+      });
     }
 
     logger.info('handleMessage complete', { sessionId, responseLength: result.text.length });
@@ -313,26 +341,71 @@ export class KarakuriAgent implements IAgent {
     await Promise.allSettled([...this.pendingEvaluations]);
   }
 
+  private enqueueSnsUserEvaluation({
+    userId,
+    userName,
+    postText,
+  }: {
+    userId: string;
+    userName: string;
+    postText: string;
+  }): void {
+    const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
+      try {
+        const [ensuredUser, currentCoreMemory] = await Promise.all([
+          this.userStore?.ensureUser(userId, userName) ?? Promise.resolve(null),
+          this.memoryStore.readCoreMemory(),
+        ]);
+        const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
+        const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
+
+        await evaluatePostResponse({
+          model: modelFactory(modelSelector),
+          memoryStore: this.memoryStore,
+          userStore: ensuredUser != null ? this.userStore : undefined,
+          userId,
+          userName,
+          savedDisplayName: ensuredUser?.displayName,
+          userMessage: `SNS post observed from ${userName}:\n${postText.trim()}`,
+          assistantResponse: 'Recorded SNS user context from the observed post.',
+          currentProfile: ensuredUser?.profile,
+          currentCoreMemory,
+          timezone: this.config.timezone,
+          generateTextFn: this.generateTextFn,
+        });
+      } catch (error) {
+        logger.error('SNS user evaluation task failed', error, { userId });
+      }
+    });
+
+    this.pendingEvaluations.add(task);
+    void task.finally(() => {
+      this.pendingEvaluations.delete(task);
+    });
+  }
+
   private enqueuePostResponseEvaluation({
     userId,
     userName,
     userMessage,
     assistantResponse,
+    skipUserStore,
   }: {
     userId: string;
     userName: string;
     userMessage: string;
     assistantResponse: string;
+    skipUserStore?: boolean;
   }): void {
     const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
       try {
         const [currentUser, currentCoreMemory] = await Promise.all([
-          this.userStore?.getUser(userId) ?? Promise.resolve(null),
+          skipUserStore ? Promise.resolve(null) : (this.userStore?.getUser(userId) ?? Promise.resolve(null)),
           this.memoryStore.readCoreMemory(),
         ]);
         const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
         const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
-        const userStoreIfKnown = currentUser != null ? this.userStore : undefined;
+        const userStoreIfKnown = !skipUserStore && currentUser != null ? this.userStore : undefined;
 
         await evaluatePostResponse({
           model: modelFactory(modelSelector),

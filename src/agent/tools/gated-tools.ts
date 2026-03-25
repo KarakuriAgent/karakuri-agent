@@ -1,7 +1,9 @@
 import type { ToolSet } from 'ai';
 
 import type { ApiCredentials, SnsCredentials } from '../../config.js';
+import type { ISnsActivityStore } from '../../sns/types.js';
 import type { SkillDefinition } from '../../skill/types.js';
+import type { IUserStore } from '../../user/types.js';
 import { createLogger } from '../../utils/logger.js';
 import { createKarakuriWorldTools } from './karakuri-world.js';
 import { createSnsTools } from './sns.js';
@@ -11,6 +13,10 @@ const logger = createLogger('GatedTools');
 export interface AvailableGatedToolSources {
   karakuriWorld?: ApiCredentials | undefined;
   sns?: SnsCredentials | undefined;
+  snsActivityStore?: ISnsActivityStore | undefined;
+  userStore?: IUserStore | undefined;
+  evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
+  reportError?: ((message: string) => void) | undefined;
 }
 
 export function buildGatedToolSets(
@@ -68,7 +74,13 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
   }
 
   if (availableToolSources.sns != null) {
-    Object.assign(allGatedTools, createSnsTools(availableToolSources.sns));
+    Object.assign(allGatedTools, createSnsTools({
+      ...availableToolSources.sns,
+      ...(availableToolSources.snsActivityStore != null ? { activityStore: availableToolSources.snsActivityStore } : {}),
+      ...(availableToolSources.userStore != null ? { userStore: availableToolSources.userStore } : {}),
+      ...(availableToolSources.evaluateUser != null ? { evaluateUser: availableToolSources.evaluateUser } : {}),
+      ...(availableToolSources.reportError != null ? { reportError: availableToolSources.reportError } : {}),
+    }));
   }
 
   return allGatedTools;

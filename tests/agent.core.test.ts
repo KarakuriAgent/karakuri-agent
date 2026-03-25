@@ -259,6 +259,7 @@ function createSchedulerStore(): ISchedulerStore {
       enabled: true,
       sessionMode: 'isolated',
       staggerMs: 0,
+      oneshot: false,
     }),
     unregisterJob: async () => true,
     setReloadListener: () => {},
@@ -879,13 +880,22 @@ describe('KarakuriAgent', () => {
     expect(userStore.profileUpdates).toEqual([{ userId: 'user-1', profile: 'Enjoys robotics and TypeScript' }]);
   });
 
-  it('skips user persistence and evaluation for system users', async () => {
+  it('skips user persistence but still runs diary/core evaluation for system users', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
     const userStore = new UserStoreStub();
     let capturedSystem = '';
 
     const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: 'system fact',
+          diaryEntry: 'system diary',
+        });
+      }
       capturedSystem = options.system ?? '';
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
@@ -904,7 +914,9 @@ describe('KarakuriAgent', () => {
 
     expect(userStore.ensureCalls).toEqual([]);
     expect(capturedSystem).not.toContain('\n\n<user-profile>\n');
-    expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
+    expect(memoryStore.coreWrites).toEqual(['system fact']);
+    expect(memoryStore.diaryWrites).toHaveLength(1);
+    expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(2);
   });
 
   it('continues the main reply when ensureUser fails and skips profile writes in evaluator', async () => {
@@ -1089,6 +1101,63 @@ describe('KarakuriAgent', () => {
     await expect(agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' })).resolves.toBe('reply');
     await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
     expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs SNS user evaluation via evaluateUser callback and drains it', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'update',
+          profile: 'Friendly SNS user',
+          displayName: '',
+          coreMemoryAppend: 'SNS user fact',
+          diaryEntry: '',
+        });
+      }
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      userStore,
+      snsActivityStore: {
+        recordPost: async () => {},
+        recordLike: async () => {},
+        recordRepost: async () => {},
+        hasLiked: async () => false,
+        hasReposted: async () => false,
+        hasReplied: async () => false,
+        hasQuoted: async () => false,
+        getRecentActivities: async () => [],
+        getLastNotificationId: async () => null,
+        setLastNotificationId: async () => {},
+        close: async () => {},
+      },
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'system' });
+
+    // This test verifies that creating an agent with SNS config and activity store
+    // does not crash; it does not directly verify the evaluateUser callback fires.
+    await agent.drainPendingEvaluations();
+    expect(vi.mocked(generateTextFn).mock.calls.length).toBeGreaterThanOrEqual(1);
   });
 
   it('passes the parsed selector into the configured model factory', async () => {

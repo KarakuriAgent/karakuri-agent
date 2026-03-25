@@ -41,6 +41,7 @@ describe('FileSchedulerStore', () => {
         enabled: true,
         sessionMode: 'isolated',
         staggerMs: 0,
+        oneshot: false,
       },
     ]);
 
@@ -63,6 +64,7 @@ describe('FileSchedulerStore', () => {
         enabled: true,
         sessionMode: 'isolated',
         staggerMs: 0,
+        oneshot: false,
       },
     ]);
     expect(warnSpy).toHaveBeenCalled();
@@ -81,6 +83,7 @@ describe('FileSchedulerStore', () => {
       instructions: 'Send summary.',
       sessionMode: 'shared',
       staggerMs: 200,
+      oneshot: false,
     })).resolves.toEqual({
       name: 'daily-summary',
       schedule: '0 9 * * *',
@@ -88,6 +91,7 @@ describe('FileSchedulerStore', () => {
       enabled: true,
       sessionMode: 'shared',
       staggerMs: 200,
+      oneshot: false,
     });
 
     await expect(store.listCronJobs()).resolves.toHaveLength(1);
@@ -114,6 +118,7 @@ describe('FileSchedulerStore', () => {
           enabled: true,
           sessionMode: 'isolated',
           staggerMs: 0,
+          oneshot: false,
         },
       ]);
     }, { timeout: 1_500 });

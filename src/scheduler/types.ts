@@ -7,6 +7,7 @@ export interface CronJobDefinition {
   enabled: boolean;
   sessionMode: SchedulerSessionMode;
   staggerMs: number;
+  oneshot: boolean;
 }
 
 export interface RegisterCronJobInput {
@@ -16,6 +17,7 @@ export interface RegisterCronJobInput {
   enabled?: boolean;
   sessionMode?: SchedulerSessionMode;
   staggerMs?: number;
+  oneshot?: boolean;
 }
 
 export interface SchedulerSnapshot {
