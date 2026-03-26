@@ -29,7 +29,7 @@
 | `DATA_DIR` |  | `./data` | memory / session / user / bot state ファイルの保存ディレクトリ |
 | `TIMEZONE` |  | `Asia/Tokyo` | diary 日付の基準タイムゾーン |
 | `MAX_STEPS` |  | `10` | ツールループの最大ステップ数 |
-| `TOKEN_BUDGET` |  | `8000` | 要約トリガーのトークン予算 |
+| `TOKEN_BUDGET` |  | `80000` | 要約トリガーのトークン予算 |
 | `PORT` |  | `3000` | Webhook / healthcheck HTTP サーバーの待受ポート |
 | `HEARTBEAT_INTERVAL_MINUTES` |  | `120` | Heartbeat scheduler の実行間隔（API コスト削減のため長めの既定値） |
 | `ALLOWED_CHANNEL_IDS` |  | - | `postMessage` で送信可能なチャンネル ID 一覧（`,` 区切り） |

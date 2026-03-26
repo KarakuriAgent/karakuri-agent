@@ -36,9 +36,10 @@ describe('HeartbeatRunner', () => {
 
     await vi.advanceTimersByTimeAsync(60);
 
-    expect(agent.handleMessage).toHaveBeenCalledWith('heartbeat', '(heartbeat tick)', 'heartbeat', {
+    expect(agent.handleMessage).toHaveBeenCalledWith(expect.stringMatching(/^heartbeat:/), '(heartbeat tick)', 'heartbeat', {
       extraSystemPrompt: 'Check systems.',
       userId: 'system',
+      ephemeral: true,
     });
     expect(messageSink.postMessage).toHaveBeenCalledWith('report', expect.stringMatching(/^✅ Heartbeat succeeded in \d+ms$/));
 

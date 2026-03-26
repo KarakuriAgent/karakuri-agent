@@ -38,6 +38,67 @@ export interface ISnsActivityStore {
   getRecentActivities(limit?: number): Promise<SnsActivity[]>;
   getLastNotificationId(): Promise<string | null>;
   setLastNotificationId(notificationId: string): Promise<void>;
+  reserveLastNotificationId?(notificationId: string): Promise<string>;
+  commitLastNotificationReservation?(reservationToken: string): Promise<void>;
+  releaseLastNotificationReservation?(reservationToken: string): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface ScheduledPostParams {
+  text: string;
+  replyToId?: string | undefined;
+  quotePostId?: string | undefined;
+  mediaIds?: string[] | undefined;
+  visibility: SnsVisibility;
+}
+
+export interface ScheduledLikeParams {
+  postId: string;
+}
+
+export interface ScheduledRepostParams {
+  postId: string;
+}
+
+export type ScheduledActionInput =
+  | { actionType: 'post'; scheduledAt: Date; params: ScheduledPostParams }
+  | { actionType: 'like'; scheduledAt: Date; params: ScheduledLikeParams }
+  | { actionType: 'repost'; scheduledAt: Date; params: ScheduledRepostParams };
+
+export type ScheduledAction = ScheduledActionInput & {
+  id: number;
+  status: 'pending' | 'executing';
+  createdAt: string;
+  recoveredFromExecuting?: boolean | undefined;
+};
+
+export type ActivityRecord =
+  | {
+      type: 'post';
+      postId: string;
+      text: string;
+      replyToId?: string | undefined;
+      quotePostId?: string | undefined;
+      createdAt?: Date | undefined;
+    }
+  | {
+      type: 'like';
+      postId: string;
+      createdAt?: Date | undefined;
+    }
+  | {
+      type: 'repost';
+      postId: string;
+      createdAt?: Date | undefined;
+    };
+
+export interface ISnsScheduleStore {
+  schedule(action: ScheduledActionInput): Promise<number>;
+  claimPendingActions(now: Date, limit?: number): Promise<ScheduledAction[]>;
+  completeWithRecord(id: number, record: ActivityRecord): Promise<void>;
+  markFailed(id: number, error: string): Promise<void>;
+  recoverStaleExecuting(before?: Date): Promise<number>;
+  getPendingAndExecuting(): Promise<ScheduledAction[]>;
   close(): Promise<void>;
 }
 
@@ -76,6 +137,7 @@ export interface PostParams {
   quotePostId?: string | undefined;
   mediaIds?: string[] | undefined;
   visibility?: SnsVisibility | undefined;
+  idempotencyKey?: string | undefined;
 }
 
 export interface TimelineParams {

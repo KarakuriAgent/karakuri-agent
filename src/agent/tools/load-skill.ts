@@ -1,7 +1,7 @@
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 
-import type { SkillContextRegistry } from '../../skill/context-provider.js';
+import type { SkillContextScope } from '../../skill/context-provider.js';
 import type { ISkillStore } from '../../skill/types.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -12,7 +12,7 @@ export interface LoadSkillToolOptions {
   tools: ToolSet;
   gatedToolSets: ReadonlyMap<string, ToolSet>;
   includeSystemOnly?: boolean;
-  contextRegistry?: SkillContextRegistry;
+  contextScope?: SkillContextScope;
 }
 
 export function createLoadSkillTool({
@@ -20,7 +20,7 @@ export function createLoadSkillTool({
   tools,
   gatedToolSets,
   includeSystemOnly,
-  contextRegistry,
+  contextScope,
 }: LoadSkillToolOptions) {
   return tool({
     description: 'Load the full instructions for an available skill by name when it is relevant to the request.',
@@ -69,7 +69,7 @@ export function createLoadSkillTool({
       }
 
       const allowedTools = skillTools != null ? Object.keys(skillTools) : undefined;
-      const dynamicContext = await contextRegistry?.getContext(skill.name);
+      const dynamicContext = await contextScope?.getContext(skill.name);
       const instructions = dynamicContext != null && dynamicContext.length > 0
         ? `${dynamicContext}\n\n---\n\n${skill.instructions}`
         : skill.instructions;

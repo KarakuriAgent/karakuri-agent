@@ -10,7 +10,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` / `data/system-skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
-- `sns_*` ツールによる Mastodon 向け SNS 投稿・取得・通知確認・メディアアップロード（skill-gated、同梱スキルは system 専用）
+- `sns_*` ツールによる Mastodon 向け SNS 投稿・取得・通知確認・メディアアップロード（`scheduled_at` による遅延実行対応、skill-gated、同梱スキルは system 専用）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
 - `postMessage` / `manageCron` ツールによる管理者限定のプロアクティブ投稿と Cron 管理
 - `REPORT_CHANNEL_ID` への Heartbeat / Cron 実行結果、Cron 登録変更、チャット処理エラー詳細の通知
@@ -93,11 +93,11 @@ npm run docker:dev
 ## 実装メモ
 
 - `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は全ユーザー向けスキル、`data/system-skills/*/SKILL.md` は `userId === 'system'`（Cron / Heartbeat）でのみ見える system 専用スキル定義
-- `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、`data/cron/*/CRON.md` で Cron ジョブを定義できる
+- `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、Heartbeat は単発の ephemeral session で走る。`data/cron/*/CRON.md` で Cron ジョブも定義できる
 - 1 つ以上のスキルが存在するときだけ `loadSkill` ツールが公開され、システムプロンプトには利用可能なスキル一覧だけを注入する
 - 通常ユーザーには `data/skills/*/SKILL.md` のみ公開され、`data/system-skills/*/SKILL.md` は `userId === 'system'` のときだけ一覧表示・`loadSkill` 対象になる
 - `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`KARAKURI_WORLD_*` 設定時は `karakuri_world_*` ツール群をスキル経由で遅延公開する
-- `SNS_*` 設定時は `sns_*` ツール群をスキル経由で遅延公開する。標準添付の SNS skill は `loadSkill` 時に新着通知・トレンド・直近行動ログを動的注入し、重複いいね/リポスト/返信/引用をツール層で防ぐ。標準添付の SNS skill は `data/system-skills` 配下なので、既定では `userId === 'system'` の automation 専用
+- `SNS_*` 設定時は `sns_*` ツール群をスキル経由で遅延公開する。標準添付の SNS skill は `loadSkill` 時に新着通知・トレンド・直近行動ログ・スケジュール済みアクションを動的注入し、重複いいね/リポスト/返信/引用をツール層で防ぐ。`sns_post` / `sns_like` / `sns_repost` は `scheduled_at` に未来のタイムゾーン付き日時（例: `Z`, `+09:00`）を指定すると SQLite キューへ登録され、専用ランナーが指定時刻に直接 API 実行する。標準添付の SNS skill は `data/system-skills` 配下なので、既定では `userId === 'system'` の automation 専用
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は各 redirect hop を再検証し、`http` / `https` 以外のスキームや private / loopback / link-local 宛てへの遷移を拒否して SSRF を抑止する。15 秒のタイムアウトは DNS 解決も含めて適用する
 - `sns_upload_media` も `webFetch` と同じ URL 検証を使い、`http` / `https` 以外のスキームや private / loopback / link-local 宛て、そこへ向かう redirect を拒否する。こちらも DNS 解決を含めてタイムアウトを適用する

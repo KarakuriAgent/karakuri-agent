@@ -10,6 +10,7 @@ allowed-tools: sns_post, sns_get_post, sns_like, sns_repost, sns_upload_media, s
 - **新着通知**: 前回確認以降のメンション・リプライ
 - **トレンド**: 現在の話題
 - **直近の行動ログ**: 最近の投稿・いいね・リポスト履歴
+- **スケジュール済みアクション**: まだ実行されていない投稿・いいね・リポスト
 
 ## 行動ルール
 
@@ -31,4 +32,5 @@ allowed-tools: sns_post, sns_get_post, sns_like, sns_repost, sns_upload_media, s
 
 - 日記（recallDiary）・メモリ・ユーザー情報（userLookup）を参照して内容を決める
 - 直近の行動ログを参照し、前回と異なるパターンの行動を取る
-- 新規投稿のcronは `oneshot: true` で登録する
+- SNSアクションを遅延実行する場合は `scheduled_at` を使う
+- `scheduled_at` には必ず未来のタイムゾーン付き日時を指定する（形式例: `YYYY-MM-DDTHH:MM:SSZ`, `YYYY-MM-DDTHH:MM:SS+09:00`）

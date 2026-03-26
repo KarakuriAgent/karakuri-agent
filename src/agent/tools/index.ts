@@ -3,8 +3,8 @@ import type { ToolSet } from 'ai';
 import type { ApiCredentials, SnsCredentials } from '../../config.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
-import type { ISnsActivityStore } from '../../sns/types.js';
-import type { SkillContextRegistry } from '../../skill/context-provider.js';
+import type { ISnsActivityStore, ISnsScheduleStore } from '../../sns/types.js';
+import type { SkillContextScope } from '../../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
 import type { IUserStore } from '../../user/types.js';
 import { createLogger } from '../../utils/logger.js';
@@ -27,6 +27,7 @@ export interface CreateAgentToolsOptions {
   karakuriWorld?: ApiCredentials | undefined;
   sns?: SnsCredentials | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
+  snsScheduleStore?: ISnsScheduleStore | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   messageSink?: IMessageSink | undefined;
@@ -38,7 +39,7 @@ export interface CreateAgentToolsOptions {
   userId?: string | undefined;
   userStore?: IUserStore | undefined;
   includeSystemOnly?: boolean | undefined;
-  contextRegistry?: SkillContextRegistry | undefined;
+  contextScope?: SkillContextScope | undefined;
   evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
 }
 
@@ -48,6 +49,7 @@ export function createAgentTools({
   karakuriWorld,
   sns,
   snsActivityStore,
+  snsScheduleStore,
   skillStore,
   skills = [],
   messageSink,
@@ -59,7 +61,7 @@ export function createAgentTools({
   userId,
   userStore,
   includeSystemOnly,
-  contextRegistry,
+  contextScope,
   evaluateUser,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
@@ -110,6 +112,7 @@ export function createAgentTools({
     karakuriWorld,
     sns,
     snsActivityStore,
+    snsScheduleStore,
     userStore,
     evaluateUser,
     reportError,
@@ -121,7 +124,7 @@ export function createAgentTools({
       tools,
       gatedToolSets,
       ...(includeSystemOnly != null ? { includeSystemOnly } : {}),
-      ...(contextRegistry != null ? { contextRegistry } : {}),
+      ...(contextScope != null ? { contextScope } : {}),
     });
   }
 

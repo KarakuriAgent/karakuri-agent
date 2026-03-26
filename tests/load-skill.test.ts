@@ -37,20 +37,20 @@ function createNoopToolSet(): ToolSet {
 describe('SkillContextRegistry', () => {
   it('throws on duplicate registration', () => {
     const registry = new SkillContextRegistry();
-    registry.register('foo', { getContext: async () => 'ctx' });
-    expect(() => registry.register('foo', { getContext: async () => 'other' }))
+    registry.register('foo', { getContext: async () => ({ text: 'ctx' }) });
+    expect(() => registry.register('foo', { getContext: async () => ({ text: 'other' }) }))
       .toThrow('Context provider already registered for skill "foo"');
   });
 
   it('returns null for unregistered skills', async () => {
     const registry = new SkillContextRegistry();
-    await expect(registry.getContext('missing')).resolves.toBeNull();
+    await expect(registry.createScope().getContext('missing')).resolves.toBeNull();
   });
 
   it('returns a warning string when the provider throws', async () => {
     const registry = new SkillContextRegistry();
     registry.register('broken', { getContext: async () => { throw new Error('boom'); } });
-    const result = await registry.getContext('broken');
+    const result = await registry.createScope().getContext('broken');
     expect(result).toContain('[WARNING:');
     expect(result).toContain('broken');
   });
@@ -288,7 +288,7 @@ describe('loadSkill tool', () => {
   it('prepends dynamic context when a context provider is registered', async () => {
     const registry = new SkillContextRegistry();
     registry.register('code-review', {
-      getContext: async () => '## Dynamic context\n- latest signals',
+      getContext: async () => ({ text: '## Dynamic context\n- latest signals' }),
     });
     const toolInstance = createLoadSkillTool({
       skillStore: createSkillStoreStub([
@@ -301,7 +301,7 @@ describe('loadSkill tool', () => {
       ]),
       tools: createNoopToolSet(),
       gatedToolSets: new Map(),
-      contextRegistry: registry,
+      contextScope: registry.createScope(),
     });
 
     await expect(toolInstance.execute!(
@@ -331,7 +331,7 @@ describe('loadSkill tool', () => {
       ]),
       tools: createNoopToolSet(),
       gatedToolSets: new Map(),
-      contextRegistry: registry,
+      contextScope: registry.createScope(),
     });
 
     const result = await toolInstance.execute!(

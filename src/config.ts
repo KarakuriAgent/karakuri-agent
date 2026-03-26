@@ -34,7 +34,7 @@ const configSchema = z.object({
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
   maxSteps: z.coerce.number().int().positive().default(10),
-  tokenBudget: z.coerce.number().int().positive().default(8_000),
+  tokenBudget: z.coerce.number().int().positive().default(80_000),
   port: z.coerce.number().int().min(1).max(65_535).default(3_000),
   heartbeatIntervalMinutes: z.coerce.number().positive().default(120),
   allowedChannelIds: z.string().optional(),

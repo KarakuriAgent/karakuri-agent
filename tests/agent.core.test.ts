@@ -180,6 +180,7 @@ class SessionManagerStub implements ISessionManager {
   lastAdditionalTokens = 0;
   forceSummarization = false;
   appliedSummary: string | null = null;
+  addMessagesCalls = 0;
 
   async loadSession(sessionId: string): Promise<SessionData> {
     return { ...this.session, sessionId };
@@ -190,6 +191,7 @@ class SessionManagerStub implements ISessionManager {
   }
 
   async addMessages(sessionId: string, messages: ModelMessage[]): Promise<SessionData> {
+    this.addMessagesCalls++;
     this.session = {
       ...this.session,
       sessionId,
@@ -339,6 +341,32 @@ describe('KarakuriAgent', () => {
 
     expect(sessionManager.appliedSummary).toBe('summary text');
     expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps ephemeral turns in memory only', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    sessionManager.forceSummarization = true;
+    const generateTextFn = vi.fn(async () =>
+      makeGenerateTextResult('ephemeral reply', [assistantMessage('ephemeral reply')]),
+    ) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('heartbeat:2025-01-01T00:00:00.000Z', '(heartbeat tick)', 'heartbeat', {
+      userId: 'system',
+      ephemeral: true,
+    })).resolves.toBe('ephemeral reply');
+
+    expect(sessionManager.addMessagesCalls).toBe(0);
+    expect(sessionManager.appliedSummary).toBeNull();
+    expect(sessionManager.session.messages).toEqual([]);
   });
 
   it('builds a tagged system prompt and persists response messages', async () => {
@@ -1108,6 +1136,28 @@ describe('KarakuriAgent', () => {
     const sessionManager = new SessionManagerStub();
     const userStore = new UserStoreStub();
     let capturedTools: Record<string, unknown> = {};
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      id: 'post-1',
+      content: '<p>Hello SNS</p>',
+      account: {
+        id: 'acct-1',
+        display_name: 'Alice',
+        username: 'alice',
+        acct: 'alice@example.com',
+        url: 'https://social.example/@alice',
+      },
+      created_at: '2025-01-01T00:00:00.000Z',
+      url: 'https://social.example/@alice/post-1',
+      visibility: 'public',
+      in_reply_to_id: null,
+      reblogs_count: 0,
+      favourites_count: 0,
+      replies_count: 0,
+      media_attachments: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
 
     const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; output?: unknown }) => {
       if (options.output != null) {
@@ -1134,6 +1184,13 @@ describe('KarakuriAgent', () => {
       },
       memoryStore,
       sessionManager,
+      skillStore: new SkillStoreStub([{
+        name: 'sns',
+        description: 'SNS skill',
+        instructions: 'Use SNS tools.',
+        systemOnly: false,
+        allowedTools: ['sns_get_post'],
+      }]),
       userStore,
       snsActivityStore: {
         recordPost: async () => {},
@@ -1154,10 +1211,18 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'system' });
 
-    // This test verifies that creating an agent with SNS config and activity store
-    // does not crash; it does not directly verify the evaluateUser callback fires.
+    const loadSkill = capturedTools.loadSkill as { execute?: (...args: unknown[]) => Promise<unknown> };
+    expect(loadSkill?.execute).toBeTypeOf('function');
+    await loadSkill.execute?.({ name: 'sns' }, { toolCallId: 'tool-load-sns', messages: [] });
+
+    const snsGetPost = capturedTools.sns_get_post as { execute?: (...args: unknown[]) => Promise<unknown> };
+    expect(snsGetPost?.execute).toBeTypeOf('function');
+    await snsGetPost.execute?.({ post_id: 'post-1' }, { toolCallId: 'tool-1', messages: [] });
     await agent.drainPendingEvaluations();
-    expect(vi.mocked(generateTextFn).mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(userStore.ensureCalls).toContainEqual({ userId: 'sns:mastodon:acct-1', displayName: 'Alice' });
+    expect(userStore.profileUpdates).toContainEqual({ userId: 'sns:mastodon:acct-1', profile: 'Friendly SNS user' });
+    expect(memoryStore.coreWrites).toContain('SNS user fact');
+    vi.unstubAllGlobals();
   });
 
   it('passes the parsed selector into the configured model factory', async () => {

@@ -4,8 +4,9 @@ import type { Config } from '../config.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
-import type { ISessionManager } from '../session/types.js';
-import type { ISnsActivityStore } from '../sns/types.js';
+import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
+import type { ISessionManager, SessionData } from '../session/types.js';
+import type { ISnsActivityStore, ISnsScheduleStore } from '../sns/types.js';
 import type { SkillContextRegistry } from '../skill/context-provider.js';
 import type { ISkillStore } from '../skill/types.js';
 import { evaluatePostResponse } from '../user/post-response-evaluator.js';
@@ -37,6 +38,8 @@ export interface HandleMessageOptions {
   lifecycle?: AgentLifecycleCallbacks | undefined;
   extraSystemPrompt?: string | undefined;
   userId?: string | undefined;
+  /** When true, the session is kept only in memory for this turn and is not persisted. */
+  ephemeral?: boolean | undefined;
 }
 
 export interface IAgent {
@@ -59,6 +62,7 @@ export interface KarakuriAgentOptions {
   messageSink?: IMessageSink | undefined;
   userStore?: IUserStore | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
+  snsScheduleStore?: ISnsScheduleStore | undefined;
   snsContextRegistry?: SkillContextRegistry | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
@@ -76,6 +80,7 @@ export class KarakuriAgent implements IAgent {
   private readonly messageSink: IMessageSink | undefined;
   private readonly userStore: IUserStore | undefined;
   private readonly snsActivityStore: ISnsActivityStore | undefined;
+  private readonly snsScheduleStore: ISnsScheduleStore | undefined;
   private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
@@ -95,6 +100,7 @@ export class KarakuriAgent implements IAgent {
     messageSink,
     userStore,
     snsActivityStore,
+    snsScheduleStore,
     snsContextRegistry,
     generateTextFn = generateText,
     modelFactory,
@@ -110,6 +116,7 @@ export class KarakuriAgent implements IAgent {
     this.messageSink = messageSink;
     this.userStore = userStore;
     this.snsActivityStore = snsActivityStore;
+    this.snsScheduleStore = snsScheduleStore;
     this.snsContextRegistry = snsContextRegistry;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
@@ -145,12 +152,18 @@ export class KarakuriAgent implements IAgent {
         })
       : Promise.resolve(null);
 
-    let session = await this.sessionManager.addMessages(sessionId, [
-      {
-        role: 'user',
-        content: formatUserMessage(userName, userMessage),
-      },
-    ]);
+    const ephemeral = options?.ephemeral === true;
+    let session = ephemeral
+      ? createEphemeralSession(sessionId, [{
+          role: 'user',
+          content: formatUserMessage(userName, userMessage),
+        }])
+      : await this.sessionManager.addMessages(sessionId, [
+          {
+            role: 'user',
+            content: formatUserMessage(userName, userMessage),
+          },
+        ]);
 
     const isSystemUser = userId === 'system';
     const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
@@ -174,6 +187,7 @@ export class KarakuriAgent implements IAgent {
       karakuriWorld: this.config.karakuriWorld,
       sns: this.config.sns,
       snsActivityStore: this.snsActivityStore,
+      snsScheduleStore: this.snsScheduleStore,
       userStore: this.userStore,
     });
 
@@ -195,7 +209,7 @@ export class KarakuriAgent implements IAgent {
       extraSystemPrompt: options?.extraSystemPrompt,
     });
 
-    if (this.sessionManager.needsSummarization(session, additionalTokens)) {
+    if (!ephemeral && this.sessionManager.needsSummarization(session, additionalTokens)) {
       logger.info('Session needs summarization', { sessionId });
       const summary = await this.summarizeSession(sessionId);
       logger.info('Session summarized', { sessionId, summaryLength: summary.length });
@@ -234,6 +248,7 @@ export class KarakuriAgent implements IAgent {
       messageCount: session.messages.length,
     });
     logger.debug(`System prompt:\n${systemPrompt}`);
+    const skillContextScope = this.snsContextRegistry?.createScope();
     const tools = createAgentTools({
       memoryStore: this.memoryStore,
       braveApiKey: this.config.braveApiKey,
@@ -249,8 +264,9 @@ export class KarakuriAgent implements IAgent {
       ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
       ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
       ...(this.snsActivityStore != null ? { snsActivityStore: this.snsActivityStore } : {}),
-      ...(this.snsContextRegistry != null ? { contextRegistry: this.snsContextRegistry } : {}),
-      ...(isSystemUser && this.snsActivityStore != null ? {
+      ...(this.snsScheduleStore != null ? { snsScheduleStore: this.snsScheduleStore } : {}),
+      ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
+      ...(isSystemUser && this.userStore != null ? {
         evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
           this.enqueueSnsUserEvaluation({ userId: snsUserId, userName: displayName, postText });
         },
@@ -259,38 +275,47 @@ export class KarakuriAgent implements IAgent {
       includeSystemOnly,
     });
     const lifecycle = options?.lifecycle;
-    const result = await this.generateTextFn({
-      model: this.modelFactory(this.config.llmModelSelector),
-      system: systemPrompt,
-      messages: session.messages,
-      tools,
-      stopWhen: stepCountIs(this.config.maxSteps),
-      ...(lifecycle != null
-        ? {
-            experimental_onStepStart: () => {
-              lifecycle.onThinking();
-            },
-            experimental_onToolCallStart: (event) => {
-              lifecycle.onToolCallStart(String(event.toolCall.toolName));
-            },
-            experimental_onToolCallFinish: (event) => {
-              lifecycle.onToolCallFinish(String(event.toolCall.toolName));
-            },
-          }
-        : {}),
-    });
+    let result: Awaited<ReturnType<typeof this.generateTextFn>>;
+    try {
+      result = await this.generateTextFn({
+        model: this.modelFactory(this.config.llmModelSelector),
+        system: systemPrompt,
+        messages: session.messages,
+        tools,
+        stopWhen: stepCountIs(this.config.maxSteps),
+        ...(lifecycle != null
+          ? {
+              experimental_onStepStart: () => {
+                lifecycle.onThinking();
+              },
+              experimental_onToolCallStart: (event) => {
+                lifecycle.onToolCallStart(String(event.toolCall.toolName));
+              },
+              experimental_onToolCallFinish: (event) => {
+                lifecycle.onToolCallFinish(String(event.toolCall.toolName));
+              },
+            }
+          : {}),
+      });
 
-    logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });
-    for (const [i, step] of result.steps.entries()) {
-      for (const toolCall of step.toolCalls) {
-        logger.debug('Tool call', { step: i, toolName: toolCall?.toolName, input: JSON.stringify(toolCall?.input) });
+      logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });
+      for (const [i, step] of result.steps.entries()) {
+        for (const toolCall of step.toolCalls) {
+          logger.debug('Tool call', { step: i, toolName: toolCall?.toolName, input: JSON.stringify(toolCall?.input) });
+        }
+        for (const toolResult of step.toolResults) {
+          logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: JSON.stringify(toolResult?.output) });
+        }
       }
-      for (const toolResult of step.toolResults) {
-        logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: JSON.stringify(toolResult?.output) });
+      logger.debug(`Response text:\n${result.text}`);
+      if (!ephemeral) {
+        await this.sessionManager.addMessages(sessionId, result.response.messages);
       }
+      await skillContextScope?.commit();
+    } catch (error) {
+      await skillContextScope?.abort();
+      throw error;
     }
-    logger.debug(`Response text:\n${result.text}`);
-    await this.sessionManager.addMessages(sessionId, result.response.messages);
 
     if (isRealUser) {
       this.enqueuePostResponseEvaluation({
@@ -437,6 +462,18 @@ function formatUserMessage(userName: string, userMessage: string): string {
   const normalizedName = userName.trim();
   const normalizedMessage = userMessage.trim();
   return normalizedName.length > 0 ? `${normalizedName}: ${normalizedMessage}` : normalizedMessage;
+}
+
+function createEphemeralSession(sessionId: string, messages: ModelMessage[]): SessionData {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    sessionId,
+    messages,
+    summary: null,
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 function formatTranscriptLine(message: ModelMessage): string {

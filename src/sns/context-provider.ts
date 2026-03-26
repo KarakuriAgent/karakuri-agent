@@ -1,10 +1,19 @@
-import type { SkillContextProvider } from '../skill/context-provider.js';
-import type { ISnsActivityStore, SnsActivity, SnsNotification, SnsPost, SnsProvider } from './types.js';
+import type { SkillContextProvider, SkillContextResult } from '../skill/context-provider.js';
+import type {
+  ISnsActivityStore,
+  ISnsScheduleStore,
+  ScheduledAction,
+  SnsActivity,
+  SnsNotification,
+  SnsPost,
+  SnsProvider,
+} from './types.js';
 import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
 
 export interface SnsSkillContextProviderOptions {
   activityStore: ISnsActivityStore;
+  scheduleStore: ISnsScheduleStore;
   snsProvider: SnsProvider;
   notificationLimit?: number;
   trendLimit?: number;
@@ -13,13 +22,12 @@ export interface SnsSkillContextProviderOptions {
 }
 
 const logger = createLogger('SnsSkillContextProvider');
-
-// Cap pagination requests to prevent unbounded API calls from misbehaving providers
 const MAX_CONTEXT_NOTIFICATION_PAGES = 5;
 
 export class SnsSkillContextProvider implements SkillContextProvider {
-  // Serialize context generation to prevent read-then-update races on the notification cursor
-  // (concurrent calls could read the same sinceId, fetch overlapping notifications, and advance the cursor past unread items)
+  // Serialize context generation to prevent read-then-update races on the
+  // notification cursor (concurrent calls could read the same sinceId,
+  // fetch overlapping notifications, and advance the cursor past unread items).
   private readonly mutex = new KeyedMutex();
   private readonly notificationLimit: number;
   private readonly trendLimit: number;
@@ -31,27 +39,35 @@ export class SnsSkillContextProvider implements SkillContextProvider {
     this.recentActivityLimit = Math.max(1, options.recentActivityLimit ?? 10);
   }
 
-  async getContext(): Promise<string> {
+  async getContext(): Promise<SkillContextResult> {
     return this.mutex.runExclusive('sns-skill-context', async () => {
       const sinceId = await this.options.activityStore.getLastNotificationId();
-      const [notificationsResult, trendsResult, activitiesResult] = await Promise.allSettled([
+      const [notificationsResult, trendsResult, activitiesResult, scheduledResult] = await Promise.allSettled([
         this.loadNotifications(sinceId),
         this.options.snsProvider.getTrends(this.trendLimit),
         this.options.activityStore.getRecentActivities(this.recentActivityLimit),
+        this.options.scheduleStore.getPendingAndExecuting(),
       ]);
 
       const sections: string[] = [];
 
+      let latestNotificationId: string | undefined;
+      let notificationReservationToken: string | undefined;
+
       if (notificationsResult.status === 'fulfilled') {
         const notifications = notificationsResult.value;
-        // Notifications are expected newest-first (Mastodon convention); persist the first ID as the cursor for the next fetch
-        if (notifications[0]?.id != null) {
+        latestNotificationId = notifications[0]?.id;
+        if (
+          latestNotificationId != null
+          && this.options.activityStore.reserveLastNotificationId != null
+          && this.options.activityStore.commitLastNotificationReservation != null
+          && this.options.activityStore.releaseLastNotificationReservation != null
+        ) {
           try {
-            await this.options.activityStore.setLastNotificationId(notifications[0].id);
+            notificationReservationToken = await this.options.activityStore.reserveLastNotificationId(latestNotificationId);
           } catch (error) {
-            const message = 'Failed to persist last SNS notification cursor -- next fetch may return duplicate notifications';
-            logger.error(message, error);
-            this.options.reportError?.(`⚠️ ${message}`);
+            logger.error('Failed to reserve SNS notification cursor', error);
+            this.options.reportError?.('⚠️ Failed to reserve last SNS notification cursor; duplicate notification fetches may occur');
           }
         }
         sections.push(formatNotifications(notifications));
@@ -67,14 +83,56 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         sections.push(`## トレンド\n[ERROR: トレンドの取得に失敗しました: ${formatContextError(trendsResult.reason)}]`);
       }
 
-      if (activitiesResult.status === 'fulfilled') {
-        sections.push(formatActivities(activitiesResult.value));
-      } else {
+      const activityErrors: string[] = [];
+      if (activitiesResult.status === 'rejected') {
         logger.error('Failed to load SNS recent activities for context', activitiesResult.reason);
-        sections.push(`## 直近の行動ログ\n[ERROR: 行動ログの取得に失敗しました: ${formatContextError(activitiesResult.reason)}]`);
+        activityErrors.push(`行動ログの取得に失敗しました: ${formatContextError(activitiesResult.reason)}`);
       }
+      if (scheduledResult.status === 'rejected') {
+        logger.error('Failed to load scheduled SNS actions for context', scheduledResult.reason);
+        activityErrors.push(`スケジュール済みアクションの取得に失敗しました: ${formatContextError(scheduledResult.reason)}`);
+      }
+      sections.push(formatActivities(
+        activitiesResult.status === 'fulfilled' ? activitiesResult.value : [],
+        scheduledResult.status === 'fulfilled' ? scheduledResult.value : [],
+        activityErrors,
+      ));
 
-      return sections.join('\n\n');
+      return {
+        text: sections.join('\n\n'),
+        ...(latestNotificationId != null
+          ? {
+              onSuccess: async () => {
+                try {
+                  if (
+                    notificationReservationToken != null
+                    && this.options.activityStore.commitLastNotificationReservation != null
+                  ) {
+                    await this.options.activityStore.commitLastNotificationReservation(notificationReservationToken);
+                    return;
+                  }
+                  await this.options.activityStore.setLastNotificationId(latestNotificationId);
+                } catch (error) {
+                  const message = 'Failed to persist last SNS notification cursor -- next fetch may return duplicate notifications';
+                  logger.error(message, error);
+                  this.options.reportError?.(`⚠️ ${message}`);
+                }
+              },
+              ...(notificationReservationToken != null
+                ? {
+                    onAbort: async () => {
+                      try {
+                        await this.options.activityStore.releaseLastNotificationReservation?.(notificationReservationToken);
+                      } catch (error) {
+                        logger.error('Failed to release SNS notification cursor reservation', error);
+                        this.options.reportError?.('⚠️ Failed to release reserved SNS notification cursor after an aborted turn');
+                      }
+                    },
+                  }
+                : {}),
+            }
+          : {}),
+      };
     });
   }
 
@@ -145,8 +203,8 @@ function formatTrends(posts: SnsPost[]): string {
   ].join('\n');
 }
 
-function formatActivities(activities: SnsActivity[]): string {
-  if (activities.length === 0) {
+function formatActivities(activities: SnsActivity[], scheduledActions: ScheduledAction[], errors: string[] = []): string {
+  if (activities.length === 0 && scheduledActions.length === 0 && errors.length === 0) {
     return '## 直近の行動ログ\n- なし';
   }
 
@@ -161,5 +219,17 @@ function formatActivities(activities: SnsActivity[]): string {
           return `- [${activity.type}] post_id: ${activity.postId} (${activity.createdAt})`;
       }
     }),
+    ...scheduledActions.map((action) => formatScheduledAction(action)),
+    ...errors.map((error) => `[ERROR: ${error}]`),
   ].join('\n');
+}
+
+function formatScheduledAction(action: ScheduledAction): string {
+  switch (action.actionType) {
+    case 'post':
+      return `- [post] "${action.params.text}" (scheduled: ${action.scheduledAt.toISOString()})`;
+    case 'like':
+    case 'repost':
+      return `- [${action.actionType}] post_id: ${action.params.postId} (scheduled: ${action.scheduledAt.toISOString()})`;
+  }
 }

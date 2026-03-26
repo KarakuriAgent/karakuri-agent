@@ -13,6 +13,7 @@ import { FileSessionManager } from './session/manager.js';
 import { createSnsProvider } from './sns/index.js';
 import { SnsSkillContextProvider } from './sns/context-provider.js';
 import { SqliteSnsActivityStore } from './sns/activity-store.js';
+import { SnsScheduleRunner } from './sns/schedule-runner.js';
 import { SkillContextRegistry } from './skill/context-provider.js';
 import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
@@ -45,19 +46,28 @@ async function main(): Promise<void> {
         reportChannelId: config.reportChannelId,
       })
     : undefined;
+  const snsReportError = messageSink != null && config.reportChannelId != null
+    ? (message: string) => { void messageSink.postMessage(config.reportChannelId!, message).catch((err) => { logger.error('Failed to report SNS context error', err); }); }
+    : undefined;
   const snsContextRegistry = config.sns != null && snsActivityStore != null
     ? (() => {
         const registry = new SkillContextRegistry();
-        const snsReportError = messageSink != null && config.reportChannelId != null
-          ? (message: string) => { void messageSink.postMessage(config.reportChannelId!, message).catch((err) => { logger.error('Failed to report SNS context error', err); }); }
-          : undefined;
         registry.register('sns', new SnsSkillContextProvider({
           activityStore: snsActivityStore,
+          scheduleStore: snsActivityStore,
           snsProvider: createSnsProvider(config.sns),
           reportError: snsReportError,
         }));
         return registry;
       })()
+    : undefined;
+  const snsScheduleRunner = config.sns != null && snsActivityStore != null
+    ? new SnsScheduleRunner({
+        scheduleStore: snsActivityStore,
+        activityStore: snsActivityStore,
+        snsProvider: createSnsProvider(config.sns),
+        reportError: snsReportError,
+      })
     : undefined;
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
@@ -78,6 +88,7 @@ async function main(): Promise<void> {
     messageSink,
     userStore,
     snsActivityStore,
+    snsScheduleStore: snsActivityStore,
     snsContextRegistry,
   });
   const scheduler = await createScheduler({
@@ -88,6 +99,7 @@ async function main(): Promise<void> {
   });
   const bot = createBot(config, agent, { messageSink });
 
+  snsScheduleRunner?.start();
   await bot.initialize();
   logger.debug('Bot initialized');
 
@@ -113,7 +125,10 @@ async function main(): Promise<void> {
     try {
       const results = await performGracefulShutdown({
         closeServer: () => closeServer(server),
-        closeScheduler: () => scheduler.close(),
+        closeScheduler: () => Promise.all([
+          scheduler.close(),
+          snsScheduleRunner?.close() ?? Promise.resolve(),
+        ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
         drainEvaluations: () => agent.drainPendingEvaluations(),
         closeStores: () => [

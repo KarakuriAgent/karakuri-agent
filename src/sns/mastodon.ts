@@ -304,7 +304,7 @@ export class MastodonProvider implements SnsProvider {
       ...(params.quotePostId != null ? { quoted_status_id: params.quotePostId } : {}),
       ...(params.mediaIds != null && params.mediaIds.length > 0 ? { media_ids: params.mediaIds } : {}),
       ...(params.visibility != null ? { visibility: params.visibility } : {}),
-    }));
+    }, undefined, params.idempotencyKey != null ? { 'Idempotency-Key': params.idempotencyKey } : undefined));
   }
 
   async getPost(postId: string): Promise<SnsPost> {
@@ -535,6 +535,7 @@ export class MastodonProvider implements SnsProvider {
     path: string,
     body?: Record<string, unknown>,
     query?: URLSearchParams | Record<string, string>,
+    extraHeaders?: Record<string, string>,
   ): Promise<TResponse> {
     const response = await this.fetchImpl(this.buildUrl(path, query), {
       method,
@@ -542,6 +543,7 @@ export class MastodonProvider implements SnsProvider {
         Accept: 'application/json',
         Authorization: `Bearer ${this.accessToken}`,
         ...(body != null ? { 'Content-Type': 'application/json' } : {}),
+        ...extraHeaders,
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       ...(body != null ? { body: JSON.stringify(body) } : {}),

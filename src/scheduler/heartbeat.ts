@@ -128,12 +128,13 @@ export class HeartbeatRunner {
         }
 
         const response = await this.options.agent.handleMessage(
-          'heartbeat',
+          `heartbeat:${startedAt.toISOString()}`,
           '(heartbeat tick)',
           'heartbeat',
           {
             extraSystemPrompt: instructions,
             userId: 'system',
+            ephemeral: true,
           },
         );
         logger.debug('Heartbeat run completed', { responseLength: response.trim().length });

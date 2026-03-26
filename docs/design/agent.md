@@ -18,6 +18,7 @@ interface HandleMessageOptions {
   lifecycle?: AgentLifecycleCallbacks;
   extraSystemPrompt?: string;
   userId?: string;
+  ephemeral?: boolean;
 }
 
 interface IAgent {
@@ -41,8 +42,10 @@ interface IAgent {
    - display name / profile を壊さない best-effort 登録
    - 失敗しても会話は継続
         ↓
-1. ユーザーメッセージ追加         sessionManager.addMessages(sessionId, [...])
-   （セッション読み込み＋追加を一括処理。履歴には Discord から来た生の userName を残す）
+1. ユーザーメッセージ追加
+   - 通常 turn: `sessionManager.addMessages(sessionId, [...])`
+   - `ephemeral: true`: インメモリの単発 SessionData を構築（disk write / cache 更新なし）
+   （履歴には Discord から来た生の userName を残す）
         ↓
 2. 要約チェック（トークン予算）
    a. coreMemory, recentDiaries, AGENT.md / RULES.md, skills, ensured user を取得
@@ -52,7 +55,7 @@ interface IAgent {
       + "<diary>...</diary>"
       + skill list
       + 利用可能ツール説明)
-   c. needsSummarization(session, additionalTokens) が true
+   c. `ephemeral !== true` かつ needsSummarization(session, additionalTokens) が true
          │                              ↓
          │                        summarizeSession() で LLM 要約
          │                        sessionManager.applySummary() で圧縮
@@ -78,7 +81,9 @@ interface IAgent {
    └── options.lifecycle がある場合は experimental_onStepStart /
         experimental_onToolCallStart / experimental_onToolCallFinish を配線
          ↓
-5. result.response.messages を sessionManager に保存して応答文字列を返す
+5. 応答メッセージ保存
+   - 通常 turn: `result.response.messages` を sessionManager に保存
+   - `ephemeral: true`: 保存しない
         ↓
 6. post-response evaluator をバックグラウンド enqueue
    - real user: profile / core memory / diary の永続化判断を含む
@@ -164,8 +169,9 @@ interface IAgent {
   - `sns_repost`
   - `sns_upload_media`
   - `sns_get_thread`
-- `loadSkill("sns")` 時に、新着通知・トレンド・直近行動ログを動的コンテキストとして注入する
-- `sns_post` / `sns_like` / `sns_repost` は SQLite の SNS activity store を参照し、重複返信・引用・いいね・リポストを API 呼び出し前に抑止する
+- `loadSkill("sns")` 時に、新着通知・トレンド・直近行動ログ・スケジュール済みアクションを動的コンテキストとして注入する
+- `sns_post` / `sns_like` / `sns_repost` は SQLite の SNS activity store と schedule store を参照し、重複返信・引用・いいね・リポストを API 呼び出し前に抑止する
+- `scheduled_at` を指定した `sns_post` / `sns_like` / `sns_repost` は即時 API 実行せず `sns_scheduled_actions` にキュー投入し、専用ランナーが指定時刻に直接 API 実行する
 - `sns_upload_media` は remote URL を直接渡してアップロードできるが、`webFetch` と同じ SSRF 対策を共有し、`http` / `https` 以外のスキーム、private / loopback / link-local 宛て、およびそれらへ到達する redirect を拒否する
 - remote media はサイズ上限付きで読み込み、Mastodon が `202 Accepted` を返した場合は `GET /api/v1/media/:id` を短時間ポーリングして ready を待つ。所定回数で ready にならなければエラーにする
 
@@ -223,7 +229,7 @@ AGENT.md / RULES.md / skills は trusted ファイルとして扱い、`fs.watch
 - user row が未作成（`ensureUser` 失敗等）の場合は evaluator に `userStore` を渡さず、プロフィール関連の書き込みをスキップする
 - `drainPendingEvaluations()` は未完了 evaluator を `Promise.allSettled()` で待つ
 - `src/index.ts` の graceful shutdown では
-  1. HTTP server / scheduler / bot を停止
+  1. HTTP server / scheduler / SNS schedule runner / bot を停止
   2. `agent.drainPendingEvaluations()` で evaluator を待機
   3. memory / user / prompt / skill / scheduler store を close
   の順で drain する
