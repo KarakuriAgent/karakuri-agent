@@ -40,6 +40,7 @@ const configSchema = z.object({
   allowedChannelIds: z.string().optional(),
   reportChannelId: z.string().trim().min(1).optional(),
   adminUserIds: z.string().optional(),
+  karakuriWorldBotIds: z.string().optional(),
 });
 
 export interface ApiCredentials {
@@ -80,6 +81,7 @@ export interface Config {
   allowedChannelIds?: string[] | undefined;
   reportChannelId?: string | undefined;
   adminUserIds?: string[] | undefined;
+  karakuriWorldBotIds?: string[] | undefined;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -118,6 +120,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     allowedChannelIds: env.ALLOWED_CHANNEL_IDS,
     reportChannelId: normalizeOptionalString(env.REPORT_CHANNEL_ID),
     adminUserIds: env.ADMIN_USER_IDS,
+    karakuriWorldBotIds: env.KARAKURI_WORLD_BOT_IDS,
   };
 
   try {
@@ -149,6 +152,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const karakuriWorld = karakuriWorldApiBaseUrl != null && karakuriWorldApiKey != null
       ? { apiBaseUrl: karakuriWorldApiBaseUrl, apiKey: karakuriWorldApiKey }
       : undefined;
+    const karakuriWorldBotIds = parseIdList(parsed.karakuriWorldBotIds);
+    if (karakuriWorld != null && (karakuriWorldBotIds == null || karakuriWorldBotIds.length === 0)) {
+      logger.warn(
+        'KARAKURI_WORLD_API_BASE_URL and KARAKURI_WORLD_API_KEY are set, but KARAKURI_WORLD_BOT_IDS is empty. '
+        + 'KW mode will not activate for any user.',
+      );
+    }
+    if (karakuriWorldBotIds != null && karakuriWorldBotIds.length > 0 && karakuriWorld == null) {
+      logger.warn(
+        'KARAKURI_WORLD_BOT_IDS is set, but KARAKURI_WORLD_API_BASE_URL / KARAKURI_WORLD_API_KEY are not configured. '
+        + 'KW mode will not activate.',
+      );
+    }
     const snsFields = [parsed.snsProvider, snsInstanceUrl, snsAccessToken];
     const snsSetCount = snsFields.filter((value) => value != null).length;
     if (snsSetCount > 0 && snsSetCount < 3) {
@@ -177,6 +193,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       allowedChannelIds: mergedAllowedChannelIds,
       reportChannelId,
       adminUserIds: parseIdList(parsed.adminUserIds),
+      karakuriWorldBotIds,
       ...(karakuriWorld != null ? { karakuriWorld } : {}),
       ...(sns != null ? { sns } : {}),
     };
@@ -193,6 +210,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,
       hasAdminUsers: (config.adminUserIds?.length ?? 0) > 0,
+      hasKarakuriWorldBots: (config.karakuriWorldBotIds?.length ?? 0) > 0,
       hasReportChannel: config.reportChannelId != null,
     });
     return config;

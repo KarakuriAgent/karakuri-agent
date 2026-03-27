@@ -2,6 +2,7 @@ import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 
 import type { SkillContextScope } from '../../skill/context-provider.js';
+import { isReservedSkillName } from '../../skill/reserved.js';
 import type { ISkillStore } from '../../skill/types.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -28,6 +29,15 @@ export function createLoadSkillTool({
       name: z.string().trim().min(1).describe('Skill name to load.'),
     }),
     execute: async ({ name }) => {
+      if (isReservedSkillName(name)) {
+        logger.info('Blocked reserved legacy skill load', { name });
+        return {
+          loaded: false,
+          name,
+          reason: 'This skill is managed internally and cannot be loaded manually.',
+        };
+      }
+
       const skill = await skillStore.getSkill(
         name,
         includeSystemOnly != null ? { includeSystemOnly } : undefined,

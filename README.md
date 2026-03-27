@@ -10,6 +10,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` / `data/system-skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
+- `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザー向けの karakuri-world 専用 KW モード（`karakuri_world_*` のみ登録、1通知=1アクション、`comment` を返信に使用）
 - `sns_*` ツールによる Mastodon 向け SNS 投稿・取得・通知確認・メディアアップロード（`scheduled_at` による遅延実行対応、skill-gated、system heartbeat ではビルトインスキルを自動ロード）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
 - `postMessage` / `manageCron` ツールによる管理者限定のプロアクティブ投稿と Cron 管理
@@ -21,7 +22,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 ## セットアップ
 
 1. `cp .env.example .env`
-2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、対応スキルの `loadSkill` 後に karakuri-world 専用ツールが動的に有効化される。`SNS_PROVIDER` / `SNS_INSTANCE_URL` / `SNS_ACCESS_TOKEN` をすべて設定すると、system ユーザー向けにビルトイン SNS スキルが利用可能になり、heartbeat では動的コンテキストと `sns_*` ツールが自動ロードされる。cron では通常どおり `loadSkill("sns")` を使う。`data/system-skills/sns/SKILL.md` は不要で、存在してもすべての system ユーザー文脈ではビルトイン定義が優先される。対話ユーザーにも公開したい場合は、運用側で `data/skills/*/SKILL.md` に shared skill を追加する。必要なら `POST_RESPONSE_LLM_MODEL` / `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` で応答後評価専用モデルを分離できる）
+2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーは karakuri-world 専用 KW モードで動作し、`karakuri_world_*` ツールだけが直接登録される。`comment` フィールドの内容が Discord 返信として使われる。`SNS_PROVIDER` / `SNS_INSTANCE_URL` / `SNS_ACCESS_TOKEN` をすべて設定すると、system ユーザー向けにビルトイン SNS スキルが利用可能になり、heartbeat では動的コンテキストと `sns_*` ツールが自動ロードされる。cron では通常どおり `loadSkill("sns")` を使う。`data/system-skills/sns/SKILL.md` は不要で、存在してもすべての system ユーザー文脈ではビルトイン定義が優先される。対話ユーザーにも公開したい場合は、運用側で `data/skills/*/SKILL.md` に shared skill を追加する。必要なら `POST_RESPONSE_LLM_MODEL` / `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` で応答後評価専用モデルを分離できる）
    - `LLM_MODEL` は `openai/gpt-4o` のような OpenAI Responses API セレクタ、または `openai/chat/gpt-4o` のような OpenAI Chat API セレクタで指定する
    - 旧形式の bare model 名（例: `gpt-4o`）も互換用に受け付けるが、内部では `openai/gpt-4o` として扱う
    - `LLM_API_KEY` 未設定時のエラーでは legacy alias の `OPENAI_API_KEY` も案内する
@@ -33,6 +34,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 `data.example/` にはサンプルの `AGENT.md`・`RULES.md`・スキル定義に加えて、`HEARTBEAT.md` と `cron/daily-summary/CRON.md` も含まれている。
 `data/` はユーザーごとにカスタマイズするため `.gitignore` で除外されている。
 SNS 自動ロード対応へ更新する既存環境では、ローカルの `data/HEARTBEAT.md` も手動で見直す。以前の `loadSkill("sns")` / SNS 活動手順 / `data/system-skills/sns/SKILL.md` 前提の記述が残っている場合は削除し、必要なら `data.example/HEARTBEAT.md` をベースにチェック項目だけを残す。
+同様に KW モード移行後は、ローカルの `data/skills/karakuri-world/SKILL.md` と `data/system-skills/karakuri-world/SKILL.md` を削除する。これらの legacy ファイルは通常モードでは無視されるが、今後の運用混乱を避けるためにも手動で消しておく。
 
 Discord Developer Portal では `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` を取得し、
 Interactions Endpoint を `POST /webhooks/discord` に向ける。通常メッセージ受信には
@@ -98,7 +100,7 @@ npm run docker:dev
 - 既存環境の `data/HEARTBEAT.md` は `.gitignore` されて自動更新されないため、SNS 自動ロード導入前の `loadSkill("sns")` や手動 SNS 指示が残っていないか確認する。heartbeat 側の SNS 指示はコード内ビルトインが正本
 - 1 つ以上のスキルが存在するときだけ `loadSkill` ツールが公開され、システムプロンプトには利用可能なスキル一覧だけを注入する
 - 通常ユーザーには `data/skills/*/SKILL.md` のみ公開され、`data/system-skills/*/SKILL.md` は `userId === 'system'` のときだけ一覧表示・`loadSkill` 対象になる
-- `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`KARAKURI_WORLD_*` 設定時は `karakuri_world_*` ツール群をスキル経由で遅延公開する
+- `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`karakuri-world` は `allowed-tools` の有無に関係なく通常の skill discovery / `loadSkill` から常に除外され、`karakuri_world_*` は `KARAKURI_WORLD_*` 設定済みかつ `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーの KW モードでのみ直接公開する
 - `SNS_*` 設定時は system ユーザー向けにビルトイン SNS skill が追加される。cron では `loadSkill("sns")` で `sns_*` ツール群を遅延公開し、heartbeat では同じスキルが自動ロードされる。`data/system-skills/sns/SKILL.md` は不要で、存在してもすべての system ユーザー文脈ではビルトイン定義が優先される。動的コンテキストには新着通知・トレンド・直近行動ログ・スケジュール済みアクションが含まれ、重複いいね/リポスト/返信/引用をツール層で防ぐ。heartbeat の活動レポートは `REPORT_CHANNEL_ID` が `postMessage` の送信許可チャンネルにも含まれる構成でのみ案内される。`sns_post` / `sns_like` / `sns_repost` は `scheduled_at` に未来のタイムゾーン付き日時（例: `Z`, `+09:00`）を指定すると SQLite キューへ登録され、専用ランナーが指定時刻に直接 API 実行する。対話ユーザーに公開する場合は運用側で shared skill を定義する
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は各 redirect hop を再検証し、`http` / `https` 以外のスキームや private / loopback / link-local 宛てへの遷移を拒否して SSRF を抑止する。15 秒のタイムアウトは DNS 解決も含めて適用する

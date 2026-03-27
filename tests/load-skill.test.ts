@@ -86,7 +86,7 @@ describe('loadSkill tool', () => {
   it('returns allowedTools and dynamically adds gated tools', async () => {
     const tools = createNoopToolSet();
     const unlockedTools: ToolSet = {
-      karakuri_world_get_map: tool({
+      gated_map: tool({
         description: 'map',
         inputSchema: z.object({}),
         execute: async () => ({ rows: 1, cols: 1 }),
@@ -95,28 +95,28 @@ describe('loadSkill tool', () => {
     const toolInstance = createLoadSkillTool({
       skillStore: createSkillStoreStub([
         {
-          name: 'karakuri-world',
-          description: 'Explore the world',
+          name: 'map-skill',
+          description: 'Open the map',
           instructions: 'Observe first.',
           systemOnly: false,
-          allowedTools: ['karakuri_world_get_map'],
+          allowedTools: ['gated_map'],
         },
       ]),
       tools,
-      gatedToolSets: new Map([['karakuri-world', unlockedTools]]),
+      gatedToolSets: new Map([['map-skill', unlockedTools]]),
     });
 
     await expect(toolInstance.execute!(
-      { name: 'karakuri-world' },
+      { name: 'map-skill' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
       loaded: true,
-      name: 'karakuri-world',
-      description: 'Explore the world',
-      allowedTools: ['karakuri_world_get_map'],
+      name: 'map-skill',
+      description: 'Open the map',
+      allowedTools: ['gated_map'],
       instructions: 'Observe first.',
     });
-    expect(tools).toHaveProperty('karakuri_world_get_map');
+    expect(tools).toHaveProperty('gated_map');
   });
 
   it('omits unavailable allowedTools from the loadSkill result', async () => {
@@ -124,11 +124,11 @@ describe('loadSkill tool', () => {
     const toolInstance = createLoadSkillTool({
       skillStore: createSkillStoreStub([
         {
-          name: 'karakuri-world',
-          description: 'Explore the world',
+          name: 'map-skill',
+          description: 'Open the map',
           instructions: 'Observe first.',
           systemOnly: false,
-          allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
+          allowedTools: ['gated_map', 'gated_move'],
         },
       ]),
       tools,
@@ -136,15 +136,15 @@ describe('loadSkill tool', () => {
     });
 
     await expect(toolInstance.execute!(
-      { name: 'karakuri-world' },
+      { name: 'map-skill' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
       loaded: false,
-      name: 'karakuri-world',
+      name: 'map-skill',
       unavailable: true,
     });
-    expect(tools).not.toHaveProperty('karakuri_world_get_map');
-    expect(tools).not.toHaveProperty('karakuri_world_move');
+    expect(tools).not.toHaveProperty('gated_map');
+    expect(tools).not.toHaveProperty('gated_move');
   });
 
   it('returns loaded false for missing skills', async () => {
@@ -160,6 +160,30 @@ describe('loadSkill tool', () => {
     )).resolves.toEqual({
       loaded: false,
       name: 'missing',
+    });
+  });
+
+  it('blocks reserved legacy karakuri-world skills even if present in the skill store', async () => {
+    const toolInstance = createLoadSkillTool({
+      skillStore: createSkillStoreStub([
+        {
+          name: 'karakuri-world',
+          description: 'Explore the world',
+          instructions: 'Observe first.',
+          systemOnly: false,
+        },
+      ]),
+      tools: createNoopToolSet(),
+      gatedToolSets: new Map(),
+    });
+
+    await expect(toolInstance.execute!(
+      { name: 'karakuri-world' },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({
+      loaded: false,
+      name: 'karakuri-world',
+      reason: 'This skill is managed internally and cannot be loaded manually.',
     });
   });
 
@@ -215,7 +239,7 @@ describe('loadSkill tool', () => {
   it('allows re-loading the same skill in the same turn without collision error', async () => {
     const tools = createNoopToolSet();
     const unlockedTools: ToolSet = {
-      karakuri_world_get_map: tool({
+      gated_map: tool({
         description: 'map',
         inputSchema: z.object({}),
         execute: async () => ({ rows: 1, cols: 1 }),
@@ -224,23 +248,23 @@ describe('loadSkill tool', () => {
     const toolInstance = createLoadSkillTool({
       skillStore: createSkillStoreStub([
         {
-          name: 'karakuri-world',
-          description: 'Explore the world',
+          name: 'map-skill',
+          description: 'Open the map',
           instructions: 'Observe first.',
           systemOnly: false,
-          allowedTools: ['karakuri_world_get_map'],
+          allowedTools: ['gated_map'],
         },
       ]),
       tools,
-      gatedToolSets: new Map([['karakuri-world', unlockedTools]]),
+      gatedToolSets: new Map([['map-skill', unlockedTools]]),
     });
 
-    await toolInstance.execute!({ name: 'karakuri-world' }, DEFAULT_OPTIONS);
+    await toolInstance.execute!({ name: 'map-skill' }, DEFAULT_OPTIONS);
     await expect(toolInstance.execute!(
-      { name: 'karakuri-world' },
+      { name: 'map-skill' },
       DEFAULT_OPTIONS,
-    )).resolves.toMatchObject({ loaded: true, name: 'karakuri-world' });
-    expect(tools).toHaveProperty('karakuri_world_get_map');
+    )).resolves.toMatchObject({ loaded: true, name: 'map-skill' });
+    expect(tools).toHaveProperty('gated_map');
   });
 
   it('returns a structured error on tool name conflict with a different tool source', async () => {
@@ -251,10 +275,10 @@ describe('loadSkill tool', () => {
     });
     const tools: ToolSet = {
       ...createNoopToolSet(),
-      karakuri_world_get_map: conflictingTool,
+      gated_map: conflictingTool,
     };
     const unlockedTools: ToolSet = {
-      karakuri_world_get_map: tool({
+      gated_map: tool({
         description: 'map',
         inputSchema: z.object({}),
         execute: async () => ({ rows: 1, cols: 1 }),
@@ -263,23 +287,23 @@ describe('loadSkill tool', () => {
     const toolInstance = createLoadSkillTool({
       skillStore: createSkillStoreStub([
         {
-          name: 'karakuri-world',
-          description: 'Explore the world',
+          name: 'map-skill',
+          description: 'Open the map',
           instructions: 'Observe first.',
           systemOnly: false,
-          allowedTools: ['karakuri_world_get_map'],
+          allowedTools: ['gated_map'],
         },
       ]),
       tools,
-      gatedToolSets: new Map([['karakuri-world', unlockedTools]]),
+      gatedToolSets: new Map([['map-skill', unlockedTools]]),
     });
 
     await expect(toolInstance.execute!(
-      { name: 'karakuri-world' },
+      { name: 'map-skill' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
       loaded: false,
-      name: 'karakuri-world',
+      name: 'map-skill',
       error: expect.stringContaining('tool name conflict'),
     });
   });

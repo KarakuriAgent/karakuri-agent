@@ -56,6 +56,10 @@ export interface BuildSystemPromptOptions {
   hasPostMessage?: boolean | undefined;
   hasManageCron?: boolean | undefined;
   extraSystemPrompt?: string | null | undefined;
+  includeSummary?: boolean | undefined;
+  includeSkillList?: boolean | undefined;
+  includeToolGuidance?: boolean | undefined;
+  includeSkillActivity?: boolean | undefined;
 }
 
 const CLOSING_TAG_PATTERN = /<\/(memory|user-profile|diary|skill-context|skill-dynamic-context|summary|existing-summary|conversation)>/gi;
@@ -250,6 +254,9 @@ export function countAdditionalContextTokens(
     hasPostMessage?: boolean | undefined;
     hasManageCron?: boolean | undefined;
     extraSystemPrompt?: string | null | undefined;
+    includeSkillList?: boolean | undefined;
+    includeToolGuidance?: boolean | undefined;
+    includeSkillActivity?: boolean | undefined;
   },
 ): number {
   return [
@@ -261,15 +268,15 @@ export function countAdditionalContextTokens(
     buildUserProfileSection(options.userName, options.userId, options.userProfile),
     buildDiarySection(recentDiaries),
     buildSkillContextSection(options.skillContexts),
-    buildSkillListSection(options.skills),
-    buildToolGuidance(options.skills, {
+    options.includeSkillList === false ? '' : buildSkillListSection(options.skills),
+    options.includeToolGuidance === false ? '' : buildToolGuidance(options.skills, {
       autoLoadedSkills: options.autoLoadedSkills,
       hasWebSearch: options.hasWebSearch,
       hasUserLookup: options.hasUserLookup,
       hasPostMessage: options.hasPostMessage,
       hasManageCron: options.hasManageCron,
     }),
-    buildSkillActivitySection(options.skillActivityInstructions),
+    options.includeSkillActivity === false ? '' : buildSkillActivitySection(options.skillActivityInstructions),
     buildExtraSystemPromptSection(options.extraSystemPrompt),
   ]
     .filter((section) => section.length > 0)
@@ -295,6 +302,10 @@ export function buildSystemPrompt({
   hasPostMessage,
   hasManageCron,
   extraSystemPrompt,
+  includeSummary,
+  includeSkillList,
+  includeToolGuidance,
+  includeSkillActivity,
 }: BuildSystemPromptOptions): string {
   return [
     resolveAgentInstructions(agentInstructions),
@@ -305,10 +316,12 @@ export function buildSystemPrompt({
     buildUserProfileSection(userName, userId, userProfile),
     buildDiarySection(recentDiaries),
     buildSkillContextSection(skillContexts),
-    buildSummarySection(summary),
-    buildSkillListSection(skills),
-    buildToolGuidance(skills, { autoLoadedSkills, hasWebSearch, hasUserLookup, hasPostMessage, hasManageCron }),
-    buildSkillActivitySection(skillActivityInstructions),
+    includeSummary === false ? '' : buildSummarySection(summary),
+    includeSkillList === false ? '' : buildSkillListSection(skills),
+    includeToolGuidance === false
+      ? ''
+      : buildToolGuidance(skills, { autoLoadedSkills, hasWebSearch, hasUserLookup, hasPostMessage, hasManageCron }),
+    includeSkillActivity === false ? '' : buildSkillActivitySection(skillActivityInstructions),
     buildExtraSystemPromptSection(extraSystemPrompt),
   ]
     .filter((section) => section.length > 0)

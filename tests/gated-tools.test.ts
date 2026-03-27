@@ -5,13 +5,6 @@ import { describe, expect, it } from 'vitest';
 import { buildGatedToolSets, filterSkillsToAvailableTools } from '../src/agent/tools/gated-tools.js';
 import type { SkillDefinition } from '../src/skill/types.js';
 
-const KARAKURI_WORLD_CREDS = {
-  karakuriWorld: {
-    apiBaseUrl: 'https://example.com/api',
-    apiKey: 'secret',
-  },
-};
-
 const SNS_CREDS = {
   sns: {
     provider: 'mastodon' as const,
@@ -32,7 +25,7 @@ function makeSkill(overrides: Partial<SkillDefinition> & Pick<SkillDefinition, '
 }
 
 describe('buildGatedToolSets', () => {
-  it('builds a tool set for a skill whose allowed tools are all available', () => {
+  it('does not expose karakuri-world tools through skill gating', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
@@ -40,26 +33,9 @@ describe('buildGatedToolSets', () => {
       }),
     ];
 
-    const result = buildGatedToolSets(skills, KARAKURI_WORLD_CREDS);
+    const result = buildGatedToolSets(skills, NO_CREDS);
 
-    expect(result.size).toBe(1);
-    const toolSet = result.get('karakuri-world')!;
-    expect(Object.keys(toolSet)).toEqual(['karakuri_world_get_perception', 'karakuri_world_move']);
-  });
-
-  it('builds a partial tool set when only some allowed tools are available', () => {
-    const skills = [
-      makeSkill({
-        name: 'karakuri-world',
-        allowedTools: ['karakuri_world_get_map', 'nonexistent_tool'],
-      }),
-    ];
-
-    const result = buildGatedToolSets(skills, KARAKURI_WORLD_CREDS);
-
-    expect(result.size).toBe(1);
-    const toolSet = result.get('karakuri-world')!;
-    expect(Object.keys(toolSet)).toEqual(['karakuri_world_get_map']);
+    expect(result.size).toBe(0);
   });
 
   it('skips skills with no matching allowed tools', () => {
@@ -70,7 +46,7 @@ describe('buildGatedToolSets', () => {
       }),
     ];
 
-    const result = buildGatedToolSets(skills, KARAKURI_WORLD_CREDS);
+    const result = buildGatedToolSets(skills, NO_CREDS);
 
     expect(result.size).toBe(0);
   });
@@ -80,7 +56,7 @@ describe('buildGatedToolSets', () => {
       makeSkill({ name: 'plain-skill' }),
     ];
 
-    const result = buildGatedToolSets(skills, KARAKURI_WORLD_CREDS);
+    const result = buildGatedToolSets(skills, NO_CREDS);
 
     expect(result.size).toBe(0);
   });
@@ -111,10 +87,9 @@ describe('buildGatedToolSets', () => {
       }),
     ];
 
-    const result = buildGatedToolSets(skills, KARAKURI_WORLD_CREDS);
+    const result = buildGatedToolSets(skills, NO_CREDS);
 
-    expect(result.size).toBe(1);
-    expect(result.has('karakuri-world')).toBe(true);
+    expect(result.size).toBe(0);
     expect(result.has('plain-skill')).toBe(false);
     expect(result.has('missing-tools')).toBe(false);
   });
@@ -148,7 +123,7 @@ describe('filterSkillsToAvailableTools', () => {
     }]);
   });
 
-  it('keeps skills whose allowed tools are available', () => {
+  it('filters out karakuri-world skills even when karakuri-world credentials exist', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
@@ -156,11 +131,21 @@ describe('filterSkillsToAvailableTools', () => {
       }),
     ];
 
-    const result = filterSkillsToAvailableTools(skills, KARAKURI_WORLD_CREDS);
+    const result = filterSkillsToAvailableTools(skills, NO_CREDS);
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.name).toBe('karakuri-world');
-    expect(result[0]!.allowedTools).toEqual(['karakuri_world_get_perception', 'karakuri_world_move']);
+    expect(result).toHaveLength(0);
+  });
+
+  it('filters out legacy karakuri-world skills even without allowedTools', () => {
+    const skills = [
+      makeSkill({
+        name: 'karakuri-world',
+      }),
+    ];
+
+    const result = filterSkillsToAvailableTools(skills, NO_CREDS);
+
+    expect(result).toHaveLength(0);
   });
 
   it('filters out skills whose required tools are all unavailable', () => {
@@ -176,7 +161,7 @@ describe('filterSkillsToAvailableTools', () => {
     expect(result).toHaveLength(0);
   });
 
-  it('keeps skills with partial tool availability and narrows allowedTools', () => {
+  it('filters out karakuri-world skills even with partial tool availability', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
@@ -184,10 +169,9 @@ describe('filterSkillsToAvailableTools', () => {
       }),
     ];
 
-    const result = filterSkillsToAvailableTools(skills, KARAKURI_WORLD_CREDS);
+    const result = filterSkillsToAvailableTools(skills, NO_CREDS);
 
-    expect(result).toHaveLength(1);
-    expect(result[0]!.allowedTools).toEqual(['karakuri_world_get_map']);
+    expect(result).toHaveLength(0);
   });
 
   it('handles mixed skills with and without allowedTools', () => {
@@ -203,10 +187,10 @@ describe('filterSkillsToAvailableTools', () => {
       }),
     ];
 
-    const result = filterSkillsToAvailableTools(skills, KARAKURI_WORLD_CREDS);
+    const result = filterSkillsToAvailableTools(skills, NO_CREDS);
 
-    expect(result).toHaveLength(2);
-    expect(result.map((s) => s.name)).toEqual(['plain-skill', 'karakuri-world']);
+    expect(result).toHaveLength(1);
+    expect(result.map((s) => s.name)).toEqual(['plain-skill']);
   });
 
   it('strips allowedTools from filtered skills that had no matching tools', () => {
@@ -217,7 +201,7 @@ describe('filterSkillsToAvailableTools', () => {
       }),
     ];
 
-    const result = filterSkillsToAvailableTools(skills, KARAKURI_WORLD_CREDS);
+    const result = filterSkillsToAvailableTools(skills, NO_CREDS);
 
     expect(result).toHaveLength(0);
   });

@@ -1,17 +1,16 @@
 import type { ToolSet } from 'ai';
 
-import type { ApiCredentials, SnsCredentials } from '../../config.js';
+import type { SnsCredentials } from '../../config.js';
+import { isReservedSkillName } from '../../skill/reserved.js';
 import type { ISnsActivityStore, ISnsScheduleStore } from '../../sns/types.js';
 import type { SkillDefinition } from '../../skill/types.js';
 import type { IUserStore } from '../../user/types.js';
 import { createLogger } from '../../utils/logger.js';
-import { createKarakuriWorldTools } from './karakuri-world.js';
 import { createSnsTools } from './sns.js';
 
 const logger = createLogger('GatedTools');
 
 export interface AvailableGatedToolSources {
-  karakuriWorld?: ApiCredentials | undefined;
   sns?: SnsCredentials | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
   snsScheduleStore?: ISnsScheduleStore | undefined;
@@ -28,6 +27,11 @@ export function buildGatedToolSets(
   const allGatedTools = buildAllGatedTools(availableToolSources);
 
   for (const skill of skills) {
+    if (isReservedSkillName(skill.name)) {
+      logger.info('Skill filtered out: reserved legacy skill name', { skillName: skill.name });
+      continue;
+    }
+
     const matchedToolNames = getMatchedAllowedToolNames(skill, allGatedTools);
     if (matchedToolNames.length === 0) {
       continue;
@@ -50,6 +54,11 @@ export function filterSkillsToAvailableTools(
   const allGatedTools = buildAllGatedTools(availableToolSources);
 
   return skills.flatMap((skill) => {
+    if (isReservedSkillName(skill.name)) {
+      logger.info('Skill filtered out: reserved legacy skill name', { skillName: skill.name });
+      return [];
+    }
+
     const { allowedTools: _allowedTools, ...skillWithoutAllowedTools } = skill;
     const matchedToolNames = getMatchedAllowedToolNames(skill, allGatedTools, { logUnmatched: false });
     if (skill.allowedTools != null && matchedToolNames.length === 0) {
@@ -69,10 +78,6 @@ export function filterSkillsToAvailableTools(
 
 function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): ToolSet {
   const allGatedTools: ToolSet = {};
-
-  if (availableToolSources.karakuriWorld != null) {
-    Object.assign(allGatedTools, createKarakuriWorldTools(availableToolSources.karakuriWorld));
-  }
 
   if (availableToolSources.sns != null) {
     Object.assign(allGatedTools, createSnsTools({

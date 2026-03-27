@@ -41,7 +41,7 @@ describe('HeartbeatRunner', () => {
       userId: 'system',
       ephemeral: true,
     });
-    expect(messageSink.postMessage).toHaveBeenCalledWith('report', expect.stringMatching(/^✅ Heartbeat succeeded in \d+ms$/));
+    expect(messageSink.postMessage).toHaveBeenCalledWith('report', expect.stringMatching(/^✅ Heartbeat succeeded in \d+ms\nHEARTBEAT_OK$/));
 
     await runner.close();
   });

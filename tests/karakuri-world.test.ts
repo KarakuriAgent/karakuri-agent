@@ -69,7 +69,7 @@ describe('karakuri-world tools', () => {
     });
 
     const result = await tools.karakuri_world_move!.execute!(
-      { target_node_id: '1-2' },
+      { target_node_id: '1-2', comment: '門へ向かいます。' },
       DEFAULT_OPTIONS,
     );
 
@@ -90,7 +90,39 @@ describe('karakuri-world tools', () => {
       from_node_id: '1-1',
       to_node_id: '1-2',
       arrives_at: 42,
+      comment: '門へ向かいます。',
     });
+  });
+
+  it('requires comment in direct karakuri-world tool schemas', () => {
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch: vi.fn(),
+    });
+    const moveInputSchema = tools.karakuri_world_move?.inputSchema as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    const perceptionInputSchema = tools.karakuri_world_get_perception?.inputSchema as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+
+    expect(moveInputSchema.safeParse({ target_node_id: '1-2' }).success).toBe(false);
+    expect(moveInputSchema.safeParse({
+      target_node_id: '1-2',
+      comment: '移動します。',
+    }).success).toBe(true);
+    expect(moveInputSchema.safeParse({
+      target_node_id: '1-2',
+      comment: '',
+    }).success).toBe(false);
+    expect(moveInputSchema.safeParse({
+      target_node_id: '1-2',
+      comment: '   ',
+    }).success).toBe(false);
+    expect(perceptionInputSchema.safeParse({}).success).toBe(false);
+    expect(perceptionInputSchema.safeParse({ comment: 'まず観察します。' }).success).toBe(true);
+    expect(perceptionInputSchema.safeParse({ comment: '' }).success).toBe(false);
   });
 
   it('uses GET endpoints without sending a request body for read operations', async () => {

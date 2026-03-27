@@ -21,7 +21,7 @@
 | `POST_RESPONSE_LLM_BASE_URL` |  | fallback to `LLM_BASE_URL` | ポストレスポンス evaluator 専用 Base URL |
 | `POST_RESPONSE_LLM_MODEL` |  | fallback to `LLM_MODEL` | ポストレスポンス evaluator 専用モデルセレクタ |
 | `BRAVE_API_KEY` |  | - | Brave Search API キー（設定時のみ `webSearch` を有効化） |
-| `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（`KARAKURI_WORLD_API_KEY` と両方あるときのみ skill-gated tool を有効化） |
+| `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（`KARAKURI_WORLD_API_KEY` と両方あるときのみ、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーへ KW モードを有効化） |
 | `KARAKURI_WORLD_API_KEY` |  | - | karakuri-world API の Bearer token |
 | `SNS_PROVIDER` |  | - | SNS provider 種別。現状は `mastodon` のみ |
 | `SNS_INSTANCE_URL` |  | - | Mastodon instance の Base URL（`SNS_PROVIDER` / `SNS_ACCESS_TOKEN` と 3 つそろったときのみ `sns_*` skill-gated tool を有効化。標準添付 skill は system 専用） |
@@ -35,6 +35,7 @@
 | `ALLOWED_CHANNEL_IDS` |  | - | `postMessage` で送信可能なチャンネル ID 一覧（`,` 区切り） |
 | `REPORT_CHANNEL_ID` |  | - | scheduler/report 用の専用チャンネル ID。`allowedChannelIds` には含まれるが `postMessage` の送信先には含めない |
 | `ADMIN_USER_IDS` |  | - | admin-only tool を使えるユーザー ID 一覧（`,` 区切り） |
+| `KARAKURI_WORLD_BOT_IDS` |  | - | KW モード専用の bot ユーザー ID 一覧（`,` 区切り。`ADMIN_USER_IDS` とは独立） |
 
 ## モデルセレクタ
 
@@ -114,6 +115,7 @@ interface Config {
   allowedChannelIds?: string[] | undefined;
   reportChannelId?: string | undefined;
   adminUserIds?: string[] | undefined;
+  karakuriWorldBotIds?: string[] | undefined;
 }
 ```
 

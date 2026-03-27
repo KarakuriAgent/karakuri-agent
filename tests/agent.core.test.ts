@@ -238,6 +238,152 @@ function makeGenerateTextResult(text: string, messages: ModelMessage[]) {
   } as const;
 }
 
+function makeKwModeGenerateTextResult(comment?: string) {
+  const toolCallId = 'kw-tool-1';
+  return {
+    text: 'ignored kw mode text',
+    steps: [{
+      toolCalls: [{
+        toolName: 'karakuri_world_get_perception',
+        input: { comment: comment ?? '周囲を確認します。' },
+      }],
+      toolResults: [{
+        toolName: 'karakuri_world_get_perception',
+        output: comment == null
+          ? { current_node: { node_id: '1-1', type: 'plain' } }
+          : { current_node: { node_id: '1-1', type: 'plain' }, comment },
+      }],
+    }],
+    response: {
+      id: 'response-id',
+      modelId: 'gpt-4o',
+      timestamp: new Date(),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId,
+              toolName: 'karakuri_world_get_perception',
+              input: { comment: comment ?? '周囲を確認します。' },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId,
+              toolName: 'karakuri_world_get_perception',
+              output: comment == null
+                ? { current_node: { node_id: '1-1', type: 'plain' } }
+                : { current_node: { node_id: '1-1', type: 'plain' }, comment },
+            },
+          ],
+        },
+      ],
+    },
+  } as const;
+}
+
+function makeInvalidMultiActionKwModeGenerateTextResult() {
+  return {
+    text: 'ignored kw mode text',
+    steps: [{
+      toolCalls: [
+        {
+          toolName: 'karakuri_world_get_perception',
+          input: { comment: '周囲を確認します。' },
+        },
+        {
+          toolName: 'karakuri_world_move',
+          input: { target_node_id: '1-2', comment: '門へ向かいます。' },
+        },
+      ],
+      toolResults: [
+        {
+          toolName: 'karakuri_world_get_perception',
+          output: { current_node: { node_id: '1-1', type: 'plain' }, comment: '周囲を確認します。' },
+        },
+        {
+          toolName: 'karakuri_world_move',
+          output: { from_node_id: '1-1', to_node_id: '1-2', arrives_at: 42, comment: '門へ向かいます。' },
+        },
+      ],
+    }],
+    response: {
+      id: 'response-id',
+      modelId: 'gpt-4o',
+      timestamp: new Date(),
+      messages: [],
+    },
+  } as const;
+}
+
+function makeBusyKwModeGenerateTextResult(comment: string) {
+  const toolCallId = 'kw-tool-1';
+  return {
+    text: 'ignored kw mode text',
+    steps: [{
+      toolCalls: [{
+        toolName: 'karakuri_world_move',
+        input: { target_node_id: '1-2', comment },
+      }],
+      toolResults: [{
+        toolName: 'karakuri_world_move',
+        output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.', comment },
+      }],
+    }],
+    response: {
+      id: 'response-id',
+      modelId: 'gpt-4o',
+      timestamp: new Date(),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId,
+              toolName: 'karakuri_world_move',
+              input: { target_node_id: '1-2', comment },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId,
+              toolName: 'karakuri_world_move',
+              output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.', comment },
+            },
+          ],
+        },
+      ],
+    },
+  } as const;
+}
+
+function makeInvalidZeroActionKwModeGenerateTextResult() {
+  return {
+    text: 'ignored kw mode text',
+    steps: [{
+      toolCalls: [],
+      toolResults: [],
+    }],
+    response: {
+      id: 'response-id',
+      modelId: 'gpt-4o',
+      timestamp: new Date(),
+      messages: [],
+    },
+  } as const;
+}
+
 function makeStructuredEvaluationResult(output: Record<string, string>) {
   return {
     text: JSON.stringify(output),
@@ -270,6 +416,21 @@ function createSchedulerStore(): ISchedulerStore {
     close: async () => {},
   };
 }
+
+const EXPECTED_KW_TOOL_NAMES = [
+  'karakuri_world_get_perception',
+  'karakuri_world_get_available_actions',
+  'karakuri_world_get_map',
+  'karakuri_world_get_world_agents',
+  'karakuri_world_move',
+  'karakuri_world_action',
+  'karakuri_world_wait',
+  'karakuri_world_conversation_start',
+  'karakuri_world_conversation_accept',
+  'karakuri_world_conversation_reject',
+  'karakuri_world_conversation_speak',
+  'karakuri_world_server_event_select',
+] as const;
 
 const FAKE_NOW = new Date('2026-03-27T06:30:00Z');
 
@@ -391,7 +552,16 @@ describe('KarakuriAgent', () => {
     sessionManager.session.summary = 'previous summary';
 
     let capturedSystem = '';
-    const generateTextFn = vi.fn(async (options: { system?: string }) => {
+    const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
       capturedSystem = options.system ?? '';
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
@@ -530,9 +700,9 @@ describe('KarakuriAgent', () => {
       sessionManager,
       skillStore: new SkillStoreStub([
         {
-          name: 'karakuri-world',
-          description: 'Explore the world',
-          instructions: 'Observe first.',
+          name: 'code-review',
+          description: 'Review code',
+          instructions: 'Check security first.',
           systemOnly: false,
         },
       ]),
@@ -551,7 +721,7 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('### sns');
     expect(capturedSystem).toContain('## 新着通知');
     expect(capturedSystem).toContain('## スキル活動');
-    expect(capturedSystem).toContain('Available skills:\n- karakuri-world: Explore the world');
+    expect(capturedSystem).toContain('Available skills:\n- code-review: Review code');
     expect(capturedSystem).not.toContain('- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
     expect(capturedSystem).toContain('- sns_post: publish an SNS post, optionally as a reply, quote, media post, or delayed scheduled action.');
     expect(capturedSystem).toContain('- sns_like: like an SNS post immediately or schedule the like for later.');
@@ -753,7 +923,16 @@ describe('KarakuriAgent', () => {
     const sessionManager = new SessionManagerStub();
     let capturedSystem = '';
 
-    const generateTextFn = vi.fn(async (options: { system?: string }) => {
+    const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
       capturedSystem = options.system ?? '';
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
@@ -798,7 +977,16 @@ describe('KarakuriAgent', () => {
       getContext: async () => ({ text: '## 新着通知\n- override context' }),
     });
 
-    const generateTextFn = vi.fn(async (options: { system?: string }) => {
+    const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
       capturedSystem = options.system ?? '';
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
@@ -849,7 +1037,16 @@ describe('KarakuriAgent', () => {
     const sessionManager = new SessionManagerStub();
     let capturedSystem = '';
 
-    const generateTextFn = vi.fn(async (options: { system?: string }) => {
+    const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
       capturedSystem = options.system ?? '';
       return makeGenerateTextResult('reply', [assistantMessage('reply')]);
     }) as unknown as typeof import('ai').generateText;
@@ -1048,7 +1245,7 @@ describe('KarakuriAgent', () => {
     expect(capturedTools).toHaveProperty('loadSkill');
   });
 
-  it('unlocks karakuri-world tools after loadSkill runs', async () => {
+  it('does not expose karakuri-world through loadSkill for normal users', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
     let capturedSystem = '';
@@ -1085,23 +1282,358 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('session-1', 'hi', 'Alice');
 
-    expect(capturedSystem).toContain('Available skills:\n- karakuri-world: Explore the world (tools: karakuri_world_get_map)');
-    expect(capturedSystem).toContain('Some skills unlock additional tools');
-    expect(capturedTools).toHaveProperty('loadSkill');
+    expect(capturedSystem).not.toContain('Available skills:');
+    expect(capturedSystem).not.toContain('karakuri-world');
+    expect(capturedSystem).not.toContain('Some skills unlock additional tools');
+    expect(capturedTools).not.toHaveProperty('loadSkill');
     expect(capturedTools).not.toHaveProperty('karakuri_world_get_map');
+  });
 
-    const loadSkillTool = capturedTools.loadSkill as { execute: (input: { name: string }, options: unknown) => Promise<unknown> };
-    await expect(loadSkillTool.execute(
-      { name: 'karakuri-world' },
-      { toolCallId: 'tool-1', messages: [] },
-    )).resolves.toEqual({
-      loaded: true,
-      name: 'karakuri-world',
-      description: 'Explore the world',
-      allowedTools: ['karakuri_world_get_map'],
-      instructions: 'Observe first.',
+  it('does not expose legacy karakuri-world skills without allowedTools for normal users', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([
+        {
+          name: 'karakuri-world',
+          description: 'Explore the world',
+          instructions: 'Observe first.',
+          systemOnly: false,
+        },
+      ]),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
     });
-    expect(capturedTools).toHaveProperty('karakuri_world_get_map');
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(capturedSystem).not.toContain('Available skills:');
+    expect(capturedSystem).not.toContain('karakuri-world');
+    expect(capturedTools).not.toHaveProperty('loadSkill');
+  });
+
+  it('switches KW bot users into karakuri-world mode with comment-based replies', async () => {
+    const memoryStore = new MemoryStoreStub('core memory', [
+      { date: '2025-01-02', content: 'recent diary' },
+    ]);
+    const sessionManager = new SessionManagerStub();
+    sessionManager.session.summary = 'previous summary';
+    const userStore = new UserStoreStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+    let capturedToolChoice: unknown;
+    let evaluationPrompt = '';
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; toolChoice?: unknown; output?: unknown; prompt?: string }) => {
+      if (options.output != null) {
+        evaluationPrompt = options.prompt ?? '';
+        return makeStructuredEvaluationResult({
+          profileAction: 'update',
+          profile: 'should be ignored',
+          displayName: 'should be ignored',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      capturedToolChoice = options.toolChoice;
+      return makeKwModeGenerateTextResult('周囲を確認します。');
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      promptContextStore: new PromptContextStoreStub({
+        agentInstructions: 'You are custom.',
+        rules: 'Be precise.',
+      }),
+      skillStore: new SkillStoreStub([
+        {
+          name: 'karakuri-world',
+          description: 'Explore the world',
+          instructions: 'Observe first.',
+          systemOnly: false,
+          allowedTools: ['karakuri_world_get_map'],
+        },
+      ]),
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' })).resolves.toBe('周囲を確認します。');
+    await agent.drainPendingEvaluations();
+
+    expect(userStore.ensureCalls).toEqual([]);
+    expect(Object.keys(capturedTools).sort()).toEqual([...EXPECTED_KW_TOOL_NAMES].sort());
+    expect(capturedToolChoice).toBe('required');
+    expect(capturedSystem).toContain('You are custom.');
+    expect(capturedSystem).toContain('Be precise.');
+    expect(capturedSystem).toContain('<memory>');
+    expect(capturedSystem).toContain('<diary>');
+    expect(capturedSystem).not.toContain('\n<user-profile>\n');
+    expect(capturedSystem).toContain('<summary>');
+    expect(capturedSystem).not.toContain('Available skills:');
+    expect(capturedSystem).not.toContain('Available tools:');
+    expect(capturedSystem).toContain('KarakuriWorld mode is active.');
+    expect(sessionManager.session.messages).toContainEqual({
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'kw-tool-1',
+          toolName: 'karakuri_world_get_perception',
+          input: { comment: '周囲を確認します。' },
+        },
+        { type: 'text', text: '周囲を確認します。' },
+      ],
+    });
+    expect(sessionManager.session.messages).toContainEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'kw-tool-1',
+          toolName: 'karakuri_world_get_perception',
+          output: { current_node: { node_id: '1-1', type: 'plain' }, comment: '周囲を確認します。' },
+        },
+      ],
+    });
+    expect(evaluationPrompt).toContain('Latest assistant response:\n周囲を確認します。');
+    expect(userStore.profileUpdates).toEqual([]);
+    expect(userStore.displayNameUpdates).toEqual([]);
+  });
+
+  it('falls back to a default completion reply when a karakuri-world tool result has no comment', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn: vi.fn(async () =>
+        makeKwModeGenerateTextResult(undefined),
+      ) as unknown as typeof import('ai').generateText,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' })).resolves.toBe('(行動完了)');
+  });
+
+  it('returns an empty string for Discord suppression when a karakuri-world tool result is busy', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let evaluationPrompt = '';
+
+    const generateTextFn = vi.fn(async (options: { output?: unknown; prompt?: string }) => {
+      if (options.output != null) {
+        evaluationPrompt = options.prompt ?? '';
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      return makeBusyKwModeGenerateTextResult('門へ向かいます。');
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', '移動して', 'KWBot', { userId: 'kw-bot-1' })).resolves.toBe('');
+    await agent.drainPendingEvaluations();
+
+    expect(sessionManager.session.messages.length).toBeGreaterThanOrEqual(2);
+    expect(evaluationPrompt).toContain('Latest assistant response:\n');
+  });
+
+  it('rejects multiple karakuri-world actions in a single notification', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn: vi.fn(async () =>
+        makeInvalidMultiActionKwModeGenerateTextResult(),
+      ) as unknown as typeof import('ai').generateText,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' }))
+      .rejects.toThrow('KarakuriWorld mode expected exactly one action, but received 2.');
+    expect(sessionManager.session.messages).toHaveLength(1);
+  });
+
+  it('rejects missing karakuri-world actions in a single notification', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn: vi.fn(async () =>
+        makeInvalidZeroActionKwModeGenerateTextResult(),
+      ) as unknown as typeof import('ai').generateText,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' }))
+      .rejects.toThrow('KarakuriWorld mode expected exactly one action, but received 0.');
+    expect(sessionManager.session.messages).toHaveLength(1);
+  });
+
+  it('keeps normal users on the standard tool path even when karakuri-world is configured', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+    let capturedToolChoice: unknown;
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; toolChoice?: unknown }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      capturedToolChoice = options.toolChoice;
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      userStore: new UserStoreStub(),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' });
+
+    expect(capturedToolChoice).toBeUndefined();
+    expect(capturedTools).toHaveProperty('recallDiary');
+    expect(capturedTools).not.toHaveProperty('karakuri_world_get_perception');
+    expect(capturedSystem).not.toContain('KarakuriWorld mode is active.');
+    expect(capturedSystem).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
+  });
+
+  it('keeps admin users on the standard user-profile path when karakuri-world is disabled', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub([
+      {
+        userId: 'admin-user',
+        displayName: 'Admin Old',
+        profile: 'Knows the world state',
+        createdAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+        updatedAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+      },
+    ]);
+    let capturedSystem = '';
+
+    const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      capturedSystem = options.system ?? '';
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        adminUserIds: ['admin-user'],
+      },
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'hi', 'Admin', { userId: 'admin-user' })).resolves.toBe('reply');
+
+    expect(userStore.ensureCalls).toEqual([{ userId: 'admin-user', displayName: 'Admin' }]);
+    expect(capturedSystem).toContain('<user-profile>');
+    expect(capturedSystem).toContain('Display name: Admin Old');
+    expect(capturedSystem).toContain('User ID: admin-user');
+    expect(capturedSystem).not.toContain('KarakuriWorld mode is active.');
   });
 
   it('omits unavailable gated tools from prompts and loadSkill results', async () => {

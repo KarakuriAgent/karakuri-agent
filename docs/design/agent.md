@@ -263,7 +263,7 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 | 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
 | システムプロンプト構築 | memory / user-profile / diary / summary がタグ付きで正しく組み立てられる |
-| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill / karakuri-world / sns skill-gated tools が想定どおり呼ばれる |
+| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill / karakuri-world KW mode / sns skill-gated tools が想定どおり呼ばれる |
 | lifecycle callback 配線 | AgentLifecycleCallbacks が generateText の step/tool callback へ同期で橋渡しされる |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 | post-response evaluation | reply を先に返しつつ evaluator がバックグラウンドで動き、drainPendingEvaluations で待機できる |

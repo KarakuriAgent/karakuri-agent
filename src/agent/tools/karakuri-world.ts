@@ -21,6 +21,11 @@ const waitDurationSchema = z
     return Number.isSafeInteger(parsed) ? parsed : value;
   }, z.number().int().min(1).max(3_600_000))
   .describe('待機時間（ミリ秒）');
+const commentSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .describe('この行動に対するコメントや感想。行動の理由や観察結果の所感を記述する。');
 const okResponseSchema = z.object({ status: z.literal('ok') }).strict();
 const errorResponseSchema = z
   .object({
@@ -121,6 +126,10 @@ const getAvailableActionsToolInputSchema = getAvailableActionsOperationSchema.om
 const getPerceptionToolInputSchema = getPerceptionOperationSchema.omit({ operation: true });
 const getMapToolInputSchema = getMapOperationSchema.omit({ operation: true });
 const getWorldAgentsToolInputSchema = getWorldAgentsOperationSchema.omit({ operation: true });
+
+function withComment<TSchema extends z.AnyZodObject>(schema: TSchema) {
+  return schema.extend({ comment: commentSchema });
+}
 
 const moveResponseSchema = z
   .object({
@@ -742,6 +751,18 @@ async function executeKarakuriWorldTool<TOperation extends KarakuriWorldOperatio
   }
 }
 
+async function executeKarakuriWorldToolWithComment(
+  operation: KarakuriWorldOperation,
+  input: Record<string, unknown>,
+  context: RequestContext,
+): Promise<Record<string, unknown> & { comment?: string }> {
+  const { comment, ...requestInput } = input;
+  const result = await executeKarakuriWorldTool(operation as never, requestInput as never, context);
+  return typeof comment === 'string'
+    ? { ...(result as Record<string, unknown>), comment }
+    : { ...(result as Record<string, unknown>) };
+}
+
 export function createKarakuriWorldTools({
   apiBaseUrl,
   apiKey,
@@ -755,64 +776,64 @@ export function createKarakuriWorldTools({
 
   return {
     karakuri_world_get_perception: tool({
-      description: '現在地と周囲の状況を取得する。引数は不要。',
-      inputSchema: getPerceptionToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('get_perception', input, context),
+      description: '現在地と周囲の状況を取得する。',
+      inputSchema: withComment(getPerceptionToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('get_perception', input, context),
     }),
     karakuri_world_get_available_actions: tool({
-      description: '現在地で実行できる行動候補を取得する。引数は不要。',
-      inputSchema: getAvailableActionsToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('get_available_actions', input, context),
+      description: '現在地で実行できる行動候補を取得する。',
+      inputSchema: withComment(getAvailableActionsToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('get_available_actions', input, context),
     }),
     karakuri_world_get_map: tool({
-      description: 'ワールド全体の地図情報を取得する。引数は不要。',
-      inputSchema: getMapToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('get_map', input, context),
+      description: 'ワールド全体の地図情報を取得する。',
+      inputSchema: withComment(getMapToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('get_map', input, context),
     }),
     karakuri_world_get_world_agents: tool({
-      description: 'ログイン中エージェントの一覧と状態を取得する。引数は不要。',
-      inputSchema: getWorldAgentsToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('get_world_agents', input, context),
+      description: 'ログイン中エージェントの一覧と状態を取得する。',
+      inputSchema: withComment(getWorldAgentsToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('get_world_agents', input, context),
     }),
     karakuri_world_move: tool({
       description: '目的地ノードへ移動する。`target_node_id` を渡す。',
-      inputSchema: moveToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('move', input, context),
+      inputSchema: withComment(moveToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('move', input, context),
     }),
     karakuri_world_action: tool({
       description: 'アクションを実行する。`action_id` を渡す。',
-      inputSchema: actionToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('action', input, context),
+      inputSchema: withComment(actionToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('action', input, context),
     }),
     karakuri_world_wait: tool({
       description: 'その場で待機する。`duration_ms` を渡す。',
-      inputSchema: waitToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('wait', input, context),
+      inputSchema: withComment(waitToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('wait', input, context),
     }),
     karakuri_world_conversation_start: tool({
       description: '近くのエージェントへ話しかける。`target_agent_id` と `message` を渡す。',
-      inputSchema: conversationStartToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('conversation_start', input, context),
+      inputSchema: withComment(conversationStartToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('conversation_start', input, context),
     }),
     karakuri_world_conversation_accept: tool({
       description: '会話着信を受諾する。`conversation_id` を渡す。',
-      inputSchema: conversationAcceptToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('conversation_accept', input, context),
+      inputSchema: withComment(conversationAcceptToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('conversation_accept', input, context),
     }),
     karakuri_world_conversation_reject: tool({
       description: '会話着信を拒否する。`conversation_id` を渡す。',
-      inputSchema: conversationRejectToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('conversation_reject', input, context),
+      inputSchema: withComment(conversationRejectToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('conversation_reject', input, context),
     }),
     karakuri_world_conversation_speak: tool({
       description: '会話中に発言する。`conversation_id` と `message` を渡す。',
-      inputSchema: conversationSpeakToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('conversation_speak', input, context),
+      inputSchema: withComment(conversationSpeakToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('conversation_speak', input, context),
     }),
     karakuri_world_server_event_select: tool({
       description: 'サーバーイベントの選択肢を選ぶ。`server_event_id` と `choice_id` を渡す。',
-      inputSchema: serverEventSelectToolInputSchema,
-      execute: async (input) => executeKarakuriWorldTool('server_event_select', input, context),
+      inputSchema: withComment(serverEventSelectToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolWithComment('server_event_select', input, context),
     }),
   };
 }
