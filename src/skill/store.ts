@@ -5,6 +5,7 @@ import { readFileIfExists } from '../utils/file.js';
 import { FileWatcher, type WatchDisposable } from '../utils/file-watcher.js';
 import { createLogger } from '../utils/logger.js';
 import { parseSkillMarkdown } from './frontmatter.js';
+import { isReservedSkillName } from './reserved.js';
 import type { ISkillStore, SkillDefinition, SkillFilterOptions } from './types.js';
 
 const logger = createLogger('SkillStore');
@@ -133,7 +134,22 @@ export class FileSkillStore implements ISkillStore {
 
     this.syncChildWatchers(directoryEntries.map((entry) => entry.directory));
 
-    const entries = await loadSkillEntries(directoryEntries, { failOnError });
+    const entries = (await loadSkillEntries(directoryEntries, { failOnError }))
+      .map((entry) => {
+        if (entry.skill == null || !isReservedSkillName(entry.skill.name)) {
+          return entry;
+        }
+
+        logger.info('Ignoring reserved legacy skill definition', {
+          skillName: entry.skill.name,
+          directory: entry.directory,
+        });
+        return {
+          ...entry,
+          skill: null,
+          failed: false,
+        };
+      });
 
     if (generation !== this.reloadGeneration) {
       return;

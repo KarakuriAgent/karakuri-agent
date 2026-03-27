@@ -1,6 +1,6 @@
 import type { ToolSet } from 'ai';
 
-import type { ApiCredentials, SnsCredentials } from '../../config.js';
+import type { SnsCredentials } from '../../config.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
 import type { ISnsActivityStore, ISnsScheduleStore } from '../../sns/types.js';
@@ -24,7 +24,6 @@ const logger = createLogger('AgentTools');
 export interface CreateAgentToolsOptions {
   memoryStore: IMemoryStore;
   braveApiKey?: string | undefined;
-  karakuriWorld?: ApiCredentials | undefined;
   sns?: SnsCredentials | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
   snsScheduleStore?: ISnsScheduleStore | undefined;
@@ -47,7 +46,6 @@ export interface CreateAgentToolsOptions {
 export function createAgentTools({
   memoryStore,
   braveApiKey,
-  karakuriWorld,
   sns,
   snsActivityStore,
   snsScheduleStore,
@@ -114,7 +112,6 @@ export function createAgentTools({
     ...skills,
     ...autoLoadedSkills,
   ], {
-    karakuriWorld,
     sns,
     snsActivityStore,
     snsScheduleStore,

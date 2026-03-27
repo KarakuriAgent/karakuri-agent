@@ -66,10 +66,10 @@ Check security.`);
 
   it('round-trips allowed-tools metadata from SKILL.md', async () => {
     const dataDir = await createDataDir();
-    await writeSkill(dataDir, 'karakuri-world', `---
-name: karakuri-world
-description: Explore the world
-allowed-tools: karakuri_world_get_map, karakuri_world_move
+    await writeSkill(dataDir, 'map-skill', `---
+name: map-skill
+description: Open the map
+allowed-tools: gated_map, gated_move
 ---
 Observe first.`);
 
@@ -77,9 +77,9 @@ Observe first.`);
 
     await expect(store.listSkills()).resolves.toEqual([
       {
-        name: 'karakuri-world',
-        description: 'Explore the world',
-        allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
+        name: 'map-skill',
+        description: 'Open the map',
+        allowedTools: ['gated_map', 'gated_move'],
         instructions: 'Observe first.',
         systemOnly: false,
       },
@@ -132,6 +132,47 @@ System instructions.`, 'system-skills');
       instructions: 'System instructions.',
       systemOnly: true,
     });
+
+    await store.close();
+  });
+
+  it('ignores legacy local karakuri-world skill files in both shared and system scopes', async () => {
+    const dataDir = await createDataDir();
+    await writeSkill(dataDir, 'shared-kw', `---
+name: karakuri-world
+description: Legacy shared KW
+---
+Observe first.`);
+    await writeSkill(dataDir, 'system-kw', `---
+name: karakuri-world
+description: Legacy system KW
+---
+Observe first.`, 'system-skills');
+
+    const store = await FileSkillStore.create({ dataDir });
+
+    await expect(store.listSkills()).resolves.toEqual([]);
+    await expect(store.listSkills({ includeSystemOnly: true })).resolves.toEqual([]);
+    await expect(store.getSkill('karakuri-world')).resolves.toBeNull();
+    await expect(store.getSkill('karakuri-world', { includeSystemOnly: true })).resolves.toBeNull();
+
+    await store.close();
+  });
+
+  it('hides a legacy local karakuri-world skill file from listSkills and getSkill', async () => {
+    const dataDir = await createDataDir();
+    await writeSkill(dataDir, 'legacy-kw', `---
+name: karakuri-world
+description: Legacy shared KW
+---
+Observe first.`);
+
+    const store = await FileSkillStore.create({ dataDir });
+
+    await expect(store.listSkills()).resolves.toEqual([]);
+    await expect(store.listSkills({ includeSystemOnly: true })).resolves.toEqual([]);
+    await expect(store.getSkill('karakuri-world')).resolves.toBeNull();
+    await expect(store.getSkill('karakuri-world', { includeSystemOnly: true })).resolves.toBeNull();
 
     await store.close();
   });

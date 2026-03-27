@@ -15,9 +15,15 @@ import type { IUserStore } from '../user/types.js';
 import { formatDateTimeInTimezone } from '../utils/date.js';
 import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
+import {
+  buildKarakuriWorldModeInstructions,
+  KARAKURI_WORLD_TOOL_PREFIX,
+  KW_MODE_MAX_STEPS,
+} from '../karakuri-world/builtin-instructions.js';
 import { createAgentTools } from './tools/index.js';
 import { hasAdminToolAccess } from './tools/admin-auth.js';
 import { filterSkillsToAvailableTools } from './tools/gated-tools.js';
+import { createKarakuriWorldTools } from './tools/karakuri-world.js';
 import type { IPromptContextStore } from './prompt-context.js';
 import {
   buildSystemPrompt,
@@ -30,6 +36,7 @@ const logger = createLogger('Agent');
 
 const DEFAULT_RECENT_DIARY_COUNT = 3;
 const DEFAULT_RECENT_TURN_COUNT = 4;
+const DEFAULT_KARAKURI_WORLD_MODE_RESPONSE = '(行動完了)';
 
 export interface AgentLifecycleCallbacks {
   onThinking(): void;
@@ -153,7 +160,10 @@ export class KarakuriAgent implements IAgent {
     const currentDateTime = formatDateTimeInTimezone(new Date(), this.config.timezone);
     const userId = options?.userId;
     const isRealUser = userId != null && userId !== 'system';
-    const ensuredUserPromise = isRealUser && this.userStore != null
+    const isKarakuriWorldBot = isRealUser && (this.config.karakuriWorldBotIds ?? []).includes(userId);
+    const isKarakuriWorldMode = isKarakuriWorldBot && this.config.karakuriWorld != null;
+    const shouldIncludeUserProfile = isRealUser && !isKarakuriWorldMode;
+    const ensuredUserPromise = shouldIncludeUserProfile && this.userStore != null
       ? this.userStore.ensureUser(userId, userName).catch((error) => {
           logger.warn('Failed to ensure user record', error, { userId });
           return null;
@@ -176,7 +186,7 @@ export class KarakuriAgent implements IAgent {
     const isSystemUser = userId === 'system';
     const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
     const includeSystemOnly = isSystemUser || hasAdminAccess;
-    const builtinSkills = this.config.sns != null && includeSystemOnly
+    const builtinSkills = !isKarakuriWorldMode && this.config.sns != null && includeSystemOnly
       ? [createBuiltinSnsSkillDefinition()]
       : [];
     const [coreMemory, recentDiaries, promptContext, listedSkills, ensuredUser] = await Promise.all([
@@ -187,8 +197,8 @@ export class KarakuriAgent implements IAgent {
       ensuredUserPromise,
     ]);
 
-    const promptUserName = isRealUser ? ensuredUser?.displayName ?? userName : undefined;
-    const promptUserProfile = isRealUser ? ensuredUser?.profile ?? null : undefined;
+    const promptUserName = shouldIncludeUserProfile ? ensuredUser?.displayName ?? userName : undefined;
+    const promptUserProfile = shouldIncludeUserProfile ? ensuredUser?.profile ?? null : undefined;
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
       && this.messageSink != null;
@@ -196,15 +206,16 @@ export class KarakuriAgent implements IAgent {
       && this.config.reportChannelId != null
       && (this.config.postMessageChannelIds ?? []).includes(this.config.reportChannelId);
     const hasManageCron = hasAdminAccess && this.schedulerStore != null;
-    const hasUserLookup = this.userStore != null;
+    const hasUserLookup = !isKarakuriWorldMode && this.userStore != null;
     const mergedSkills = mergeBuiltinSkills(listedSkills, builtinSkills);
-    const effectiveSkills = filterSkillsToAvailableTools(mergedSkills, {
-      karakuriWorld: this.config.karakuriWorld,
-      sns: this.config.sns,
-      snsActivityStore: this.snsActivityStore,
-      snsScheduleStore: this.snsScheduleStore,
-      userStore: this.userStore,
-    });
+    const effectiveSkills = isKarakuriWorldMode
+      ? []
+      : filterSkillsToAvailableTools(mergedSkills, {
+        sns: this.config.sns,
+        snsActivityStore: this.snsActivityStore,
+        snsScheduleStore: this.snsScheduleStore,
+        userStore: this.userStore,
+      });
     // Auto-load the builtin SNS skill for system heartbeat turns so the LLM receives
     // dynamic context (notifications, trends, activity log) and gated tools without
     // needing to call loadSkill. Currently only heartbeat sets ephemeral on system turns;
@@ -221,6 +232,7 @@ export class KarakuriAgent implements IAgent {
       : effectiveSkills;
     const skillContextScope = this.snsContextRegistry?.createScope();
     let result: Awaited<ReturnType<typeof this.generateTextFn>>;
+    let assistantResponse = '';
     try {
       const autoLoadedSkillContexts: SkillContextEntry[] = shouldAutoLoadSnsSkill && skillContextScope != null
         ? await Promise.all(autoLoadedSkills.map(async (skill) => {
@@ -249,12 +261,24 @@ export class KarakuriAgent implements IAgent {
       const runtimeSkillStore = builtinSkills.length > 0 && visibleSkills.length > 0
         ? createStaticSkillStore(visibleSkills)
         : undefined;
+      const combinedExtraSystemPrompt = [options?.extraSystemPrompt, isKarakuriWorldMode
+        ? buildKarakuriWorldModeInstructions()
+        : undefined]
+        .filter((value): value is string => value != null && value.trim().length > 0)
+        .join('\n\n');
+      const promptOverrides: Pick<import('./prompt.js').BuildSystemPromptOptions, 'includeSkillList' | 'includeToolGuidance' | 'includeSkillActivity'> = isKarakuriWorldMode
+        ? {
+            includeSkillList: false,
+            includeToolGuidance: false,
+            includeSkillActivity: false,
+          }
+        : {};
 
       const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
         agentInstructions: promptContext.agentInstructions,
         currentDateTime,
         rules: promptContext.rules,
-        ...(isRealUser
+        ...(shouldIncludeUserProfile
           ? {
               userName: promptUserName ?? userName,
               userId,
@@ -269,7 +293,8 @@ export class KarakuriAgent implements IAgent {
         hasUserLookup,
         hasPostMessage,
         hasManageCron,
-        extraSystemPrompt: options?.extraSystemPrompt,
+        extraSystemPrompt: combinedExtraSystemPrompt,
+        ...promptOverrides,
       });
 
       if (!ephemeral && this.sessionManager.needsSummarization(session, additionalTokens)) {
@@ -289,7 +314,7 @@ export class KarakuriAgent implements IAgent {
         currentDateTime,
         rules: promptContext.rules,
         coreMemory,
-        ...(isRealUser
+        ...(shouldIncludeUserProfile
           ? {
               userName: promptUserName ?? userName,
               userId,
@@ -306,7 +331,8 @@ export class KarakuriAgent implements IAgent {
         hasUserLookup,
         hasPostMessage,
         hasManageCron,
-        extraSystemPrompt: options?.extraSystemPrompt,
+        extraSystemPrompt: combinedExtraSystemPrompt,
+        ...promptOverrides,
       });
       logger.debug('Calling LLM', {
         sessionId,
@@ -316,42 +342,44 @@ export class KarakuriAgent implements IAgent {
         messageCount: session.messages.length,
       });
       logger.debug(`System prompt:\n${systemPrompt}`);
-      const tools = createAgentTools({
-        memoryStore: this.memoryStore,
-        braveApiKey: this.config.braveApiKey,
-        karakuriWorld: this.config.karakuriWorld,
-        sns: this.config.sns,
-        postMessageEnabled: hasPostMessage,
-        postMessageChannelIds: this.config.postMessageChannelIds,
-        reportChannelId: this.config.reportChannelId,
-        adminUserIds: this.config.adminUserIds,
-        userId,
-        userStore: this.userStore,
-        ...(runtimeSkillStore != null
-          ? { skillStore: runtimeSkillStore }
-          : this.skillStore != null
-            ? { skillStore: this.skillStore }
-            : {}),
-        ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
-        ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
-        ...(this.snsActivityStore != null ? { snsActivityStore: this.snsActivityStore } : {}),
-        ...(this.snsScheduleStore != null ? { snsScheduleStore: this.snsScheduleStore } : {}),
-        ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
-        ...(isSystemUser && this.userStore != null ? {
-          evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
-            this.enqueueSnsUserEvaluation({ userId: snsUserId, userName: displayName, postText });
-          },
-        } : {}),
-        skills: visibleSkills,
-        autoLoadedSkills,
-        includeSystemOnly,
-      });
+      const tools = isKarakuriWorldMode && this.config.karakuriWorld != null
+        ? createKarakuriWorldTools(this.config.karakuriWorld)
+        : createAgentTools({
+          memoryStore: this.memoryStore,
+          braveApiKey: this.config.braveApiKey,
+          sns: this.config.sns,
+          postMessageEnabled: hasPostMessage,
+          postMessageChannelIds: this.config.postMessageChannelIds,
+          reportChannelId: this.config.reportChannelId,
+          adminUserIds: this.config.adminUserIds,
+          userId,
+          userStore: this.userStore,
+          ...(runtimeSkillStore != null
+            ? { skillStore: runtimeSkillStore }
+            : this.skillStore != null
+              ? { skillStore: this.skillStore }
+              : {}),
+          ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
+          ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
+          ...(this.snsActivityStore != null ? { snsActivityStore: this.snsActivityStore } : {}),
+          ...(this.snsScheduleStore != null ? { snsScheduleStore: this.snsScheduleStore } : {}),
+          ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
+          ...(isSystemUser && this.userStore != null ? {
+            evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
+              this.enqueueSnsUserEvaluation({ userId: snsUserId, userName: displayName, postText });
+            },
+          } : {}),
+          skills: visibleSkills,
+          autoLoadedSkills,
+          includeSystemOnly,
+        });
       result = await this.generateTextFn({
         model: this.modelFactory(this.config.llmModelSelector),
         system: systemPrompt,
         messages: session.messages,
         tools,
-        stopWhen: stepCountIs(this.config.maxSteps),
+        stopWhen: stepCountIs(isKarakuriWorldMode ? KW_MODE_MAX_STEPS : this.config.maxSteps),
+        ...(isKarakuriWorldMode ? { toolChoice: 'required' as const } : {}),
         ...(lifecycle != null
           ? {
               experimental_onStepStart: () => {
@@ -376,9 +404,16 @@ export class KarakuriAgent implements IAgent {
           logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: JSON.stringify(toolResult?.output) });
         }
       }
+      if (isKarakuriWorldMode) {
+        assertSingleKarakuriWorldAction(result);
+      }
       logger.debug(`Response text:\n${result.text}`);
+      assistantResponse = isKarakuriWorldMode ? buildKarakuriWorldModeResponse(result) : result.text;
       if (!ephemeral) {
-        await this.sessionManager.addMessages(sessionId, result.response.messages);
+        await this.sessionManager.addMessages(
+          sessionId,
+          buildPersistedResponseMessages(result.response.messages, assistantResponse, isKarakuriWorldMode),
+        );
       }
       await skillContextScope?.commit();
     } catch (error) {
@@ -391,20 +426,21 @@ export class KarakuriAgent implements IAgent {
         userId,
         userName,
         userMessage,
-        assistantResponse: result.text,
+        assistantResponse,
+        ...(isKarakuriWorldMode ? { skipUserStore: true } : {}),
       });
     } else if (isSystemUser) {
       this.enqueuePostResponseEvaluation({
         userId: 'system',
         userName,
         userMessage,
-        assistantResponse: result.text,
+        assistantResponse,
         skipUserStore: true,
       });
     }
 
-    logger.info('handleMessage complete', { sessionId, responseLength: result.text.length });
-    return result.text;
+    logger.info('handleMessage complete', { sessionId, responseLength: assistantResponse.length });
+    return assistantResponse;
   }
 
   async summarizeSession(sessionId: string): Promise<string> {
@@ -564,6 +600,122 @@ function mergeBuiltinSkills(skills: SkillDefinition[], builtinSkills: SkillDefin
     merged.set(skill.name, skill);
   }
   return [...merged.values()];
+}
+
+function isToolResultBusy(output: unknown): boolean {
+  return typeof output === 'object' && output != null && 'status' in output
+    && (output as Record<string, unknown>).status === 'busy';
+}
+
+function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof generateText>>): string {
+  for (const step of result.steps) {
+    for (const toolResult of step.toolResults) {
+      if (!String(toolResult?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)) {
+        continue;
+      }
+
+      if (isToolResultBusy(toolResult?.output)) {
+        logger.info('KarakuriWorld tool returned busy, suppressing comment for Discord reply', {
+          toolName: toolResult?.toolName,
+        });
+        return '';
+      }
+
+      const comment = extractToolResultComment(toolResult?.output);
+      if (comment == null) {
+        logger.warn('KarakuriWorld tool result is missing comment field, using default response', {
+          toolName: toolResult?.toolName,
+        });
+      }
+      return comment ?? DEFAULT_KARAKURI_WORLD_MODE_RESPONSE;
+    }
+  }
+
+  logger.error('KarakuriWorld tool call had no matching tool result in steps', {
+    stepCount: result.steps.length,
+  });
+  throw new Error('KarakuriWorld mode: tool call was validated but no matching tool result was found in steps.');
+}
+
+function assertSingleKarakuriWorldAction(result: Awaited<ReturnType<typeof generateText>>): void {
+  const kwToolNames: string[] = [];
+
+  for (const step of result.steps) {
+    for (const toolCall of step.toolCalls) {
+      if (String(toolCall?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)) {
+        kwToolNames.push(String(toolCall.toolName));
+      }
+    }
+  }
+
+  if (kwToolNames.length === 1) {
+    return;
+  }
+
+  logger.error('KarakuriWorld mode action count violation', {
+    expected: 1,
+    actual: kwToolNames.length,
+    toolNames: kwToolNames,
+  });
+  throw new Error(`KarakuriWorld mode expected exactly one action, but received ${kwToolNames.length}.`);
+}
+
+function extractToolResultComment(output: unknown): string | null {
+  if (typeof output !== 'object' || output == null || !('comment' in output)) {
+    return null;
+  }
+
+  const comment = output.comment;
+  return typeof comment === 'string' && comment.trim().length > 0 ? comment.trim() : null;
+}
+
+function buildPersistedResponseMessages(
+  messages: ModelMessage[],
+  assistantResponse: string,
+  replaceAssistantText: boolean,
+): ModelMessage[] {
+  if (!replaceAssistantText) {
+    return messages;
+  }
+
+  const lastAssistantIndex = findLastAssistantMessageIndex(messages);
+  if (lastAssistantIndex === -1) {
+    logger.warn('No assistant message found in response messages, injecting synthetic message', {
+      messageCount: messages.length,
+    });
+    return [...messages, { role: 'assistant', content: assistantResponse }];
+  }
+
+  return messages.map((message, index) => {
+    if (index !== lastAssistantIndex || message.role !== 'assistant') {
+      return message;
+    }
+
+    if (Array.isArray(message.content)) {
+      return {
+        ...message,
+        content: [
+          ...message.content.filter((part) => part.type !== 'text'),
+          { type: 'text', text: assistantResponse },
+        ],
+      };
+    }
+
+    return {
+      ...message,
+      content: assistantResponse,
+    };
+  });
+}
+
+function findLastAssistantMessageIndex(messages: ModelMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'assistant') {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 /** Creates an in-memory ISkillStore snapshot. Used during heartbeat to exclude auto-loaded skills from loadSkill while keeping other skills available. */
