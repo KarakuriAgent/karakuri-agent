@@ -49,23 +49,24 @@ async function main(): Promise<void> {
   const snsReportError = messageSink != null && config.reportChannelId != null
     ? (message: string) => { void messageSink.postMessage(config.reportChannelId!, message).catch((err) => { logger.error('Failed to report SNS context error', err); }); }
     : undefined;
-  const snsContextRegistry = config.sns != null && snsActivityStore != null
+  const snsProvider = config.sns != null ? createSnsProvider(config.sns) : undefined;
+  const snsContextRegistry = config.sns != null && snsActivityStore != null && snsProvider != null
     ? (() => {
         const registry = new SkillContextRegistry();
         registry.register('sns', new SnsSkillContextProvider({
           activityStore: snsActivityStore,
           scheduleStore: snsActivityStore,
-          snsProvider: createSnsProvider(config.sns),
+          snsProvider,
           reportError: snsReportError,
         }));
         return registry;
       })()
     : undefined;
-  const snsScheduleRunner = config.sns != null && snsActivityStore != null
+  const snsScheduleRunner = config.sns != null && snsActivityStore != null && snsProvider != null
     ? new SnsScheduleRunner({
         scheduleStore: snsActivityStore,
         activityStore: snsActivityStore,
-        snsProvider: createSnsProvider(config.sns),
+        snsProvider,
         reportError: snsReportError,
       })
     : undefined;

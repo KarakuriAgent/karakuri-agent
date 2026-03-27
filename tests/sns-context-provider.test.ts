@@ -117,6 +117,7 @@ describe('SnsSkillContextProvider', () => {
     expect(context.text).toContain('## 新着通知');
     expect(context.text).toContain('## トレンド');
     expect(context.text).toContain('## 直近の行動ログ');
+    expect(context.text).toContain('## スケジュール済みアクション');
     expect(context.text).toContain('Scheduled hello');
     expect(context.text).toContain('scheduled: 2025-01-02T01:00:00.000Z');
   });
@@ -250,6 +251,7 @@ describe('SnsSkillContextProvider', () => {
 
     expect(context.text).toContain('- [like] post_id: post-9 (2025-01-01T00:00:00.000Z)');
     expect(context.text).toContain('[ERROR: スケジュール済みアクションの取得に失敗しました: schedule db failed]');
+    expect(context.text).not.toContain('## スケジュール済みアクション\n- なし');
   });
 
   it('handles empty first page of notifications', async () => {

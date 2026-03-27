@@ -491,4 +491,88 @@ describe('SnsScheduleRunner', () => {
       postId: 'post-12',
     }));
   });
+
+  it('executes scheduled repost actions successfully', async () => {
+    const executedAt = new Date('2025-01-02T00:00:00.000Z');
+    const scheduleStore = createScheduleStore({
+      claimPendingActions: vi.fn(async () => [createRepostAction({ id: 20, params: { postId: 'post-20' } })]),
+    });
+    const activityStore = createActivityStore();
+    const snsProvider = createProvider({
+      repost: vi.fn(async () => createPost('post-20')),
+    });
+
+    const runner = new SnsScheduleRunner({
+      scheduleStore,
+      activityStore,
+      snsProvider,
+      now: () => executedAt,
+      setTimeoutFn: noopSetTimeout,
+      clearTimeoutFn: noopClearTimeout,
+    });
+    runner.start();
+    await runner.close();
+
+    expect(snsProvider.repost).toHaveBeenCalledWith('post-20');
+    expect(scheduleStore.completeWithRecord).toHaveBeenCalledWith(20, expect.objectContaining({
+      type: 'repost',
+      postId: 'post-20',
+      createdAt: executedAt,
+    }));
+  });
+
+  it('reconciles remotely completed reposts only after recovery', async () => {
+    const scheduleStore = createScheduleStore({
+      claimPendingActions: vi.fn(async () => [createRepostAction({ id: 21, recoveredFromExecuting: true })]),
+    });
+    const activityStore = createActivityStore({
+      hasReposted: vi.fn(async () => false),
+    });
+    const snsProvider = createProvider({
+      getPost: vi.fn(async () => ({ ...createPost('post-1'), reposted: true })),
+    });
+
+    const runner = new SnsScheduleRunner({
+      scheduleStore,
+      activityStore,
+      snsProvider,
+      setTimeoutFn: noopSetTimeout,
+      clearTimeoutFn: noopClearTimeout,
+    });
+    runner.start();
+    await runner.close();
+
+    expect(snsProvider.repost).not.toHaveBeenCalled();
+    expect(scheduleStore.completeWithRecord).toHaveBeenCalledWith(21, expect.objectContaining({
+      type: 'repost',
+      postId: 'post-1',
+    }));
+  });
+
+  it('expires ambiguous failures after MAX_RECOVERY_AGE_MS', async () => {
+    const scheduledAt = new Date('2025-01-01T00:00:00.000Z');
+    const now = new Date(scheduledAt.getTime() + 11 * 60 * 1_000);
+    const scheduleStore = createScheduleStore({
+      claimPendingActions: vi.fn(async () => [createPostAction({ id: 22, scheduledAt })]),
+    });
+    const activityStore = createActivityStore();
+    const reportError = vi.fn();
+    const snsProvider = createProvider({
+      post: vi.fn(async () => { throw new Error('api timeout'); }),
+    });
+
+    const runner = new SnsScheduleRunner({
+      scheduleStore,
+      activityStore,
+      snsProvider,
+      reportError,
+      now: () => now,
+      setTimeoutFn: noopSetTimeout,
+      clearTimeoutFn: noopClearTimeout,
+    });
+    runner.start();
+    await runner.close();
+
+    expect(scheduleStore.markFailed).toHaveBeenCalledWith(22, 'api timeout');
+  });
 });

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
 
+import { createLogger } from '../utils/logger.js';
 import type {
   ActivityRecord,
   ISnsActivityStore,
@@ -17,6 +18,7 @@ import type {
   SnsActivityType,
 } from './types.js';
 
+const logger = createLogger('SnsActivityStore');
 const RECENT_ACTIVITY_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
 const DEFAULT_RECENT_ACTIVITY_LIMIT = 10;
 const LAST_NOTIFICATION_ID_KEY = 'last_notification_id';
@@ -221,7 +223,7 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
       this.updateScheduledFailureStatement = this.db.prepare(`
         UPDATE sns_scheduled_actions
         SET status = 'failed', error = ?, executing_started_at = NULL
-        WHERE id = ?
+        WHERE id = ? AND status = 'executing'
       `);
       this.getPendingAndExecutingStatement = this.db.prepare(`
         SELECT id, action_type, scheduled_at, params, status, created_at, executing_started_at
@@ -245,6 +247,8 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
         SET status = 'completed', error = NULL, executing_started_at = NULL
         WHERE id = ?
       `);
+      // Clear stale reservations from a previous process that may have crashed
+      // before committing or releasing its reservations.
       this.deleteAllNotificationReservationsStatement.run();
     } catch (error) {
       this.db.close();
@@ -328,7 +332,7 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
     this.runImmediateTransaction(() => {
       const reservation = this.selectNotificationReservationStatement.get(reservationToken);
       if (reservation == null) {
-        return;
+        throw new Error(`Notification reservation not found during commit (token: ${reservationToken})`);
       }
       const committed = this.getMetadataStatement.get(LAST_NOTIFICATION_ID_KEY)?.value ?? null;
       const nextNotificationId = maxNotificationId(committed, reservation.notification_id);
@@ -393,7 +397,10 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
   }
 
   async markFailed(id: number, error: string): Promise<void> {
-    this.updateScheduledFailureStatement.run(error, id);
+    const result = this.updateScheduledFailureStatement.run(error, id);
+    if (result.changes === 0) {
+      logger.warn('markFailed was a no-op; action may have been recovered concurrently', { id, error });
+    }
     return Promise.resolve();
   }
 
@@ -553,6 +560,9 @@ function maxNotificationId(left: string | null, right: string | null): string | 
   return compareNotificationIds(left, right) >= 0 ? left : right;
 }
 
+// Mastodon uses monotonically increasing numeric IDs, so for all-numeric IDs
+// of differing lengths, comparing by length is sufficient (longer = newer).
+// Falls back to lexicographic comparison for non-numeric or equal-length IDs.
 function compareNotificationIds(left: string, right: string): number {
   const numericPattern = /^\d+$/;
   if (numericPattern.test(left) && numericPattern.test(right)) {

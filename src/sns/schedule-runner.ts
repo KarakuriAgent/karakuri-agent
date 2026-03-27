@@ -133,6 +133,9 @@ export class SnsScheduleRunner {
       logger.warn('Recovered stale executing scheduled SNS actions during polling', { count: recovered });
     }
     const actions = await this.options.scheduleStore.claimPendingActions(this.now(), this.maxActionsPerPoll);
+    // Claimed actions are already in 'executing' status; process them all to
+    // avoid leaving them stranded for recovery. Shutdown prevention happens at
+    // the poll-scheduling level (scheduleNext checks this.closed).
     for (const [index, action] of actions.entries()) {
       if (index > 0 && this.actionSpacingMs > 0) {
         await this.sleep(this.actionSpacingMs);
@@ -144,6 +147,7 @@ export class SnsScheduleRunner {
           actionId: action.id,
           actionType: action.actionType,
         });
+        this.reportError?.(`⚠️ Unexpected error in scheduled SNS action #${action.id}: ${formatError(error)}`);
       }
     }
   }
@@ -297,6 +301,10 @@ function buildScheduledPostIdempotencyKey(action: Extract<ScheduledAction, { act
   return `sns-scheduled-post:${action.id}`;
 }
 
+// Determines whether a failed scheduled action should remain in 'executing'
+// status for crash-safe recovery rather than being marked as 'failed'.
+// Actions left in 'executing' will be retried by recoverStaleExecuting on
+// the next poll cycle. Returns null when the action should be marked failed.
 function getRecoveryReason(action: ScheduledAction, error: unknown, remoteActionSucceeded: boolean, now: Date): string | null {
   if (remoteActionSucceeded) {
     return 'completed remotely but local persistence failed and will stay executing for recovery';

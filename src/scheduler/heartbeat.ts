@@ -137,11 +137,14 @@ export class HeartbeatRunner {
             ephemeral: true,
           },
         );
-        logger.debug('Heartbeat run completed', { responseLength: response.trim().length });
+        const trimmedResponse = response.trim();
+        logger.debug('Heartbeat run completed', { responseLength: trimmedResponse.length });
+        const elapsed = this.now().getTime() - startedAt.getTime();
+        const summary = trimmedResponse.length > 0 ? `\n${trimmedResponse}` : '';
         await reportSafely(
           this.options.messageSink,
           this.options.reportChannelId,
-          `✅ Heartbeat succeeded in ${this.now().getTime() - startedAt.getTime()}ms`,
+          `✅ Heartbeat succeeded in ${elapsed}ms${summary}`,
           logger,
         );
       });

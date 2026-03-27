@@ -15,10 +15,17 @@ export interface SkillContextProvider {
 export class SkillContextScope {
   private readonly onSuccessCallbacks: Array<() => Promise<void>> = [];
   private readonly onAbortCallbacks: Array<() => Promise<void>> = [];
+  private finalized = false;
 
   constructor(private readonly providers: ReadonlyMap<string, SkillContextProvider>) {}
 
   async getContext(skillName: string): Promise<string | null> {
+    if (this.finalized) {
+      const message = `getContext("${skillName}") called after scope was finalized`;
+      logger.warn(message);
+      return `[WARNING: ${message}. 動的コンテキストは利用できません。]`;
+    }
+
     const provider = this.providers.get(skillName);
     if (provider == null) {
       return null;
@@ -40,6 +47,7 @@ export class SkillContextScope {
   }
 
   async commit(): Promise<void> {
+    this.finalized = true;
     for (const callback of this.onSuccessCallbacks) {
       try {
         await callback();
@@ -51,6 +59,7 @@ export class SkillContextScope {
   }
 
   async abort(): Promise<void> {
+    this.finalized = true;
     for (const callback of this.onAbortCallbacks) {
       try {
         await callback();

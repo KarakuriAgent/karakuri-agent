@@ -83,18 +83,18 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         sections.push(`## トレンド\n[ERROR: トレンドの取得に失敗しました: ${formatContextError(trendsResult.reason)}]`);
       }
 
-      const activityErrors: string[] = [];
+      const activityErrors: { activity?: string; scheduled?: string } = {};
       if (activitiesResult.status === 'rejected') {
         logger.error('Failed to load SNS recent activities for context', activitiesResult.reason);
-        activityErrors.push(`行動ログの取得に失敗しました: ${formatContextError(activitiesResult.reason)}`);
+        activityErrors.activity = `行動ログの取得に失敗しました: ${formatContextError(activitiesResult.reason)}`;
       }
       if (scheduledResult.status === 'rejected') {
         logger.error('Failed to load scheduled SNS actions for context', scheduledResult.reason);
-        activityErrors.push(`スケジュール済みアクションの取得に失敗しました: ${formatContextError(scheduledResult.reason)}`);
+        activityErrors.scheduled = `スケジュール済みアクションの取得に失敗しました: ${formatContextError(scheduledResult.reason)}`;
       }
       sections.push(formatActivities(
-        activitiesResult.status === 'fulfilled' ? activitiesResult.value : [],
-        scheduledResult.status === 'fulfilled' ? scheduledResult.value : [],
+        activitiesResult.status === 'fulfilled' ? activitiesResult.value : null,
+        scheduledResult.status === 'fulfilled' ? scheduledResult.value : null,
         activityErrors,
       ));
 
@@ -203,24 +203,37 @@ function formatTrends(posts: SnsPost[]): string {
   ].join('\n');
 }
 
-function formatActivities(activities: SnsActivity[], scheduledActions: ScheduledAction[], errors: string[] = []): string {
-  if (activities.length === 0 && scheduledActions.length === 0 && errors.length === 0) {
-    return '## 直近の行動ログ\n- なし';
-  }
-
+function formatActivities(
+  activities: SnsActivity[] | null,
+  scheduledActions: ScheduledAction[] | null,
+  errors: { activity?: string; scheduled?: string } = {},
+): string {
   return [
     '## 直近の行動ログ',
-    ...activities.map((activity) => {
-      switch (activity.type) {
-        case 'post':
-          return `- [post] "${activity.text}" (${activity.createdAt})`;
-        case 'like':
-        case 'repost':
-          return `- [${activity.type}] post_id: ${activity.postId} (${activity.createdAt})`;
-      }
-    }),
-    ...scheduledActions.map((action) => formatScheduledAction(action)),
-    ...errors.map((error) => `[ERROR: ${error}]`),
+    ...(errors.activity != null
+      ? [`[ERROR: ${errors.activity}]`]
+      : activities != null && activities.length > 0
+        ? activities.map((activity) => {
+            switch (activity.type) {
+              case 'post':
+                return `- [post] "${activity.text}" (${activity.createdAt})`;
+              case 'like':
+              case 'repost':
+                return `- [${activity.type}] post_id: ${activity.postId} (${activity.createdAt})`;
+              default: {
+                const _exhaustive: never = activity;
+                return `- [unknown] ${JSON.stringify(_exhaustive)}`;
+              }
+            }
+          })
+        : ['- なし']),
+    '',
+    '## スケジュール済みアクション',
+    ...(errors.scheduled != null
+      ? [`[ERROR: ${errors.scheduled}]`]
+      : scheduledActions != null && scheduledActions.length > 0
+        ? scheduledActions.map((action) => formatScheduledAction(action))
+        : ['- なし']),
   ].join('\n');
 }
 

@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 import type { SnsCredentials } from '../../config.js';
 import { createSnsProvider } from '../../sns/index.js';
-import { runWithSnsActionLocks } from '../../sns/action-locks.js';
+import { buildLikeLockKey, buildQuoteLockKey, buildReplyLockKey, buildRepostLockKey, runWithSnsActionLocks } from '../../sns/action-locks.js';
 import type { ISnsActivityStore, ISnsScheduleStore, ScheduledAction, SnsPost } from '../../sns/types.js';
 import type { IUserStore } from '../../user/types.js';
 import { createLogger } from '../../utils/logger.js';
@@ -220,8 +220,8 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       description: 'SNS に投稿する。必要なら返信先や引用元、メディア、公開範囲を指定する。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_replied" | "already_quoted" | "reply_already_scheduled" | "quote_already_scheduled", reply_to_id?, quote_post_id? }` を返す。',
       inputSchema: snsPostInputSchema,
       execute: async (input) => executeSafely('sns_post', async () => runWithSnsActionLocks([
-        input.reply_to_id != null ? `reply:${input.reply_to_id}` : '',
-        input.quote_post_id != null ? `quote:${input.quote_post_id}` : '',
+        input.reply_to_id != null ? buildReplyLockKey(input.reply_to_id) : '',
+        input.quote_post_id != null ? buildQuoteLockKey(input.quote_post_id) : '',
       ], async () => {
         if (input.reply_to_id != null) {
           const alreadyReplied = await safeCheck('hasReplied', () => options.activityStore?.hasReplied(input.reply_to_id!) ?? Promise.resolve(false));
@@ -286,7 +286,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     sns_like: tool({
       description: '指定した投稿にいいねする。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_liked" | "like_already_scheduled", post_id }` を返す。',
       inputSchema: snsLikeInputSchema,
-      execute: async (input) => executeSafely('sns_like', async () => runWithSnsActionLocks([`like:${input.post_id}`], async () => {
+      execute: async (input) => executeSafely('sns_like', async () => runWithSnsActionLocks([buildLikeLockKey(input.post_id)], async () => {
         const alreadyLiked = await safeCheck('hasLiked', () => options.activityStore?.hasLiked(input.post_id) ?? Promise.resolve(false));
         if (alreadyLiked) {
           return { status: 'skipped' as const, reason: 'already_liked' as const, post_id: input.post_id };
@@ -319,7 +319,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     sns_repost: tool({
       description: '指定した投稿をリポストする。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_reposted" | "repost_already_scheduled", post_id }` を返す。',
       inputSchema: snsRepostInputSchema,
-      execute: async (input) => executeSafely('sns_repost', async () => runWithSnsActionLocks([`repost:${input.post_id}`], async () => {
+      execute: async (input) => executeSafely('sns_repost', async () => runWithSnsActionLocks([buildRepostLockKey(input.post_id)], async () => {
         const alreadyReposted = await safeCheck('hasReposted', () => options.activityStore?.hasReposted(input.post_id) ?? Promise.resolve(false));
         if (alreadyReposted) {
           return { status: 'skipped' as const, reason: 'already_reposted' as const, post_id: input.post_id };

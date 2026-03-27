@@ -30,6 +30,7 @@ export interface CreateAgentToolsOptions {
   snsScheduleStore?: ISnsScheduleStore | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
+  autoLoadedSkills?: SkillDefinition[] | undefined;
   messageSink?: IMessageSink | undefined;
   reportChannelId?: string | undefined;
   postMessageEnabled?: boolean | undefined;
@@ -52,6 +53,7 @@ export function createAgentTools({
   snsScheduleStore,
   skillStore,
   skills = [],
+  autoLoadedSkills = [],
   messageSink,
   reportChannelId,
   postMessageEnabled,
@@ -108,7 +110,10 @@ export function createAgentTools({
   const reportError = messageSink != null && reportChannelId != null
     ? (message: string) => { void reportSafely(messageSink, reportChannelId, message, logger); }
     : undefined;
-  const gatedToolSets = buildGatedToolSets(skills, {
+  const gatedToolSets = buildGatedToolSets([
+    ...skills,
+    ...autoLoadedSkills,
+  ], {
     karakuriWorld,
     sns,
     snsActivityStore,
@@ -117,6 +122,24 @@ export function createAgentTools({
     evaluateUser,
     reportError,
   });
+  // Auto-loaded skills have their gated tools registered immediately.
+  // loadSkill.execute() also mutates this tools object to dynamically register
+  // gated tools. This is intentional and scoped to a single handleMessage()
+  // turn — tools is recreated per turn.
+  for (const skill of autoLoadedSkills) {
+    const skillTools = gatedToolSets.get(skill.name);
+    if (skillTools == null) {
+      logger.warn('Auto-loaded skill has no gated tools available', { skillName: skill.name, allowedTools: skill.allowedTools });
+      continue;
+    }
+    for (const toolName of Object.keys(skillTools)) {
+      const existing = tools[toolName];
+      if (existing != null && existing !== skillTools[toolName]) {
+        throw new Error(`Internal tool name conflict for "${toolName}" while auto-loading "${skill.name}"`);
+      }
+    }
+    Object.assign(tools, skillTools);
+  }
 
   if (skillStore != null && skills.length > 0) {
     tools.loadSkill = createLoadSkillTool({

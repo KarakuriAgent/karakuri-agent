@@ -1,14 +1,16 @@
 import type { LanguageModel, ModelMessage } from 'ai';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { countAdditionalContextTokens } from '../src/agent/prompt.js';
 import { KarakuriAgent } from '../src/agent/core.js';
+import { formatDateTimeInTimezone } from '../src/utils/date.js';
 import type { PromptContext } from '../src/agent/prompt-context.js';
 import type { Config } from '../src/config.js';
 import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from '../src/llm/model-selector.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
 import type { ISessionManager, SessionData } from '../src/session/types.js';
+import { SkillContextRegistry } from '../src/skill/context-provider.js';
 import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../src/skill/types.js';
 import type { IUserStore, UserRecord, UserSearchOptions } from '../src/user/types.js';
 
@@ -269,7 +271,18 @@ function createSchedulerStore(): ISchedulerStore {
   };
 }
 
+const FAKE_NOW = new Date('2026-03-27T06:30:00Z');
+
 describe('KarakuriAgent', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FAKE_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('passes prompt-ready memory and diary tokens into the summarization decision', async () => {
     const memoryStore = new MemoryStoreStub('core memory', [
       { date: '2025-01-02', content: 'diary note' },
@@ -306,6 +319,7 @@ describe('KarakuriAgent', () => {
     expect(sessionManager.lastAdditionalTokens).toBe(
       countAdditionalContextTokens('core memory', [{ date: '2025-01-02', content: 'diary note' }], {
         agentInstructions: 'Custom agent',
+        currentDateTime: formatDateTimeInTimezone(FAKE_NOW, baseConfig.timezone),
         rules: 'Ask before guessing.',
         skills: [
           {
@@ -482,6 +496,515 @@ describe('KarakuriAgent', () => {
       instructions: 'Run scheduled maintenance.',
     });
     expect(skillStore.getOptions).toEqual({ includeSystemOnly: true });
+  });
+
+  it('auto-loads builtin sns skill context and tools for heartbeat turns', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+    const registry = new SkillContextRegistry();
+    registry.register('sns', {
+      getContext: async () => ({ text: '## 新着通知\n- なし' }),
+    });
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+        postMessageChannelIds: ['report-1'],
+        allowedChannelIds: ['report-1'],
+        reportChannelId: 'report-1',
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([
+        {
+          name: 'karakuri-world',
+          description: 'Explore the world',
+          instructions: 'Observe first.',
+          systemOnly: false,
+        },
+      ]),
+      snsContextRegistry: registry,
+      messageSink: { postMessage: vi.fn(async () => {}) } satisfies IMessageSink,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('heartbeat:2025-01-01T00:00:00.000Z', '(heartbeat tick)', 'heartbeat', {
+      userId: 'system',
+      ephemeral: true,
+    });
+
+    expect(capturedSystem).toContain('<skill-context>');
+    expect(capturedSystem).toContain('### sns');
+    expect(capturedSystem).toContain('## 新着通知');
+    expect(capturedSystem).toContain('## スキル活動');
+    expect(capturedSystem).toContain('Available skills:\n- karakuri-world: Explore the world');
+    expect(capturedSystem).not.toContain('- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(capturedSystem).toContain('- sns_post: publish an SNS post, optionally as a reply, quote, media post, or delayed scheduled action.');
+    expect(capturedSystem).toContain('- sns_like: like an SNS post immediately or schedule the like for later.');
+    expect(capturedTools).toHaveProperty('sns_post');
+    expect(capturedTools).toHaveProperty('sns_like');
+    expect(capturedTools).toHaveProperty('sns_repost');
+    expect(capturedTools).toHaveProperty('loadSkill');
+  });
+
+  it('exposes builtin sns as a normal system skill outside heartbeat auto-load', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let loadSkillResult: unknown;
+    const registry = new SkillContextRegistry();
+    registry.register('sns', {
+      getContext: async () => ({ text: '## 新着通知\n- なし' }),
+    });
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      const tools = options.tools ?? {};
+      // Call loadSkill during the LLM turn (before scope is finalized)
+      const loadSkillTool = tools.loadSkill as { execute: (input: { name: string }, options: unknown) => Promise<unknown> };
+      if (loadSkillTool != null) {
+        loadSkillResult = await loadSkillTool.execute(
+          { name: 'sns' },
+          { toolCallId: 'tool-1', messages: [] },
+        );
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      snsContextRegistry: registry,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('cron:job', '(cron tick)', 'system', { userId: 'system' });
+
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う (tools: sns_post, sns_get_post, sns_like, sns_repost, sns_upload_media, sns_get_thread)');
+    expect(capturedSystem).not.toContain('\n\n<skill-context>\n### sns');
+    expect(capturedSystem).not.toContain('## スキル活動');
+
+    expect(loadSkillResult).toEqual(expect.objectContaining({
+      loaded: true,
+      name: 'sns',
+      description: 'SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う',
+      allowedTools: ['sns_post', 'sns_get_post', 'sns_like', 'sns_repost', 'sns_upload_media', 'sns_get_thread'],
+      instructions: expect.stringContaining('## 新着通知'),
+    }));
+  });
+
+  it('omits heartbeat postMessage guidance when report posting is unavailable', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+    const registry = new SkillContextRegistry();
+    registry.register('sns', {
+      getContext: async () => ({ text: '## 新着通知\n- なし' }),
+    });
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+        allowedChannelIds: ['report-1'],
+        reportChannelId: 'report-1',
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub(),
+      snsContextRegistry: registry,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('heartbeat:2025-01-01T00:00:00.000Z', '(heartbeat tick)', 'heartbeat', {
+      userId: 'system',
+      ephemeral: true,
+    });
+
+    expect(capturedSystem).toContain('## スキル活動');
+    expect(capturedSystem).not.toContain('活動内容を `postMessage` でレポートチャンネルに投稿する');
+    expect(capturedSystem).not.toContain('- postMessage: post a message to an allowed Discord channel.');
+    expect(capturedTools).not.toHaveProperty('postMessage');
+    expect(capturedTools).toHaveProperty('sns_post');
+  });
+
+  it('omits heartbeat report guidance when postMessage cannot target the report channel', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+    const registry = new SkillContextRegistry();
+    registry.register('sns', {
+      getContext: async () => ({ text: '## 新着通知\n- なし' }),
+    });
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+        postMessageChannelIds: ['ops-room'],
+        allowedChannelIds: ['ops-room', 'report-1'],
+        reportChannelId: 'report-1',
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub(),
+      snsContextRegistry: registry,
+      messageSink: { postMessage: vi.fn(async () => {}) } satisfies IMessageSink,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('heartbeat:2025-01-01T00:00:00.000Z', '(heartbeat tick)', 'heartbeat', {
+      userId: 'system',
+      ephemeral: true,
+    });
+
+    expect(capturedSystem).toContain('- postMessage: post a message to an allowed Discord channel.');
+    expect(capturedSystem).not.toContain('活動内容を `postMessage` でレポートチャンネルに投稿する');
+    expect(capturedTools).toHaveProperty('postMessage');
+  });
+
+  it('documents future timezone-aware scheduled_at values in the builtin sns skill', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { tools?: Record<string, unknown> }) => {
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('cron:job', '(cron tick)', 'system', { userId: 'system' });
+
+    const loadSkillTool = capturedTools.loadSkill as { execute: (input: { name: string }, options: unknown) => Promise<{
+      instructions: string;
+    }> };
+    await expect(loadSkillTool.execute(
+      { name: 'sns' },
+      { toolCallId: 'tool-1', messages: [] },
+    )).resolves.toEqual(expect.objectContaining({
+      instructions: expect.stringContaining('`scheduled_at` に未来のタイムゾーン付き日時'),
+    }));
+  });
+
+  it('ignores file-defined system sns skills so the builtin definition stays authoritative', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+
+    const generateTextFn = vi.fn(async (options: { system?: string }) => {
+      capturedSystem = options.system ?? '';
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([
+        {
+          name: 'sns',
+          description: 'Custom SNS',
+          instructions: '## 行動ルール\n- custom file skill loses',
+          systemOnly: true,
+          allowedTools: ['sns_post'],
+        },
+      ]),
+      snsContextRegistry: new SkillContextRegistry(),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('cron:job', '(cron tick)', 'system', { userId: 'system' });
+
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(capturedSystem).not.toContain('Available skills:\n- sns: Custom SNS');
+  });
+
+  it('keeps builtin heartbeat activity instructions even when a file-defined system sns skill exists', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    const registry = new SkillContextRegistry();
+    registry.register('sns', {
+      getContext: async () => ({ text: '## 新着通知\n- override context' }),
+    });
+
+    const generateTextFn = vi.fn(async (options: { system?: string }) => {
+      capturedSystem = options.system ?? '';
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+        postMessageChannelIds: ['report-1'],
+        allowedChannelIds: ['report-1'],
+        reportChannelId: 'report-1',
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([
+        {
+          name: 'sns',
+          description: 'Custom SNS',
+          instructions: '## カスタム方針\n- custom only',
+          systemOnly: true,
+          allowedTools: ['sns_post'],
+        },
+      ]),
+      snsContextRegistry: registry,
+      messageSink: { postMessage: vi.fn(async () => {}) } satisfies IMessageSink,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('heartbeat:2025-01-01T00:00:00.000Z', '(heartbeat tick)', 'heartbeat', {
+      userId: 'system',
+      ephemeral: true,
+    });
+
+    expect(capturedSystem).toContain('### sns');
+    expect(capturedSystem).toContain('## 行動ルール');
+    expect(capturedSystem).not.toContain('## カスタム方針\n- custom only');
+    expect(capturedSystem).toContain('## スキル活動');
+    expect(capturedSystem).toContain('活動内容を `postMessage` でレポートチャンネルに投稿する');
+  });
+
+  it('does not let a shared sns skill override the system builtin sns skill', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+
+    const generateTextFn = vi.fn(async (options: { system?: string }) => {
+      capturedSystem = options.system ?? '';
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([
+        {
+          name: 'sns',
+          description: 'Shared SNS',
+          instructions: '## 行動ルール\n- shared skill for real users',
+          systemOnly: false,
+          allowedTools: ['sns_post'],
+        },
+      ]),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('cron:job', '(cron tick)', 'system', { userId: 'system' });
+
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(capturedSystem).not.toContain('Available skills:\n- sns: Shared SNS');
+  });
+
+  it('calls abort on skillContextScope when generateTextFn throws', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const abortFn = vi.fn();
+    const registry = new SkillContextRegistry();
+    registry.register('sns', {
+      getContext: async () => ({
+        text: '## 新着通知\n- なし',
+        onSuccess: async () => {},
+        onAbort: abortFn,
+      }),
+    });
+
+    const generateTextFn = vi.fn(async () => {
+      throw new Error('LLM call failed');
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      snsContextRegistry: registry,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('heartbeat:2025-01-01T00:00:00.000Z', '(heartbeat tick)', 'heartbeat', {
+      userId: 'system',
+      ephemeral: true,
+    })).rejects.toThrow('LLM call failed');
+
+    expect(abortFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not inject builtin sns skill for non-system non-admin users', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let capturedTools: Record<string, unknown> = {};
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      userStore: new UserStoreStub(),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hello', 'Alice');
+
+    expect(capturedSystem).not.toContain('Available skills:');
+    expect(capturedSystem).not.toContain('\n<skill-context>\n');
+    expect(capturedSystem).not.toContain('## スキル活動');
+    expect(capturedTools).not.toHaveProperty('sns_post');
+    expect(capturedTools).not.toHaveProperty('loadSkill');
+  });
+
+  it('exposes builtin sns skill to admin users via loadSkill', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    let loadSkillResult: unknown;
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown> }) => {
+      capturedSystem = options.system ?? '';
+      const tools = options.tools ?? {};
+      const loadSkillTool = tools.loadSkill as { execute: (input: { name: string }, options: unknown) => Promise<unknown> } | undefined;
+      if (loadSkillTool != null) {
+        loadSkillResult = await loadSkillTool.execute(
+          { name: 'sns' },
+          { toolCallId: 'tool-1', messages: [] },
+        );
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'sns-token',
+        },
+        adminUserIds: ['admin-user'],
+      },
+      memoryStore,
+      sessionManager,
+      userStore: new UserStoreStub(),
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'load sns', 'Admin', { userId: 'admin-user' });
+
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(loadSkillResult).toEqual(expect.objectContaining({
+      loaded: true,
+      name: 'sns',
+    }));
   });
 
   it('injects prompt context, skill listings, and the loadSkill tool when skills are available', async () => {
