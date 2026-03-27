@@ -11,7 +11,7 @@ import type { ISessionManager, SessionData } from './types.js';
 
 const logger = createLogger('SessionManager');
 
-const SESSION_SCHEMA_VERSION = 1 as const;
+export const SESSION_SCHEMA_VERSION = 1 as const;
 
 export interface FileSessionManagerOptions {
   dataDir: string;

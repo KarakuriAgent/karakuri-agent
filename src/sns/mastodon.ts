@@ -60,6 +60,8 @@ interface MastodonStatus {
   reblogs_count: number;
   favourites_count: number;
   replies_count: number;
+  favourited?: boolean | null;
+  reblogged?: boolean | null;
   media_attachments?: MastodonMediaAttachment[] | null;
   reblog?: MastodonStatus | null;
 }
@@ -172,6 +174,8 @@ function mapStatus(status: MastodonStatus): SnsPost {
     likeCount: effectiveStatus.favourites_count,
     replyCount: effectiveStatus.replies_count,
     ...(mediaUrls.length > 0 ? { mediaUrls } : {}),
+    ...(effectiveStatus.favourited != null ? { liked: effectiveStatus.favourited } : {}),
+    ...(effectiveStatus.reblogged != null ? { reposted: effectiveStatus.reblogged } : {}),
   };
 }
 
@@ -300,7 +304,7 @@ export class MastodonProvider implements SnsProvider {
       ...(params.quotePostId != null ? { quoted_status_id: params.quotePostId } : {}),
       ...(params.mediaIds != null && params.mediaIds.length > 0 ? { media_ids: params.mediaIds } : {}),
       ...(params.visibility != null ? { visibility: params.visibility } : {}),
-    }));
+    }, undefined, params.idempotencyKey != null ? { 'Idempotency-Key': params.idempotencyKey } : undefined));
   }
 
   async getPost(postId: string): Promise<SnsPost> {
@@ -361,13 +365,16 @@ export class MastodonProvider implements SnsProvider {
       ? Math.min(Math.max(requestedLimit * 3, 20), 80)
       : requestedLimit;
     const collected: SnsNotification[] = [];
-    let nextMaxId: string | undefined;
+    let nextMaxId = params.maxId;
     let pageRequests = 0;
 
     while (collected.length < requestedLimit && pageRequests < MAX_NOTIFICATION_PAGE_REQUESTS) {
       pageRequests += 1;
       const query = new URLSearchParams();
       query.set('limit', String(pageLimit));
+      if (params.sinceId != null) {
+        query.set('since_id', params.sinceId);
+      }
       if (nextMaxId != null) {
         query.set('max_id', nextMaxId);
       }
@@ -528,6 +535,7 @@ export class MastodonProvider implements SnsProvider {
     path: string,
     body?: Record<string, unknown>,
     query?: URLSearchParams | Record<string, string>,
+    extraHeaders?: Record<string, string>,
   ): Promise<TResponse> {
     const response = await this.fetchImpl(this.buildUrl(path, query), {
       method,
@@ -535,6 +543,7 @@ export class MastodonProvider implements SnsProvider {
         Accept: 'application/json',
         Authorization: `Bearer ${this.accessToken}`,
         ...(body != null ? { 'Content-Type': 'application/json' } : {}),
+        ...extraHeaders,
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       ...(body != null ? { body: JSON.stringify(body) } : {}),

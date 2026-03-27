@@ -4,6 +4,7 @@
 
 会話履歴をファイルに永続化し、トークン予算を超えたタイミングで LLM による要約を行う層。
 turn 単位（user → assistant の往復）で管理することで tool-call/tool-result ペアの整合性を保つ。
+Heartbeat のような単発 system turn では Agent 層が ephemeral session をインメモリ構築し、この層をバイパスできる。
 
 ## データ型: `SessionData` (`src/session/types.ts`)
 
@@ -95,7 +96,7 @@ interface ISessionManager {
              + additionalTokens            // 呼び出し側が渡す: tokens(AGENT/RULES/skills/coreMemory/recentDiaries)
 ```
 
-合計が設定値（デフォルト: 8000 トークン）を超えたら `needsSummarization()` が `true` を返す。
+合計が設定値（デフォルト: 80000 トークン）を超えたら `needsSummarization()` が `true` を返す。
 
 trusted prompt context（AGENT.md / RULES.md / skills 一覧）と
 `coreMemory` / `recentDiaries` は Session 層のスコープ外のため、

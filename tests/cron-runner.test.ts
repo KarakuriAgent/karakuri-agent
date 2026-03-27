@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CronRunner } from '../src/scheduler/cron-runner.js';
+import { runExclusiveSystemTurn } from '../src/scheduler/system-turn-mutex.js';
 import type { CronJobDefinition } from '../src/scheduler/types.js';
 
 afterEach(() => {
@@ -15,6 +16,7 @@ function createSchedulerStore(jobOverrides: Partial<{
   enabled: boolean;
   sessionMode: 'isolated' | 'shared';
   staggerMs: number;
+  oneshot: boolean;
 }> = {}) {
   return {
     readHeartbeatInstructions: vi.fn(async () => null),
@@ -25,10 +27,11 @@ function createSchedulerStore(jobOverrides: Partial<{
       enabled: true,
       sessionMode: 'isolated' as const,
       staggerMs: 0,
+      oneshot: false,
       ...jobOverrides,
     }]),
     registerJob: vi.fn(),
-    unregisterJob: vi.fn(),
+    unregisterJob: vi.fn(async () => true),
     setReloadListener: vi.fn(),
     close: vi.fn(async () => {}),
   };
@@ -134,6 +137,7 @@ describe('CronRunner', () => {
       enabled: true,
       sessionMode: 'isolated' as const,
       staggerMs: 0,
+      oneshot: false,
     }];
     const schedulerStore = {
       readHeartbeatInstructions: vi.fn(async () => null),
@@ -193,6 +197,7 @@ describe('CronRunner', () => {
       enabled: true,
       sessionMode: 'isolated',
       staggerMs: 1_000,
+      oneshot: false,
     }];
     const schedulerStore = {
       readHeartbeatInstructions: vi.fn(async () => null),
@@ -257,6 +262,188 @@ describe('CronRunner', () => {
     expect(closed).toBe(true);
   });
 
+
+
+  it('unregisters oneshot jobs after a successful run', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+
+    const schedulerStore = createSchedulerStore({ oneshot: true } as never);
+    const agent = {
+      handleMessage: vi.fn(async () => 'posted'),
+      summarizeSession: vi.fn(async () => 'summary'),
+    };
+    const runner = new CronRunner({
+      agent,
+      schedulerStore,
+      timezone: 'UTC',
+    });
+
+    await runner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(schedulerStore.unregisterJob).toHaveBeenCalledWith('daily-summary');
+    expect(vi.getTimerCount()).toBe(0);
+    await runner.close();
+  });
+
+  it('unregisters oneshot jobs after a failed run once execution has started', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+
+    let registered = true;
+    const schedulerStore = {
+      ...createSchedulerStore({ oneshot: true } as never),
+      listCronJobs: vi.fn(async () => (registered ? [{
+        name: 'daily-summary',
+        schedule: '* * * * *',
+        instructions: 'Send summary.',
+        enabled: true,
+        sessionMode: 'isolated' as const,
+        staggerMs: 0,
+        oneshot: true,
+      }] : [])),
+      unregisterJob: vi.fn(async () => {
+        registered = false;
+        return true;
+      }),
+    };
+    const agent = {
+      handleMessage: vi.fn(async () => {
+        throw new Error('boom');
+      }),
+      summarizeSession: vi.fn(async () => 'summary'),
+    };
+    const runner = new CronRunner({
+      agent,
+      schedulerStore,
+      timezone: 'UTC',
+    });
+
+    await runner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(agent.handleMessage).toHaveBeenCalledTimes(1);
+    expect(schedulerStore.unregisterJob).toHaveBeenCalledWith('daily-summary');
+
+    await runner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(agent.handleMessage).toHaveBeenCalledTimes(1);
+
+    await runner.close();
+  });
+
+  it('does not rediscover a completed oneshot job while unregister is still pending', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+
+    let resolveUnregister!: (value: boolean) => void;
+    const schedulerStore = {
+      ...createSchedulerStore({ oneshot: true } as never),
+      unregisterJob: vi.fn(async () => new Promise<boolean>((resolve) => {
+        resolveUnregister = resolve;
+      })),
+    };
+    const agent = {
+      handleMessage: vi.fn(async () => 'posted'),
+      summarizeSession: vi.fn(async () => 'summary'),
+    };
+    const runner = new CronRunner({
+      agent,
+      schedulerStore,
+      timezone: 'UTC',
+    });
+
+    await runner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(agent.handleMessage).toHaveBeenCalledTimes(1);
+    expect(schedulerStore.unregisterJob).toHaveBeenCalledWith('daily-summary');
+
+    await runner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(agent.handleMessage).toHaveBeenCalledTimes(1);
+
+    resolveUnregister(true);
+    await Promise.resolve();
+    await runner.close();
+  });
+
+  it('waits for successful oneshot unregister during shutdown', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+
+    let resolveRun!: (value: string) => void;
+    let resolveUnregister!: (value: boolean) => void;
+    const schedulerStore = {
+      ...createSchedulerStore({ oneshot: true } as never),
+      unregisterJob: vi.fn(async () => new Promise<boolean>((resolve) => {
+        resolveUnregister = resolve;
+      })),
+    };
+    const agent = {
+      handleMessage: vi.fn(async () => new Promise<string>((resolve) => {
+        resolveRun = resolve;
+      })),
+      summarizeSession: vi.fn(async () => 'summary'),
+    };
+    const runner = new CronRunner({
+      agent,
+      schedulerStore,
+      timezone: 'UTC',
+    });
+
+    await runner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    const closePromise = runner.close();
+    let closed = false;
+    void closePromise.then(() => {
+      closed = true;
+    });
+
+    resolveRun('posted');
+    await vi.waitFor(() => {
+      expect(schedulerStore.unregisterJob).toHaveBeenCalledWith('daily-summary');
+    });
+    expect(closed).toBe(false);
+
+    resolveUnregister(true);
+    await closePromise;
+    expect(closed).toBe(true);
+  });
+
+  it('does not unregister a oneshot job that is cancelled while waiting for the system-turn lock', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
+
+    let releaseSystemTurn!: () => void;
+    const blocker = runExclusiveSystemTurn(() => new Promise<void>((resolve) => {
+      releaseSystemTurn = resolve;
+    }));
+    const schedulerStore = createSchedulerStore({ oneshot: true } as never);
+    const agent = {
+      handleMessage: vi.fn(async () => 'posted'),
+      summarizeSession: vi.fn(async () => 'summary'),
+    };
+    const runner = new CronRunner({
+      agent,
+      schedulerStore,
+      timezone: 'UTC',
+    });
+
+    await runner.syncJobs();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await Promise.resolve();
+
+    const closePromise = runner.close();
+    releaseSystemTurn();
+    await blocker;
+    await closePromise;
+
+    expect(agent.handleMessage).not.toHaveBeenCalled();
+    expect(schedulerStore.unregisterJob).not.toHaveBeenCalled();
+  });
+
   it('does not block shutdown on a job that is only waiting in stagger', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2025-01-01T00:00:00.000Z'));
@@ -309,7 +496,7 @@ describe('CronRunner', () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(agent.handleMessage).toHaveBeenCalledTimes(2);
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[ERROR] [CronRunner] Cron job daily-summary report failed'), expect.any(Error));
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('[ERROR] [CronRunner] Failed to send report message'), expect.any(Error));
 
     await runner.close();
   });

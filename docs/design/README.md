@@ -22,7 +22,7 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                     └── thread subscriptionの永続化
 ```
 
-`webSearch*` は `BRAVE_API_KEY` 設定時のみ、`loadSkill*` は 1 つ以上のスキルが存在するときのみ公開される。skill-gated tools は `loadSkill` 実行後かつ対応環境変数がそろったときのみ使える。現状は `KARAKURI_WORLD_*` で `karakuri_world_*`、`SNS_*` で Mastodon 向け `sns_*` ツール群を遅延公開する。`data/skills/*/SKILL.md` は全ユーザー向け、`data/system-skills/*/SKILL.md` は `userId === 'system'`（cron / heartbeat）でのみ参照される。標準添付の SNS skill は `data/system-skills` 配下なので、SNS は既定では automation 専用であり、対話ユーザーに公開したい場合は運用側で shared skill を追加する。
+`webSearch*` は `BRAVE_API_KEY` 設定時のみ、`loadSkill*` は 1 つ以上のスキルが存在するときのみ公開される。skill-gated tools は `loadSkill` 実行後かつ対応環境変数がそろったときのみ使える。現状は `KARAKURI_WORLD_*` で `karakuri_world_*`、`SNS_*` で Mastodon 向け `sns_*` ツール群を公開する。`data/skills/*/SKILL.md` は全ユーザー向け、`data/system-skills/*/SKILL.md` は `userId === 'system'`（cron / heartbeat）でのみ参照される。加えて `config.sns` 設定時は system ユーザー向けのビルトイン SNS skill をコード内定義で自動追加し、heartbeat の単発 turn（`userId === 'system' && ephemeral`）では SNS だけ `loadSkill` を介さず自動ロードして、動的コンテキスト・指示・`sns_*` ツールをシステムプロンプトへ事前注入する。cron では通常どおり `loadSkill("sns")` で使う。`data/system-skills/sns/SKILL.md` は不要で、残っていてもすべての system ユーザー文脈ではビルトインが優先される。対話ユーザーに公開したい場合は運用側で shared skill を追加する。
 
 各層はインターフェースで抽象化し、実装の差し替えを容易にする:
 
@@ -54,8 +54,13 @@ karakuri-agent/
 │   │       ├── web-fetch.ts       # URL取得 + Readability/Turndown
 │   │       └── web-search.ts      # Brave Search API 連携
 │   ├── sns/
+│   │   ├── action-locks.ts        # SNS重複実行防止ロック
+│   │   ├── activity-store.ts      # SNS行動ログ / スケジュール記録のSQLite実装
+│   │   ├── builtin-skill.ts       # system 向けビルトイン SNS skill / heartbeat 用活動指示
+│   │   ├── context-provider.ts    # SNS動的コンテキスト生成（通知/トレンド/行動ログ/予定）
 │   │   ├── index.ts               # SNS provider factory
 │   │   ├── mastodon.ts            # Mastodon API 実装
+│   │   ├── schedule-runner.ts     # scheduled_at キュー実行ランナー
 │   │   └── types.ts               # SNS provider 共通型
 │   ├── memory/
 │   │   ├── composite-store.ts  # IMemoryStore + CompositeMemoryStore
@@ -63,6 +68,7 @@ karakuri-agent/
 │   │   ├── store.ts            # FileMemoryStore (core memory only)
 │   │   └── types.ts
 │   ├── skill/
+│   │   ├── context-provider.ts # skillごとの動的コンテキスト注入と commit/abort hook
 │   │   ├── frontmatter.ts      # SKILL.md frontmatter parser
 │   │   ├── store.ts            # skill store + eager reload
 │   │   └── types.ts
@@ -89,7 +95,7 @@ karakuri-agent/
 │   ├── skills/
 │   │   └── */SKILL.md          # 任意: 全ユーザー向け trusted skill 定義
 │   ├── system-skills/
-│   │   └── */SKILL.md          # 任意: `userId === 'system'` 専用 trusted skill 定義
+│   │   └── */SKILL.md          # 任意: `userId === 'system'` 専用 trusted skill 定義（SNS builtin 以外）
 │   ├── state/
 │   │   └── chat-state.json     # Chat SDK の subscription / cache / history state
 │   └── sessions/

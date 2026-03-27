@@ -10,6 +10,11 @@ import { CompositeMemoryStore } from './memory/composite-store.js';
 import { SqliteDiaryStore } from './memory/diary-store.js';
 import { FileMemoryStore } from './memory/store.js';
 import { FileSessionManager } from './session/manager.js';
+import { createSnsProvider } from './sns/index.js';
+import { SnsSkillContextProvider } from './sns/context-provider.js';
+import { SqliteSnsActivityStore } from './sns/activity-store.js';
+import { SnsScheduleRunner } from './sns/schedule-runner.js';
+import { SkillContextRegistry } from './skill/context-provider.js';
 import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
 import { SqliteUserStore } from './user/store.js';
@@ -33,6 +38,38 @@ async function main(): Promise<void> {
   const diaryStore = new SqliteDiaryStore({ dataDir: config.dataDir, timezone: config.timezone });
   const memoryStore = new CompositeMemoryStore(coreMemoryStore, diaryStore);
   const userStore = new SqliteUserStore({ dataDir: config.dataDir });
+  const snsActivityStore = config.sns != null ? new SqliteSnsActivityStore({ dataDir: config.dataDir }) : undefined;
+  const messageSink = config.allowedChannelIds != null && config.allowedChannelIds.length > 0
+    ? new DiscordMessageSink({
+        botToken: config.discordBotToken,
+        allowedChannelIds: config.allowedChannelIds,
+        reportChannelId: config.reportChannelId,
+      })
+    : undefined;
+  const snsReportError = messageSink != null && config.reportChannelId != null
+    ? (message: string) => { void messageSink.postMessage(config.reportChannelId!, message).catch((err) => { logger.error('Failed to report SNS context error', err); }); }
+    : undefined;
+  const snsProvider = config.sns != null ? createSnsProvider(config.sns) : undefined;
+  const snsContextRegistry = config.sns != null && snsActivityStore != null && snsProvider != null
+    ? (() => {
+        const registry = new SkillContextRegistry();
+        registry.register('sns', new SnsSkillContextProvider({
+          activityStore: snsActivityStore,
+          scheduleStore: snsActivityStore,
+          snsProvider,
+          reportError: snsReportError,
+        }));
+        return registry;
+      })()
+    : undefined;
+  const snsScheduleRunner = config.sns != null && snsActivityStore != null && snsProvider != null
+    ? new SnsScheduleRunner({
+        scheduleStore: snsActivityStore,
+        activityStore: snsActivityStore,
+        snsProvider,
+        reportError: snsReportError,
+      })
+    : undefined;
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
     tokenBudget: config.tokenBudget,
@@ -42,13 +79,6 @@ async function main(): Promise<void> {
     FileSkillStore.create({ dataDir: config.dataDir }),
     FileSchedulerStore.create({ dataDir: config.dataDir }),
   ]);
-  const messageSink = config.allowedChannelIds != null && config.allowedChannelIds.length > 0
-    ? new DiscordMessageSink({
-        botToken: config.discordBotToken,
-        allowedChannelIds: config.allowedChannelIds,
-        reportChannelId: config.reportChannelId,
-      })
-    : undefined;
   const agent = new KarakuriAgent({
     config,
     memoryStore,
@@ -58,6 +88,9 @@ async function main(): Promise<void> {
     schedulerStore,
     messageSink,
     userStore,
+    snsActivityStore,
+    snsScheduleStore: snsActivityStore,
+    snsContextRegistry,
   });
   const scheduler = await createScheduler({
     agent,
@@ -67,6 +100,7 @@ async function main(): Promise<void> {
   });
   const bot = createBot(config, agent, { messageSink });
 
+  snsScheduleRunner?.start();
   await bot.initialize();
   logger.debug('Bot initialized');
 
@@ -92,12 +126,16 @@ async function main(): Promise<void> {
     try {
       const results = await performGracefulShutdown({
         closeServer: () => closeServer(server),
-        closeScheduler: () => scheduler.close(),
+        closeScheduler: () => Promise.all([
+          scheduler.close(),
+          snsScheduleRunner?.close() ?? Promise.resolve(),
+        ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
         drainEvaluations: () => agent.drainPendingEvaluations(),
         closeStores: () => [
           memoryStore.close(),
           userStore.close(),
+          snsActivityStore?.close() ?? Promise.resolve(),
           promptContextStore.close(),
           skillStore.close(),
           schedulerStore.close(),

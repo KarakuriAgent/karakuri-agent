@@ -13,6 +13,7 @@ describe('manageCron tool', () => {
         enabled: input.enabled ?? true,
         sessionMode: input.sessionMode ?? 'isolated',
         staggerMs: input.staggerMs ?? 0,
+        oneshot: input.oneshot ?? false,
       })),
       unregisterJob: vi.fn(async () => true),
       listCronJobs: vi.fn(async () => [{
@@ -22,6 +23,7 @@ describe('manageCron tool', () => {
         enabled: true,
         sessionMode: 'isolated' as const,
         staggerMs: 0,
+        oneshot: false,
       }]),
       readHeartbeatInstructions: vi.fn(async () => null),
       setReloadListener: vi.fn(),
@@ -36,9 +38,9 @@ describe('manageCron tool', () => {
     });
 
     await expect(tool.execute!(
-      { action: 'register', name: 'daily-summary', schedule: '0 9 * * *', instructions: 'Run.' },
+      { action: 'register', name: 'daily-summary', schedule: '0 9 * * *', instructions: 'Run.', oneshot: true },
       { toolCallId: 'c1', messages: [], abortSignal: undefined as never },
-    )).resolves.toMatchObject({ action: 'register', job: { name: 'daily-summary' } });
+    )).resolves.toMatchObject({ action: 'register', job: { name: 'daily-summary', oneshot: true } });
     expect(messageSink.postMessage).toHaveBeenNthCalledWith(
       1,
       'report',
@@ -57,6 +59,7 @@ describe('manageCron tool', () => {
         enabled: true,
         sessionMode: 'isolated',
         staggerMs: 0,
+        oneshot: false,
       }],
     });
 
@@ -147,6 +150,7 @@ describe('manageCron tool', () => {
         enabled: input.enabled ?? true,
         sessionMode: input.sessionMode ?? 'isolated',
         staggerMs: input.staggerMs ?? 0,
+        oneshot: input.oneshot ?? false,
       })),
       unregisterJob: vi.fn(async () => true),
       listCronJobs: vi.fn(async () => []),
@@ -163,9 +167,9 @@ describe('manageCron tool', () => {
     });
 
     await expect(tool.execute!(
-      { action: 'register', name: 'daily-summary', schedule: '0 9 * * *', instructions: 'Run.' },
+      { action: 'register', name: 'daily-summary', schedule: '0 9 * * *', instructions: 'Run.', oneshot: true },
       { toolCallId: 'c1', messages: [], abortSignal: undefined as never },
-    )).resolves.toMatchObject({ action: 'register', job: { name: 'daily-summary' } });
+    )).resolves.toMatchObject({ action: 'register', job: { name: 'daily-summary', oneshot: true } });
 
     await expect(tool.execute!(
       { action: 'unregister', name: 'daily-summary' },

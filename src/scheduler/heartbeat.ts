@@ -2,6 +2,7 @@ import type { IAgent } from '../agent/core.js';
 import { formatError } from '../utils/error.js';
 import { createLogger } from '../utils/logger.js';
 import { reportSafely } from '../utils/report.js';
+import { runExclusiveSystemTurn } from './system-turn-mutex.js';
 import type { IMessageSink, ISchedulerStore } from './types.js';
 
 const logger = createLogger('HeartbeatRunner');
@@ -120,37 +121,40 @@ export class HeartbeatRunner {
     const startedAt = this.now();
 
     try {
-      const response = await this.options.agent.handleMessage(
-        'heartbeat',
-        '(heartbeat tick)',
-        'heartbeat',
-        {
-          extraSystemPrompt: instructions,
-          userId: 'system',
-        },
-      );
-      logger.debug('Heartbeat run completed', { responseLength: response.trim().length });
-      await reportSafely(
-        this.options.messageSink,
-        this.options.reportChannelId,
-        `✅ Heartbeat succeeded in ${this.now().getTime() - startedAt.getTime()}ms`,
-        {
-          error: (_message, error) => {
-            logger.error('Heartbeat report failed', error);
+      await runExclusiveSystemTurn(async () => {
+        if (this.closed || this.instructions == null) {
+          logger.debug('Skipping heartbeat execution because runner closed before system turn lock');
+          return;
+        }
+
+        const response = await this.options.agent.handleMessage(
+          `heartbeat:${startedAt.toISOString()}`,
+          '(heartbeat tick)',
+          'heartbeat',
+          {
+            extraSystemPrompt: instructions,
+            userId: 'system',
+            ephemeral: true,
           },
-        },
-      );
+        );
+        const trimmedResponse = response.trim();
+        logger.debug('Heartbeat run completed', { responseLength: trimmedResponse.length });
+        const elapsed = this.now().getTime() - startedAt.getTime();
+        const summary = trimmedResponse.length > 0 ? `\n${trimmedResponse}` : '';
+        await reportSafely(
+          this.options.messageSink,
+          this.options.reportChannelId,
+          `✅ Heartbeat succeeded in ${elapsed}ms${summary}`,
+          logger,
+        );
+      });
     } catch (error) {
       logger.error('Heartbeat run failed', error);
       await reportSafely(
         this.options.messageSink,
         this.options.reportChannelId,
         `❌ Heartbeat failed in ${this.now().getTime() - startedAt.getTime()}ms\n${formatError(error)}`,
-        {
-          error: (_message, reportError) => {
-            logger.error('Heartbeat report failed', reportError);
-          },
-        },
+        logger,
       );
     }
   }

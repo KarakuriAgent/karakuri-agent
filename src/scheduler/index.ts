@@ -27,7 +27,7 @@ export async function createScheduler({
   const heartbeatRunner = new HeartbeatRunner({
     agent,
     schedulerStore: store,
-    intervalMinutes: config.heartbeatIntervalMinutes ?? 30,
+    intervalMinutes: config.heartbeatIntervalMinutes ?? 120,
     messageSink,
     reportChannelId: config.reportChannelId,
     enabled: (config.postMessageChannelIds?.length ?? 0) > 0,

@@ -123,14 +123,14 @@ describe('buildGatedToolSets', () => {
     const skills = [
       makeSkill({
         name: 'sns',
-        allowedTools: ['sns_get_timeline', 'sns_post'],
+        allowedTools: ['sns_get_post', 'sns_post'],
       }),
     ];
 
     const result = buildGatedToolSets(skills, SNS_CREDS);
 
     expect(result.size).toBe(1);
-    expect(Object.keys(result.get('sns')!)).toEqual(['sns_get_timeline', 'sns_post']);
+    expect(Object.keys(result.get('sns')!)).toEqual(['sns_get_post', 'sns_post']);
   });
 });
 
@@ -226,11 +226,11 @@ describe('filterSkillsToAvailableTools', () => {
     const skills = [
       makeSkill({
         name: 'sns',
-        allowedTools: ['sns_get_timeline'],
+        allowedTools: ['sns_get_post'],
       }),
     ];
 
     expect(filterSkillsToAvailableTools(skills, NO_CREDS)).toHaveLength(0);
-    expect(filterSkillsToAvailableTools(skills, SNS_CREDS)[0]!.allowedTools).toEqual(['sns_get_timeline']);
+    expect(filterSkillsToAvailableTools(skills, SNS_CREDS)[0]!.allowedTools).toEqual(['sns_get_post']);
   });
 });

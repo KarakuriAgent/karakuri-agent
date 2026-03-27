@@ -13,6 +13,7 @@ describe('parseCronMarkdown', () => {
       enabled: true,
       sessionMode: 'isolated',
       staggerMs: 0,
+      oneshot: false,
     });
   });
 
@@ -24,6 +25,7 @@ describe('parseCronMarkdown', () => {
       enabled: false,
       sessionMode: 'shared',
       staggerMs: 500,
+      oneshot: true,
     });
 
     expect(parseCronMarkdown('daily-summary', markdown)).toEqual({
@@ -33,6 +35,7 @@ describe('parseCronMarkdown', () => {
       enabled: false,
       sessionMode: 'shared',
       staggerMs: 500,
+      oneshot: true,
     });
   });
 

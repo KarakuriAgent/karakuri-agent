@@ -75,7 +75,7 @@ export async function evaluatePostResponse({
         'All values must be plain strings, never objects or arrays.',
         'Merge any profile update into a complete next profile, not a diff.',
         'coreMemoryAppend must contain distilled facts only, not conversation descriptions. Good: "Weekly meeting: every Tuesday 10:00". Bad: "User said the meeting is on Tuesdays".',
-        'diaryEntry should summarize what happened, not quote the conversation verbatim.',
+        'diaryEntry should summarize what happened, not quote the conversation verbatim. Use the user\'s display name (not "ユーザー") to refer to people in diaryEntry.',
         'If nothing should be saved, set profileAction to "none" and all other fields to "".',
       ].join('\n'),
       prompt: [

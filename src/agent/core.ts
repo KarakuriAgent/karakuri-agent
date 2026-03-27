@@ -4,10 +4,15 @@ import type { Config } from '../config.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
-import type { ISessionManager } from '../session/types.js';
-import type { ISkillStore } from '../skill/types.js';
+import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
+import type { ISessionManager, SessionData } from '../session/types.js';
+import { createBuiltinSnsSkillDefinition, BUILTIN_SNS_SKILL_NAME, buildHeartbeatSnsSkillActivityInstructions } from '../sns/builtin-skill.js';
+import type { ISnsActivityStore, ISnsScheduleStore } from '../sns/types.js';
+import type { SkillContextRegistry } from '../skill/context-provider.js';
+import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../skill/types.js';
 import { evaluatePostResponse } from '../user/post-response-evaluator.js';
 import type { IUserStore } from '../user/types.js';
+import { formatDateTimeInTimezone } from '../utils/date.js';
 import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
 import { createAgentTools } from './tools/index.js';
@@ -18,6 +23,7 @@ import {
   buildSystemPrompt,
   countAdditionalContextTokens,
   sanitizeTagContent,
+  type SkillContextEntry,
 } from './prompt.js';
 
 const logger = createLogger('Agent');
@@ -35,6 +41,12 @@ export interface HandleMessageOptions {
   lifecycle?: AgentLifecycleCallbacks | undefined;
   extraSystemPrompt?: string | undefined;
   userId?: string | undefined;
+  /**
+   * When true, the session is not loaded from or persisted to storage, and summarization is skipped.
+   * For system users, ephemeral turns also trigger auto-loading of the builtin SNS skill
+   * (context pre-injection + gated tool registration without requiring loadSkill).
+   */
+  ephemeral?: boolean | undefined;
 }
 
 export interface IAgent {
@@ -56,6 +68,9 @@ export interface KarakuriAgentOptions {
   schedulerStore?: ISchedulerStore | undefined;
   messageSink?: IMessageSink | undefined;
   userStore?: IUserStore | undefined;
+  snsActivityStore?: ISnsActivityStore | undefined;
+  snsScheduleStore?: ISnsScheduleStore | undefined;
+  snsContextRegistry?: SkillContextRegistry | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
   keepRecentTurns?: number;
@@ -71,6 +86,9 @@ export class KarakuriAgent implements IAgent {
   private readonly schedulerStore: ISchedulerStore | undefined;
   private readonly messageSink: IMessageSink | undefined;
   private readonly userStore: IUserStore | undefined;
+  private readonly snsActivityStore: ISnsActivityStore | undefined;
+  private readonly snsScheduleStore: ISnsScheduleStore | undefined;
+  private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly postResponseModelFactory: ((selector: LlmModelSelector) => LanguageModel) | undefined;
@@ -88,6 +106,9 @@ export class KarakuriAgent implements IAgent {
     schedulerStore,
     messageSink,
     userStore,
+    snsActivityStore,
+    snsScheduleStore,
+    snsContextRegistry,
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
@@ -101,6 +122,9 @@ export class KarakuriAgent implements IAgent {
     this.schedulerStore = schedulerStore;
     this.messageSink = messageSink;
     this.userStore = userStore;
+    this.snsActivityStore = snsActivityStore;
+    this.snsScheduleStore = snsScheduleStore;
+    this.snsContextRegistry = snsContextRegistry;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
@@ -126,6 +150,7 @@ export class KarakuriAgent implements IAgent {
     options?: HandleMessageOptions,
   ): Promise<string> {
     logger.info('handleMessage', { sessionId, userMessageLength: userMessage.length });
+    const currentDateTime = formatDateTimeInTimezone(new Date(), this.config.timezone);
     const userId = options?.userId;
     const isRealUser = userId != null && userId !== 'system';
     const ensuredUserPromise = isRealUser && this.userStore != null
@@ -135,142 +160,231 @@ export class KarakuriAgent implements IAgent {
         })
       : Promise.resolve(null);
 
-    let session = await this.sessionManager.addMessages(sessionId, [
-      {
-        role: 'user',
-        content: formatUserMessage(userName, userMessage),
-      },
-    ]);
+    const ephemeral = options?.ephemeral === true;
+    let session = ephemeral
+      ? createEphemeralSession(sessionId, [{
+          role: 'user',
+          content: formatUserMessage(userName, userMessage),
+        }])
+      : await this.sessionManager.addMessages(sessionId, [
+          {
+            role: 'user',
+            content: formatUserMessage(userName, userMessage),
+          },
+        ]);
 
     const isSystemUser = userId === 'system';
-    const [coreMemory, recentDiaries, promptContext, skills, ensuredUser] = await Promise.all([
+    const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
+    const includeSystemOnly = isSystemUser || hasAdminAccess;
+    const builtinSkills = this.config.sns != null && includeSystemOnly
+      ? [createBuiltinSnsSkillDefinition()]
+      : [];
+    const [coreMemory, recentDiaries, promptContext, listedSkills, ensuredUser] = await Promise.all([
       this.memoryStore.readCoreMemory(),
       this.memoryStore.getRecentDiaries(this.recentDiaryCount),
       this.promptContextStore?.read() ?? Promise.resolve({ agentInstructions: null, rules: null }),
-      this.skillStore?.listSkills(isSystemUser ? { includeSystemOnly: true } : undefined) ?? Promise.resolve([]),
+      this.skillStore?.listSkills(includeSystemOnly ? { includeSystemOnly: true } : undefined) ?? Promise.resolve([]),
       ensuredUserPromise,
     ]);
 
     const promptUserName = isRealUser ? ensuredUser?.displayName ?? userName : undefined;
     const promptUserProfile = isRealUser ? ensuredUser?.profile ?? null : undefined;
-    const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
       && this.messageSink != null;
+    const canReportHeartbeatActivity = hasPostMessage
+      && this.config.reportChannelId != null
+      && (this.config.postMessageChannelIds ?? []).includes(this.config.reportChannelId);
     const hasManageCron = hasAdminAccess && this.schedulerStore != null;
     const hasUserLookup = this.userStore != null;
-    const effectiveSkills = filterSkillsToAvailableTools(skills, {
+    const mergedSkills = mergeBuiltinSkills(listedSkills, builtinSkills);
+    const effectiveSkills = filterSkillsToAvailableTools(mergedSkills, {
       karakuriWorld: this.config.karakuriWorld,
       sns: this.config.sns,
-    });
-
-    const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
-      agentInstructions: promptContext.agentInstructions,
-      rules: promptContext.rules,
-      ...(isRealUser
-        ? {
-            userName: promptUserName ?? userName,
-            userId,
-            userProfile: promptUserProfile,
-          }
-        : {}),
-      skills: effectiveSkills,
-      hasWebSearch: this.config.braveApiKey != null,
-      hasUserLookup,
-      hasPostMessage,
-      hasManageCron,
-      extraSystemPrompt: options?.extraSystemPrompt,
-    });
-
-    if (this.sessionManager.needsSummarization(session, additionalTokens)) {
-      logger.info('Session needs summarization', { sessionId });
-      const summary = await this.summarizeSession(sessionId);
-      logger.info('Session summarized', { sessionId, summaryLength: summary.length });
-      session = await this.sessionManager.applySummary(
-        sessionId,
-        summary,
-        this.keepRecentTurns,
-      );
-    }
-
-    const systemPrompt = buildSystemPrompt({
-      agentInstructions: promptContext.agentInstructions,
-      rules: promptContext.rules,
-      coreMemory,
-      ...(isRealUser
-        ? {
-            userName: promptUserName ?? userName,
-            userId,
-            userProfile: promptUserProfile,
-          }
-        : {}),
-      recentDiaries,
-      summary: session.summary,
-      skills: effectiveSkills,
-      hasWebSearch: this.config.braveApiKey != null,
-      hasUserLookup,
-      hasPostMessage,
-      hasManageCron,
-      extraSystemPrompt: options?.extraSystemPrompt,
-    });
-    logger.debug('Calling LLM', {
-      sessionId,
-      model: this.config.llmModel,
-      provider: this.config.llmModelSelector.provider,
-      api: this.config.llmModelSelector.api,
-      messageCount: session.messages.length,
-    });
-    logger.debug(`System prompt:\n${systemPrompt}`);
-    const tools = createAgentTools({
-      memoryStore: this.memoryStore,
-      braveApiKey: this.config.braveApiKey,
-      karakuriWorld: this.config.karakuriWorld,
-      sns: this.config.sns,
-      postMessageEnabled: hasPostMessage,
-      postMessageChannelIds: this.config.postMessageChannelIds,
-      reportChannelId: this.config.reportChannelId,
-      adminUserIds: this.config.adminUserIds,
-      userId,
+      snsActivityStore: this.snsActivityStore,
+      snsScheduleStore: this.snsScheduleStore,
       userStore: this.userStore,
-      ...(this.skillStore != null ? { skillStore: this.skillStore } : {}),
-      ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
-      ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
-      skills: effectiveSkills,
-      includeSystemOnly: isSystemUser,
     });
-    const lifecycle = options?.lifecycle;
-    const result = await this.generateTextFn({
-      model: this.modelFactory(this.config.llmModelSelector),
-      system: systemPrompt,
-      messages: session.messages,
-      tools,
-      stopWhen: stepCountIs(this.config.maxSteps),
-      ...(lifecycle != null
-        ? {
-            experimental_onStepStart: () => {
-              lifecycle.onThinking();
-            },
-            experimental_onToolCallStart: (event) => {
-              lifecycle.onToolCallStart(String(event.toolCall.toolName));
-            },
-            experimental_onToolCallFinish: (event) => {
-              lifecycle.onToolCallFinish(String(event.toolCall.toolName));
-            },
-          }
-        : {}),
-    });
+    // Auto-load the builtin SNS skill for system heartbeat turns so the LLM receives
+    // dynamic context (notifications, trends, activity log) and gated tools without
+    // needing to call loadSkill. Currently only heartbeat sets ephemeral on system turns;
+    // if a future system job reuses ephemeral, revisit whether auto-loading is appropriate.
+    const shouldAutoLoadSnsSkill = isSystemUser
+      && ephemeral
+      && this.snsContextRegistry != null
+      && effectiveSkills.some((skill) => skill.name === BUILTIN_SNS_SKILL_NAME);
+    const autoLoadedSkills = shouldAutoLoadSnsSkill
+      ? effectiveSkills.filter((skill) => skill.name === BUILTIN_SNS_SKILL_NAME)
+      : [];
+    const visibleSkills = shouldAutoLoadSnsSkill
+      ? effectiveSkills.filter((skill) => skill.name !== BUILTIN_SNS_SKILL_NAME)
+      : effectiveSkills;
+    const skillContextScope = this.snsContextRegistry?.createScope();
+    let result: Awaited<ReturnType<typeof this.generateTextFn>>;
+    try {
+      const autoLoadedSkillContexts: SkillContextEntry[] = shouldAutoLoadSnsSkill && skillContextScope != null
+        ? await Promise.all(autoLoadedSkills.map(async (skill) => {
+            const context = await skillContextScope.getContext(skill.name);
+            if (context == null) {
+              logger.warn('Auto-loaded skill has no dynamic context provider registered', { skillName: skill.name });
+            }
+            const trimmed = context?.trim();
+            return {
+              name: skill.name,
+              dynamicContext: trimmed != null && trimmed.length > 0 ? trimmed : undefined,
+              content: skill.instructions.trim(),
+            };
+          }))
+        : [];
+      const hasBuiltinHeartbeatSnsSkill = shouldAutoLoadSnsSkill
+        && mergedSkills.some((skill) => skill.name === BUILTIN_SNS_SKILL_NAME && builtinSkills.includes(skill));
+      const skillActivityInstructions = shouldAutoLoadSnsSkill
+        && hasBuiltinHeartbeatSnsSkill
+        ? buildHeartbeatSnsSkillActivityInstructions({ hasPostMessage: canReportHeartbeatActivity })
+        : null;
+      // When builtins are merged, use a static snapshot so that code-defined skills
+      // (not present in FileSkillStore) are visible via loadSkill. For heartbeat,
+      // the snapshot also excludes auto-loaded skills. For users without builtins,
+      // fall through to the live FileSkillStore to preserve fs.watch hot-reload.
+      const runtimeSkillStore = builtinSkills.length > 0 && visibleSkills.length > 0
+        ? createStaticSkillStore(visibleSkills)
+        : undefined;
 
-    logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });
-    for (const [i, step] of result.steps.entries()) {
-      for (const toolCall of step.toolCalls) {
-        logger.debug('Tool call', { step: i, toolName: toolCall?.toolName, input: JSON.stringify(toolCall?.input) });
+      const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
+        agentInstructions: promptContext.agentInstructions,
+        currentDateTime,
+        rules: promptContext.rules,
+        ...(isRealUser
+          ? {
+              userName: promptUserName ?? userName,
+              userId,
+              userProfile: promptUserProfile,
+            }
+          : {}),
+        skills: visibleSkills,
+        autoLoadedSkills,
+        skillContexts: autoLoadedSkillContexts,
+        skillActivityInstructions,
+        hasWebSearch: this.config.braveApiKey != null,
+        hasUserLookup,
+        hasPostMessage,
+        hasManageCron,
+        extraSystemPrompt: options?.extraSystemPrompt,
+      });
+
+      if (!ephemeral && this.sessionManager.needsSummarization(session, additionalTokens)) {
+        logger.info('Session needs summarization', { sessionId });
+        const summary = await this.summarizeSession(sessionId);
+        logger.info('Session summarized', { sessionId, summaryLength: summary.length });
+        session = await this.sessionManager.applySummary(
+          sessionId,
+          summary,
+          this.keepRecentTurns,
+        );
       }
-      for (const toolResult of step.toolResults) {
-        logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: JSON.stringify(toolResult?.output) });
+
+      const lifecycle = options?.lifecycle;
+      const systemPrompt = buildSystemPrompt({
+        agentInstructions: promptContext.agentInstructions,
+        currentDateTime,
+        rules: promptContext.rules,
+        coreMemory,
+        ...(isRealUser
+          ? {
+              userName: promptUserName ?? userName,
+              userId,
+              userProfile: promptUserProfile,
+            }
+          : {}),
+        recentDiaries,
+        summary: session.summary,
+        skills: visibleSkills,
+        autoLoadedSkills,
+        skillContexts: autoLoadedSkillContexts,
+        skillActivityInstructions,
+        hasWebSearch: this.config.braveApiKey != null,
+        hasUserLookup,
+        hasPostMessage,
+        hasManageCron,
+        extraSystemPrompt: options?.extraSystemPrompt,
+      });
+      logger.debug('Calling LLM', {
+        sessionId,
+        model: this.config.llmModel,
+        provider: this.config.llmModelSelector.provider,
+        api: this.config.llmModelSelector.api,
+        messageCount: session.messages.length,
+      });
+      logger.debug(`System prompt:\n${systemPrompt}`);
+      const tools = createAgentTools({
+        memoryStore: this.memoryStore,
+        braveApiKey: this.config.braveApiKey,
+        karakuriWorld: this.config.karakuriWorld,
+        sns: this.config.sns,
+        postMessageEnabled: hasPostMessage,
+        postMessageChannelIds: this.config.postMessageChannelIds,
+        reportChannelId: this.config.reportChannelId,
+        adminUserIds: this.config.adminUserIds,
+        userId,
+        userStore: this.userStore,
+        ...(runtimeSkillStore != null
+          ? { skillStore: runtimeSkillStore }
+          : this.skillStore != null
+            ? { skillStore: this.skillStore }
+            : {}),
+        ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
+        ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
+        ...(this.snsActivityStore != null ? { snsActivityStore: this.snsActivityStore } : {}),
+        ...(this.snsScheduleStore != null ? { snsScheduleStore: this.snsScheduleStore } : {}),
+        ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
+        ...(isSystemUser && this.userStore != null ? {
+          evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
+            this.enqueueSnsUserEvaluation({ userId: snsUserId, userName: displayName, postText });
+          },
+        } : {}),
+        skills: visibleSkills,
+        autoLoadedSkills,
+        includeSystemOnly,
+      });
+      result = await this.generateTextFn({
+        model: this.modelFactory(this.config.llmModelSelector),
+        system: systemPrompt,
+        messages: session.messages,
+        tools,
+        stopWhen: stepCountIs(this.config.maxSteps),
+        ...(lifecycle != null
+          ? {
+              experimental_onStepStart: () => {
+                lifecycle.onThinking();
+              },
+              experimental_onToolCallStart: (event) => {
+                lifecycle.onToolCallStart(String(event.toolCall.toolName));
+              },
+              experimental_onToolCallFinish: (event) => {
+                lifecycle.onToolCallFinish(String(event.toolCall.toolName));
+              },
+            }
+          : {}),
+      });
+
+      logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });
+      for (const [i, step] of result.steps.entries()) {
+        for (const toolCall of step.toolCalls) {
+          logger.debug('Tool call', { step: i, toolName: toolCall?.toolName, input: JSON.stringify(toolCall?.input) });
+        }
+        for (const toolResult of step.toolResults) {
+          logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: JSON.stringify(toolResult?.output) });
+        }
       }
+      logger.debug(`Response text:\n${result.text}`);
+      if (!ephemeral) {
+        await this.sessionManager.addMessages(sessionId, result.response.messages);
+      }
+      await skillContextScope?.commit();
+    } catch (error) {
+      await skillContextScope?.abort();
+      throw error;
     }
-    logger.debug(`Response text:\n${result.text}`);
-    await this.sessionManager.addMessages(sessionId, result.response.messages);
 
     if (isRealUser) {
       this.enqueuePostResponseEvaluation({
@@ -278,6 +392,14 @@ export class KarakuriAgent implements IAgent {
         userName,
         userMessage,
         assistantResponse: result.text,
+      });
+    } else if (isSystemUser) {
+      this.enqueuePostResponseEvaluation({
+        userId: 'system',
+        userName,
+        userMessage,
+        assistantResponse: result.text,
+        skipUserStore: true,
       });
     }
 
@@ -313,26 +435,71 @@ export class KarakuriAgent implements IAgent {
     await Promise.allSettled([...this.pendingEvaluations]);
   }
 
+  private enqueueSnsUserEvaluation({
+    userId,
+    userName,
+    postText,
+  }: {
+    userId: string;
+    userName: string;
+    postText: string;
+  }): void {
+    const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
+      try {
+        const [ensuredUser, currentCoreMemory] = await Promise.all([
+          this.userStore?.ensureUser(userId, userName) ?? Promise.resolve(null),
+          this.memoryStore.readCoreMemory(),
+        ]);
+        const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
+        const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
+
+        await evaluatePostResponse({
+          model: modelFactory(modelSelector),
+          memoryStore: this.memoryStore,
+          userStore: ensuredUser != null ? this.userStore : undefined,
+          userId,
+          userName,
+          savedDisplayName: ensuredUser?.displayName,
+          userMessage: `SNS post observed from ${userName}:\n${postText.trim()}`,
+          assistantResponse: 'Recorded SNS user context from the observed post.',
+          currentProfile: ensuredUser?.profile,
+          currentCoreMemory,
+          timezone: this.config.timezone,
+          generateTextFn: this.generateTextFn,
+        });
+      } catch (error) {
+        logger.error('SNS user evaluation task failed', error, { userId });
+      }
+    });
+
+    this.pendingEvaluations.add(task);
+    void task.finally(() => {
+      this.pendingEvaluations.delete(task);
+    });
+  }
+
   private enqueuePostResponseEvaluation({
     userId,
     userName,
     userMessage,
     assistantResponse,
+    skipUserStore,
   }: {
     userId: string;
     userName: string;
     userMessage: string;
     assistantResponse: string;
+    skipUserStore?: boolean;
   }): void {
     const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
       try {
         const [currentUser, currentCoreMemory] = await Promise.all([
-          this.userStore?.getUser(userId) ?? Promise.resolve(null),
+          skipUserStore ? Promise.resolve(null) : (this.userStore?.getUser(userId) ?? Promise.resolve(null)),
           this.memoryStore.readCoreMemory(),
         ]);
         const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
         const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
-        const userStoreIfKnown = currentUser != null ? this.userStore : undefined;
+        const userStoreIfKnown = !skipUserStore && currentUser != null ? this.userStore : undefined;
 
         await evaluatePostResponse({
           model: modelFactory(modelSelector),
@@ -364,6 +531,67 @@ function formatUserMessage(userName: string, userMessage: string): string {
   const normalizedName = userName.trim();
   const normalizedMessage = userMessage.trim();
   return normalizedName.length > 0 ? `${normalizedName}: ${normalizedMessage}` : normalizedMessage;
+}
+
+function createEphemeralSession(sessionId: string, messages: ModelMessage[]): SessionData {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    sessionId,
+    messages,
+    summary: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/** Merges builtin skill definitions with file-defined skills. Builtins take priority; any file-defined skill with a matching name is discarded. */
+function mergeBuiltinSkills(skills: SkillDefinition[], builtinSkills: SkillDefinition[]): SkillDefinition[] {
+  if (builtinSkills.length === 0) {
+    return skills;
+  }
+
+  const builtinNames = new Set(builtinSkills.map((skill) => skill.name));
+  const merged = new Map<string, SkillDefinition>();
+  for (const builtinSkill of builtinSkills) {
+    merged.set(builtinSkill.name, builtinSkill);
+  }
+  for (const skill of skills) {
+    if (builtinNames.has(skill.name)) {
+      logger.info('File-defined skill overridden by builtin', { skillName: skill.name });
+      continue;
+    }
+    merged.set(skill.name, skill);
+  }
+  return [...merged.values()];
+}
+
+/** Creates an in-memory ISkillStore snapshot. Used during heartbeat to exclude auto-loaded skills from loadSkill while keeping other skills available. */
+function createStaticSkillStore(skills: SkillDefinition[]): ISkillStore {
+  const byName = new Map(skills.map((skill) => [
+    skill.name,
+    { ...skill, ...(skill.allowedTools != null ? { allowedTools: [...skill.allowedTools] } : {}) },
+  ]));
+
+  return {
+    async listSkills(options?: SkillFilterOptions): Promise<SkillDefinition[]> {
+      return [...byName.values()]
+        .filter((skill) => options?.includeSystemOnly === true || !skill.systemOnly)
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map((skill) => ({ ...skill }));
+    },
+    async getSkill(name: string, options?: SkillFilterOptions): Promise<SkillDefinition | null> {
+      const skill = byName.get(name);
+      if (skill == null) {
+        return null;
+      }
+      if (skill.systemOnly && options?.includeSystemOnly !== true) {
+        return null;
+      }
+      return { ...skill };
+    },
+    async close(): Promise<void> {},
+  };
 }
 
 function formatTranscriptLine(message: ModelMessage): string {
