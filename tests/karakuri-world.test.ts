@@ -14,8 +14,6 @@ const DEFAULT_OPTIONS: ToolExecutionOptions = {
 };
 
 const EXPECTED_TOOL_NAMES = [
-  'karakuri_world_get_perception',
-  'karakuri_world_get_available_actions',
   'karakuri_world_get_map',
   'karakuri_world_get_world_agents',
   'karakuri_world_move',
@@ -25,6 +23,7 @@ const EXPECTED_TOOL_NAMES = [
   'karakuri_world_conversation_accept',
   'karakuri_world_conversation_reject',
   'karakuri_world_conversation_speak',
+  'karakuri_world_end_conversation',
   'karakuri_world_server_event_select',
 ] as const;
 
@@ -41,12 +40,18 @@ describe('karakuri-world tools', () => {
       operation: 'move',
       target_node_id: '1-2',
     });
-    expect(karakuriWorldInputSchema.parse({ operation: 'wait', duration_ms: '1000' })).toEqual({
+    expect(karakuriWorldInputSchema.parse({ operation: 'wait', duration: '3' })).toEqual({
       operation: 'wait',
-      duration_ms: 1000,
+      duration: 3,
     });
     expect(() => karakuriWorldInputSchema.parse({ operation: 'get_map', extra: true })).toThrow();
-    expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration_ms: '1000ms' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration: '1000ms' })).toThrow();
+
+    // waitDurationSchema 境界値
+    expect(karakuriWorldInputSchema.parse({ operation: 'wait', duration: 1 })).toEqual({ operation: 'wait', duration: 1 });
+    expect(karakuriWorldInputSchema.parse({ operation: 'wait', duration: 6 })).toEqual({ operation: 'wait', duration: 6 });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration: 0 })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration: 7 })).toThrow();
   });
 
   it('posts move requests with bearer auth and returns the API result directly', async () => {
@@ -90,7 +95,6 @@ describe('karakuri-world tools', () => {
       from_node_id: '1-1',
       to_node_id: '1-2',
       arrives_at: 42,
-      comment: '門へ向かいます。',
     });
   });
 
@@ -103,7 +107,7 @@ describe('karakuri-world tools', () => {
     const moveInputSchema = tools.karakuri_world_move?.inputSchema as {
       safeParse: (value: unknown) => { success: boolean };
     };
-    const perceptionInputSchema = tools.karakuri_world_get_perception?.inputSchema as {
+    const mapInputSchema = tools.karakuri_world_get_map?.inputSchema as {
       safeParse: (value: unknown) => { success: boolean };
     };
 
@@ -120,20 +124,17 @@ describe('karakuri-world tools', () => {
       target_node_id: '1-2',
       comment: '   ',
     }).success).toBe(false);
-    expect(perceptionInputSchema.safeParse({}).success).toBe(false);
-    expect(perceptionInputSchema.safeParse({ comment: 'まず観察します。' }).success).toBe(true);
-    expect(perceptionInputSchema.safeParse({ comment: '' }).success).toBe(false);
+    expect(mapInputSchema.safeParse({}).success).toBe(false);
+    expect(mapInputSchema.safeParse({ comment: 'まず地図を確認します。' }).success).toBe(true);
+    expect(mapInputSchema.safeParse({ comment: '' }).success).toBe(false);
   });
 
   it('uses GET endpoints without sending a request body for read operations', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(
         JSON.stringify({
-          rows: 2,
-          cols: 2,
-          nodes: { '1-1': { type: 'plain' } },
-          buildings: [],
-          npcs: [],
+          ok: true,
+          message: 'Map request accepted. Details will arrive by notification.',
         }),
         {
           status: 200,
@@ -167,35 +168,17 @@ describe('karakuri-world tools', () => {
     expect(requestInit?.signal).toBeInstanceOf(AbortSignal);
     expect(requestInit).not.toHaveProperty('body');
     expect(result).toEqual({
-      rows: 2,
-      cols: 2,
-      nodes: { '1-1': { type: 'plain' } },
-      buildings: [],
-      npcs: [],
+      ok: true,
+      message: 'Map request accepted. Details will arrive by notification.',
     });
   });
 
-  it('accepts perception current_node metadata that the server may include', async () => {
+  it('uses GET for get_world_agents and returns a notification ack response', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(
         JSON.stringify({
-          current_node: {
-            node_id: '1-1',
-            type: 'door',
-            label: 'Gate',
-            building_id: 'gatehouse',
-          },
-          nodes: [
-            {
-              node_id: '1-1',
-              type: 'door',
-              label: 'Gate',
-              distance: 0,
-            },
-          ],
-          agents: [],
-          npcs: [],
-          buildings: [],
+          ok: true,
+          message: 'World agents request accepted. Details will arrive by notification.',
         }),
         {
           status: 200,
@@ -208,27 +191,16 @@ describe('karakuri-world tools', () => {
       fetch,
     });
 
-    const result = await tools.karakuri_world_get_perception!.execute!({}, DEFAULT_OPTIONS);
+    const result = await tools.karakuri_world_get_world_agents!.execute!({}, DEFAULT_OPTIONS);
 
     expect(fetch).toHaveBeenCalledTimes(1);
+    const [requestUrl, requestInit] = fetch.mock.calls[0]!;
+    expect(requestUrl).toBe('https://example.com/api/agents/world-agents');
+    expect(requestInit).toMatchObject({ method: 'GET' });
+    expect(requestInit).not.toHaveProperty('body');
     expect(result).toEqual({
-      current_node: {
-        node_id: '1-1',
-        type: 'door',
-        label: 'Gate',
-        building_id: 'gatehouse',
-      },
-      nodes: [
-        {
-          node_id: '1-1',
-          type: 'door',
-          label: 'Gate',
-          distance: 0,
-        },
-      ],
-      agents: [],
-      npcs: [],
-      buildings: [],
+      ok: true,
+      message: 'World agents request accepted. Details will arrive by notification.',
     });
   });
 
@@ -241,11 +213,8 @@ describe('karakuri-world tools', () => {
       .mockRejectedValueOnce(transientError)
       .mockResolvedValueOnce(
         new Response(JSON.stringify({
-          current_node: { node_id: '1-1', type: 'plain' },
-          nodes: [],
-          agents: [],
-          npcs: [],
-          buildings: [],
+          ok: true,
+          message: 'Map request accepted.',
         }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -257,10 +226,10 @@ describe('karakuri-world tools', () => {
       fetch,
     });
 
-    const result = await tools.karakuri_world_get_perception!.execute!({}, DEFAULT_OPTIONS);
+    const result = await tools.karakuri_world_get_map!.execute!({}, DEFAULT_OPTIONS);
 
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({ current_node: { node_id: '1-1' } });
+    expect(result).toEqual({ ok: true, message: 'Map request accepted.' });
   });
 
   it('does not retry transient network failures for POST requests', async () => {
@@ -277,7 +246,7 @@ describe('karakuri-world tools', () => {
     });
 
     await expect(
-      tools.karakuri_world_wait!.execute!({ duration_ms: 1000 }, DEFAULT_OPTIONS),
+      tools.karakuri_world_wait!.execute!({ duration: 3 }, DEFAULT_OPTIONS),
     ).rejects.toThrow('Failed to reach the karakuri-world API');
     expect(fetch).toHaveBeenCalledTimes(1);
   });
@@ -290,11 +259,8 @@ describe('karakuri-world tools', () => {
         .mockRejectedValueOnce(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
         .mockResolvedValueOnce(
           new Response(JSON.stringify({
-            current_node: { node_id: '1-1', type: 'plain' },
-            nodes: [],
-            agents: [],
-            npcs: [],
-            buildings: [],
+            ok: true,
+            message: 'Map request accepted.',
           }), {
             status: 200,
             headers: { 'content-type': 'application/json' },
@@ -306,14 +272,14 @@ describe('karakuri-world tools', () => {
         fetch,
       });
 
-      const result = await tools.karakuri_world_get_perception!.execute!({}, DEFAULT_OPTIONS);
+      const result = await tools.karakuri_world_get_map!.execute!({}, DEFAULT_OPTIONS);
 
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(timeoutSpy).toHaveBeenCalledTimes(2);
       expect(fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
       expect(fetch.mock.calls[1]?.[1]?.signal).toBeInstanceOf(AbortSignal);
       expect(fetch.mock.calls[0]?.[1]?.signal).not.toBe(fetch.mock.calls[1]?.[1]?.signal);
-      expect(result).toMatchObject({ current_node: { node_id: '1-1' } });
+      expect(result).toEqual({ ok: true, message: 'Map request accepted.' });
     } finally {
       timeoutSpy.mockRestore();
     }
@@ -333,7 +299,7 @@ describe('karakuri-world tools', () => {
 
     const parsedInput = karakuriWorldInputSchema.parse({
       operation: 'wait',
-      duration_ms: '1000',
+      duration: '3',
     });
     if (parsedInput.operation !== 'wait') {
       throw new Error('Expected a wait input.');
@@ -346,7 +312,7 @@ describe('karakuri-world tools', () => {
       'https://example.com/api/agents/wait',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ duration_ms: 1000 }),
+        body: JSON.stringify({ duration: 3 }),
         headers: expect.objectContaining({
           Accept: 'application/json',
           Authorization: 'Bearer secret',
@@ -355,6 +321,85 @@ describe('karakuri-world tools', () => {
       }),
     );
     expect(result).toEqual({ completes_at: 123 });
+  });
+
+
+  it('rejects legacy karakuri-world schemas that the server no longer accepts', () => {
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration_ms: 1000 })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_accept', conversation_id: 'conv-1' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_reject', conversation_id: 'conv-1' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_speak', conversation_id: 'conv-1', message: 'hello' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'get_perception' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'get_available_actions' })).toThrow();
+  });
+
+  it('posts conversation accept, reject, speak, and end requests with updated payloads', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/accept')) {
+        return new Response(JSON.stringify({ status: 'ok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/reject')) {
+        return new Response(JSON.stringify({ status: 'ok' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ turn: 7 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(tools.karakuri_world_conversation_accept!.execute!({ message: '了解です。' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'ok' });
+    await expect(tools.karakuri_world_conversation_reject!.execute!({}, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'ok' });
+    await expect(tools.karakuri_world_conversation_speak!.execute!({ message: 'こんにちは。' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ turn: 7 });
+    await expect(tools.karakuri_world_end_conversation!.execute!({ message: 'また後で。' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ turn: 7 });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      'https://example.com/api/agents/conversation/accept',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ message: '了解です。' }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      'https://example.com/api/agents/conversation/reject',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      'https://example.com/api/agents/conversation/speak',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ message: 'こんにちは。' }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      'https://example.com/api/agents/conversation/end',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ message: 'また後で。' }),
+      }),
+    );
   });
 
   it('returns a busy response instead of throwing for state_conflict errors', async () => {
@@ -404,7 +449,7 @@ describe('karakuri-world tools', () => {
     });
 
     const result = await tools.karakuri_world_conversation_speak!.execute!(
-      { conversation_id: 'conv-1', message: 'hello' },
+      { message: 'hello' },
       DEFAULT_OPTIONS,
     );
 
@@ -503,7 +548,7 @@ describe('karakuri-world tools', () => {
 
     let thrownError: unknown;
     try {
-      await tools.karakuri_world_get_perception!.execute!({}, DEFAULT_OPTIONS);
+      await tools.karakuri_world_get_map!.execute!({}, DEFAULT_OPTIONS);
     } catch (error) {
       thrownError = error;
     }
@@ -534,7 +579,7 @@ describe('karakuri-world tools', () => {
 
     let thrownError: unknown;
     try {
-      await tools.karakuri_world_get_perception!.execute!({}, DEFAULT_OPTIONS);
+      await tools.karakuri_world_get_map!.execute!({}, DEFAULT_OPTIONS);
     } catch (error) {
       thrownError = error;
     }

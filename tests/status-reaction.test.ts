@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DEBOUNCE_MS,
   DONE_REACTION_DURATION_MS,
   STATUS_EMOJI,
   StatusReactionController,
@@ -51,7 +52,18 @@ describe('StatusReactionController', () => {
     vi.restoreAllMocks();
   });
 
-  it('reconciles desired emoji changes to the adapter', async () => {
+  it('applies the first emoji immediately without debounce', async () => {
+    const { adapter, operations } = createReactionAdapter();
+    const controller = createController(adapter);
+
+    controller.setQueued();
+    await controller.waitForCompletion();
+
+    expect(operations).toEqual([`add:${STATUS_EMOJI.queued}`]);
+    expect(adapter.addReaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('debounces intermediate emoji changes', async () => {
     const { adapter, operations } = createReactionAdapter();
     const controller = createController(adapter);
 
@@ -59,12 +71,41 @@ describe('StatusReactionController', () => {
     await controller.waitForCompletion();
 
     controller.setThinking();
+    await flushMicrotasks();
+
+    // Debounce timer has not fired yet — no remove/add
+    expect(operations).toEqual([`add:${STATUS_EMOJI.queued}`]);
+
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     await controller.waitForCompletion();
 
     expect(operations).toEqual([
       `add:${STATUS_EMOJI.queued}`,
       `remove:${STATUS_EMOJI.queued}`,
       `add:${STATUS_EMOJI.thinking}`,
+    ]);
+  });
+
+  it('collapses rapid intermediate changes into a single reconcile', async () => {
+    const { operations, adapter } = createReactionAdapter();
+    const controller = createController(adapter);
+
+    controller.setQueued();
+    await controller.waitForCompletion();
+
+    // Rapid-fire intermediate changes within the debounce window
+    controller.setThinking();
+    controller.setTool('webFetch');
+    controller.setTool('userLookup');
+
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    await controller.waitForCompletion();
+
+    // Only the final desired emoji (memory) should be applied
+    expect(operations).toEqual([
+      `add:${STATUS_EMOJI.queued}`,
+      `remove:${STATUS_EMOJI.queued}`,
+      `add:${STATUS_EMOJI.memory}`,
     ]);
   });
 
@@ -76,13 +117,14 @@ describe('StatusReactionController', () => {
     await controller.waitForCompletion();
 
     controller.setQueued();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     await controller.waitForCompletion();
 
     expect(adapter.addReaction).toHaveBeenCalledTimes(1);
     expect(adapter.removeReaction).not.toHaveBeenCalled();
   });
 
-  it('skips stale intermediate desired states during fast transitions', async () => {
+  it('skips stale intermediate desired states during in-flight reconcile', async () => {
     const operations: string[] = [];
     const removeGate = createDeferred();
     const adapter: ReactionAdapter = {
@@ -99,18 +141,25 @@ describe('StatusReactionController', () => {
     controller.setQueued();
     await controller.waitForCompletion();
 
+    // Trigger debounced transition
     controller.setThinking();
-    controller.setTool('webFetch');
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     await flushMicrotasks();
 
+    // Remove is now in-flight (blocked by gate)
     expect(operations).toEqual([
       `add:${STATUS_EMOJI.queued}`,
       `remove:${STATUS_EMOJI.queued}`,
     ]);
 
+    // While remove is in-flight, change desired to web
+    controller.setTool('webFetch');
+
     removeGate.resolve();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     await controller.waitForCompletion();
 
+    // Thinking was skipped; web was applied directly
     expect(operations).toEqual([
       `add:${STATUS_EMOJI.queued}`,
       `remove:${STATUS_EMOJI.queued}`,
@@ -136,6 +185,10 @@ describe('StatusReactionController', () => {
     controller = createController(adapter);
 
     controller.setQueued();
+    await flushMicrotasks();
+
+    // The failed add triggers re-reconcile from finally; debounce from setThinking is cancelled
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     await controller.waitForCompletion();
 
     expect(operations).toEqual([
@@ -167,6 +220,11 @@ describe('StatusReactionController', () => {
     await controller.waitForCompletion();
 
     controller.setThinking();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
+    await flushMicrotasks();
+
+    // The failed remove triggers re-reconcile from finally; debounce from setTool is cancelled
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     await controller.waitForCompletion();
 
     expect(operations).toEqual([
@@ -174,6 +232,50 @@ describe('StatusReactionController', () => {
       `remove:${STATUS_EMOJI.queued}`,
       `remove:${STATUS_EMOJI.queued}`,
       `add:${STATUS_EMOJI.web}`,
+    ]);
+  });
+
+  it('terminal done() bypasses debounce and executes immediately', async () => {
+    const { adapter, operations } = createReactionAdapter();
+    const controller = createController(adapter);
+
+    controller.setThinking();
+    await controller.waitForCompletion();
+
+    // Start a debounced intermediate change
+    controller.setTool('webFetch');
+    await flushMicrotasks();
+
+    // done() should cancel the debounce and apply immediately
+    controller.done();
+    await flushMicrotasks();
+
+    expect(operations).toEqual([
+      `add:${STATUS_EMOJI.thinking}`,
+      `remove:${STATUS_EMOJI.thinking}`,
+      `add:${STATUS_EMOJI.done}`,
+    ]);
+  });
+
+  it('terminal error() bypasses debounce and executes immediately', async () => {
+    const { adapter, operations } = createReactionAdapter();
+    const controller = createController(adapter);
+
+    controller.setThinking();
+    await controller.waitForCompletion();
+
+    // Start a debounced intermediate change
+    controller.setTool('webFetch');
+    await flushMicrotasks();
+
+    // error() should cancel the debounce and apply immediately
+    controller.error();
+    await flushMicrotasks();
+
+    expect(operations).toEqual([
+      `add:${STATUS_EMOJI.thinking}`,
+      `remove:${STATUS_EMOJI.thinking}`,
+      `add:${STATUS_EMOJI.error}`,
     ]);
   });
 
@@ -243,6 +345,7 @@ describe('StatusReactionController', () => {
     controller.setThinking();
     controller.setTool('userLookup');
     controller.done();
+    await vi.advanceTimersByTimeAsync(DEBOUNCE_MS);
     await controller.waitForCompletion();
 
     expect(operations).toEqual([`add:${STATUS_EMOJI.error}`]);

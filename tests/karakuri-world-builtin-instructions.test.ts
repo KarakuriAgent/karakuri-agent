@@ -19,8 +19,11 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('KarakuriWorld mode is active.');
     expect(normalized).toContain('you must call exactly one karakuri-world tool');
     expect(instructions).toContain('`comment` field');
-    expect(instructions).toContain('`karakuri_world_get_perception`');
+    expect(instructions).toContain('`karakuri_world_get_map`');
     expect(instructions).toContain('`karakuri_world_move`');
+    expect(instructions).toContain('`karakuri_world_end_conversation`');
     expect(instructions).toContain('"target_node_id": "4-1"');
+    expect(instructions).not.toContain('get_available_actions');
+    expect(instructions).not.toContain('duration_ms');
   });
 });

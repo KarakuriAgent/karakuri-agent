@@ -26,6 +26,7 @@ const baseConfig: Config = {
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,
+  llmEnableThinking: true,
 };
 
 class MemoryStoreStub implements IMemoryStore {
@@ -240,18 +241,17 @@ function makeGenerateTextResult(text: string, messages: ModelMessage[]) {
 
 function makeKwModeGenerateTextResult(comment?: string) {
   const toolCallId = 'kw-tool-1';
+  const toolInput = comment == null ? {} : { comment };
   return {
     text: 'ignored kw mode text',
     steps: [{
       toolCalls: [{
-        toolName: 'karakuri_world_get_perception',
-        input: { comment: comment ?? '周囲を確認します。' },
+        toolName: 'karakuri_world_get_map',
+        input: toolInput,
       }],
       toolResults: [{
-        toolName: 'karakuri_world_get_perception',
-        output: comment == null
-          ? { current_node: { node_id: '1-1', type: 'plain' } }
-          : { current_node: { node_id: '1-1', type: 'plain' }, comment },
+        toolName: 'karakuri_world_get_map',
+        output: { ok: true, message: 'Map request accepted.' },
       }],
     }],
     response: {
@@ -265,8 +265,8 @@ function makeKwModeGenerateTextResult(comment?: string) {
             {
               type: 'tool-call',
               toolCallId,
-              toolName: 'karakuri_world_get_perception',
-              input: { comment: comment ?? '周囲を確認します。' },
+              toolName: 'karakuri_world_get_map',
+              input: toolInput,
             },
           ],
         },
@@ -276,10 +276,8 @@ function makeKwModeGenerateTextResult(comment?: string) {
             {
               type: 'tool-result',
               toolCallId,
-              toolName: 'karakuri_world_get_perception',
-              output: comment == null
-                ? { current_node: { node_id: '1-1', type: 'plain' } }
-                : { current_node: { node_id: '1-1', type: 'plain' }, comment },
+              toolName: 'karakuri_world_get_map',
+              output: { ok: true, message: 'Map request accepted.' },
             },
           ],
         },
@@ -294,7 +292,7 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
     steps: [{
       toolCalls: [
         {
-          toolName: 'karakuri_world_get_perception',
+          toolName: 'karakuri_world_get_map',
           input: { comment: '周囲を確認します。' },
         },
         {
@@ -304,12 +302,12 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
       ],
       toolResults: [
         {
-          toolName: 'karakuri_world_get_perception',
-          output: { current_node: { node_id: '1-1', type: 'plain' }, comment: '周囲を確認します。' },
+          toolName: 'karakuri_world_get_map',
+          output: { ok: true, message: 'Map request accepted.' },
         },
         {
           toolName: 'karakuri_world_move',
-          output: { from_node_id: '1-1', to_node_id: '1-2', arrives_at: 42, comment: '門へ向かいます。' },
+          output: { from_node_id: '1-1', to_node_id: '1-2', arrives_at: 42 },
         },
       ],
     }],
@@ -333,7 +331,7 @@ function makeBusyKwModeGenerateTextResult(comment: string) {
       }],
       toolResults: [{
         toolName: 'karakuri_world_move',
-        output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.', comment },
+        output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.' },
       }],
     }],
     response: {
@@ -359,7 +357,7 @@ function makeBusyKwModeGenerateTextResult(comment: string) {
               type: 'tool-result',
               toolCallId,
               toolName: 'karakuri_world_move',
-              output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.', comment },
+              output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.' },
             },
           ],
         },
@@ -418,8 +416,6 @@ function createSchedulerStore(): ISchedulerStore {
 }
 
 const EXPECTED_KW_TOOL_NAMES = [
-  'karakuri_world_get_perception',
-  'karakuri_world_get_available_actions',
   'karakuri_world_get_map',
   'karakuri_world_get_world_agents',
   'karakuri_world_move',
@@ -429,6 +425,7 @@ const EXPECTED_KW_TOOL_NAMES = [
   'karakuri_world_conversation_accept',
   'karakuri_world_conversation_reject',
   'karakuri_world_conversation_speak',
+  'karakuri_world_end_conversation',
   'karakuri_world_server_event_select',
 ] as const;
 
@@ -1342,7 +1339,9 @@ describe('KarakuriAgent', () => {
     let capturedToolChoice: unknown;
     let evaluationPrompt = '';
 
-    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; toolChoice?: unknown; output?: unknown; prompt?: string }) => {
+    let capturedProviderOptions: unknown;
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; toolChoice?: unknown; output?: unknown; prompt?: string; providerOptions?: unknown }) => {
       if (options.output != null) {
         evaluationPrompt = options.prompt ?? '';
         return makeStructuredEvaluationResult({
@@ -1356,6 +1355,7 @@ describe('KarakuriAgent', () => {
       capturedSystem = options.system ?? '';
       capturedTools = options.tools ?? {};
       capturedToolChoice = options.toolChoice;
+      capturedProviderOptions = options.providerOptions;
       return makeKwModeGenerateTextResult('周囲を確認します。');
     }) as unknown as typeof import('ai').generateText;
 
@@ -1394,6 +1394,7 @@ describe('KarakuriAgent', () => {
     expect(userStore.ensureCalls).toEqual([]);
     expect(Object.keys(capturedTools).sort()).toEqual([...EXPECTED_KW_TOOL_NAMES].sort());
     expect(capturedToolChoice).toBe('required');
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
     expect(capturedSystem).toContain('You are custom.');
     expect(capturedSystem).toContain('Be precise.');
     expect(capturedSystem).toContain('<memory>');
@@ -1409,7 +1410,7 @@ describe('KarakuriAgent', () => {
         {
           type: 'tool-call',
           toolCallId: 'kw-tool-1',
-          toolName: 'karakuri_world_get_perception',
+          toolName: 'karakuri_world_get_map',
           input: { comment: '周囲を確認します。' },
         },
         { type: 'text', text: '周囲を確認します。' },
@@ -1421,8 +1422,8 @@ describe('KarakuriAgent', () => {
         {
           type: 'tool-result',
           toolCallId: 'kw-tool-1',
-          toolName: 'karakuri_world_get_perception',
-          output: { current_node: { node_id: '1-1', type: 'plain' }, comment: '周囲を確認します。' },
+          toolName: 'karakuri_world_get_map',
+          output: { ok: true, message: 'Map request accepted.' },
         },
       ],
     });
@@ -1431,7 +1432,7 @@ describe('KarakuriAgent', () => {
     expect(userStore.displayNameUpdates).toEqual([]);
   });
 
-  it('falls back to a default completion reply when a karakuri-world tool result has no comment', async () => {
+  it('falls back to a default completion reply when a karakuri-world tool call input has no comment', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
 
@@ -1582,7 +1583,7 @@ describe('KarakuriAgent', () => {
 
     expect(capturedToolChoice).toBeUndefined();
     expect(capturedTools).toHaveProperty('recallDiary');
-    expect(capturedTools).not.toHaveProperty('karakuri_world_get_perception');
+    expect(capturedTools).not.toHaveProperty('karakuri_world_get_map');
     expect(capturedSystem).not.toContain('KarakuriWorld mode is active.');
     expect(capturedSystem).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
   });
@@ -2306,6 +2307,104 @@ describe('KarakuriAgent', () => {
     await agent.handleMessage('session-1', 'hi', 'Alice');
 
     expect(seenSelectors).toEqual(['openai/chat/gpt-4o-mini']);
+  });
+
+  it('sets providerOptions when llmEnableThinking is false in normal mode', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedProviderOptions: unknown;
+
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown }) => {
+      capturedProviderOptions = options.providerOptions;
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: false },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hello', 'Alice');
+
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+  });
+
+  it('does not set providerOptions when llmEnableThinking is true in normal mode', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedProviderOptions: unknown;
+
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown }) => {
+      capturedProviderOptions = options.providerOptions;
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: true },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hello', 'Alice');
+
+    expect(capturedProviderOptions).toBeUndefined();
+  });
+
+  it('sets providerOptions in summary when llmEnableThinking is false', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    sessionManager.forceSummarization = true;
+
+    let summaryProviderOptions: unknown;
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown; system?: string }) => {
+      if (options.system == null) {
+        summaryProviderOptions = options.providerOptions;
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: false },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(summaryProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+  });
+
+  it('does not set providerOptions in summary when llmEnableThinking is true', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    sessionManager.forceSummarization = true;
+
+    let summaryProviderOptions: unknown;
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown; system?: string }) => {
+      if (options.system == null) {
+        summaryProviderOptions = options.providerOptions;
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: true },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(summaryProviderOptions).toBeUndefined();
   });
 
   it('routes OpenAI selectors to the matching provider surface', () => {

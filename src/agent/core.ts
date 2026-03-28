@@ -2,6 +2,7 @@ import { generateText, stepCountIs, type LanguageModel, type ModelMessage } from
 
 import type { Config } from '../config.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
+import { createNoThinkingFetch, NO_THINKING_PROVIDER_OPTIONS } from '../llm/no-thinking-fetch.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
@@ -98,6 +99,7 @@ export class KarakuriAgent implements IAgent {
   private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
+  private readonly noThinkingModelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly postResponseModelFactory: ((selector: LlmModelSelector) => LanguageModel) | undefined;
   private readonly keepRecentTurns: number;
   private readonly recentDiaryCount: number;
@@ -136,9 +138,17 @@ export class KarakuriAgent implements IAgent {
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
 
+    const noThinkingFetch = createNoThinkingFetch();
+
     this.modelFactory = modelFactory ?? createConfiguredOpenAiModelFactory({
       apiKey: config.llmApiKey,
       ...(config.llmBaseUrl != null ? { baseURL: config.llmBaseUrl } : {}),
+      ...(!config.llmEnableThinking ? { fetch: noThinkingFetch } : {}),
+    });
+    this.noThinkingModelFactory = modelFactory ?? createConfiguredOpenAiModelFactory({
+      apiKey: config.llmApiKey,
+      ...(config.llmBaseUrl != null ? { baseURL: config.llmBaseUrl } : {}),
+      fetch: noThinkingFetch,
     });
     this.postResponseModelFactory = config.postResponseLlmApiKey != null || config.postResponseLlmBaseUrl != null
       ? createConfiguredOpenAiModelFactory({
@@ -146,6 +156,7 @@ export class KarakuriAgent implements IAgent {
           ...((config.postResponseLlmBaseUrl ?? config.llmBaseUrl) != null
             ? { baseURL: config.postResponseLlmBaseUrl ?? config.llmBaseUrl }
             : {}),
+          ...(!config.llmEnableThinking ? { fetch: noThinkingFetch } : {}),
         })
       : undefined;
   }
@@ -373,13 +384,17 @@ export class KarakuriAgent implements IAgent {
           autoLoadedSkills,
           includeSystemOnly,
         });
+      const disableThinking = isKarakuriWorldMode || !this.config.llmEnableThinking;
+      const effectiveModelFactory = disableThinking ? this.noThinkingModelFactory : this.modelFactory;
+
       result = await this.generateTextFn({
-        model: this.modelFactory(this.config.llmModelSelector),
+        model: effectiveModelFactory(this.config.llmModelSelector),
         system: systemPrompt,
         messages: session.messages,
         tools,
         stopWhen: stepCountIs(isKarakuriWorldMode ? KW_MODE_MAX_STEPS : this.config.maxSteps),
         ...(isKarakuriWorldMode ? { toolChoice: 'required' as const } : {}),
+        ...(disableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
         ...(lifecycle != null
           ? {
               experimental_onStepStart: () => {
@@ -458,9 +473,12 @@ export class KarakuriAgent implements IAgent {
       .filter((section) => section.length > 0)
       .join('\n\n');
 
+    const thinkingDisabled = !this.config.llmEnableThinking;
+
     const result = await this.generateTextFn({
-      model: this.modelFactory(this.config.llmModelSelector),
+      model: (thinkingDisabled ? this.noThinkingModelFactory : this.modelFactory)(this.config.llmModelSelector),
       prompt,
+      ...(thinkingDisabled ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
     });
 
     const summary = result.text.trim();
@@ -502,6 +520,7 @@ export class KarakuriAgent implements IAgent {
           currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
+          ...(!this.config.llmEnableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
         });
       } catch (error) {
         logger.error('SNS user evaluation task failed', error, { userId });
@@ -550,6 +569,7 @@ export class KarakuriAgent implements IAgent {
           currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
+          ...(!this.config.llmEnableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
         });
       } catch (error) {
         logger.warn('Post-response evaluation task failed', error, { userId });
@@ -608,6 +628,9 @@ function isToolResultBusy(output: unknown): boolean {
 }
 
 function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof generateText>>): string {
+  // Pass 1 — toolResults: busy レスポンスが返っていたら Discord への返信を抑制する。
+  // Pass 2 — toolCalls: LLM が入力した comment を Discord 返信として採用する。
+  // busy チェックを優先するため2パスに分離。assertSingleKarakuriWorldAction が先に呼ばれるため KW ツールは常に1つ。
   for (const step of result.steps) {
     for (const toolResult of step.toolResults) {
       if (!String(toolResult?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)) {
@@ -620,21 +643,29 @@ function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof genera
         });
         return '';
       }
+    }
+  }
 
-      const comment = extractToolResultComment(toolResult?.output);
+  for (const step of result.steps) {
+    for (const toolCall of step.toolCalls) {
+      if (!String(toolCall?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)) {
+        continue;
+      }
+
+      const comment = extractToolCallComment(toolCall?.input);
       if (comment == null) {
-        logger.warn('KarakuriWorld tool result is missing comment field, using default response', {
-          toolName: toolResult?.toolName,
+        logger.warn('KarakuriWorld tool call is missing comment in input, using default response', {
+          toolName: toolCall?.toolName,
         });
       }
       return comment ?? DEFAULT_KARAKURI_WORLD_MODE_RESPONSE;
     }
   }
 
-  logger.error('KarakuriWorld tool call had no matching tool result in steps', {
+  logger.error('KarakuriWorld tool call had no matching tool call in steps', {
     stepCount: result.steps.length,
   });
-  throw new Error('KarakuriWorld mode: tool call was validated but no matching tool result was found in steps.');
+  throw new Error('KarakuriWorld mode: tool call was validated but no matching tool call was found in steps.');
 }
 
 function assertSingleKarakuriWorldAction(result: Awaited<ReturnType<typeof generateText>>): void {
@@ -660,12 +691,12 @@ function assertSingleKarakuriWorldAction(result: Awaited<ReturnType<typeof gener
   throw new Error(`KarakuriWorld mode expected exactly one action, but received ${kwToolNames.length}.`);
 }
 
-function extractToolResultComment(output: unknown): string | null {
-  if (typeof output !== 'object' || output == null || !('comment' in output)) {
+function extractToolCallComment(input: unknown): string | null {
+  if (typeof input !== 'object' || input == null || !('comment' in input)) {
     return null;
   }
 
-  const comment = output.comment;
+  const comment = input.comment;
   return typeof comment === 'string' && comment.trim().length > 0 ? comment.trim() : null;
 }
 
