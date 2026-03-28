@@ -15,6 +15,7 @@ export const STATUS_EMOJI = {
 } as const;
 
 export const DONE_REACTION_DURATION_MS = 2_000;
+export const DEBOUNCE_MS = 700;
 export const TERMINAL_RECONCILE_MAX_RETRIES = 3;
 
 export interface ReactionAdapter {
@@ -59,12 +60,16 @@ export class StatusReactionController {
   private doneTimer: ReturnType<typeof setTimeout> | null = null;
   private doneTimerPromise: Promise<void> | null = null;
   private resolveDoneTimer: (() => void) | null = null;
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private debouncePromise: Promise<void> | null = null;
+  private resolveDebounce: (() => void) | null = null;
 
   constructor(
     private readonly adapter: ReactionAdapter,
     private readonly threadId: string,
     private readonly messageId: string,
     private readonly doneDisplayMs = DONE_REACTION_DURATION_MS,
+    private readonly debounceMs = DEBOUNCE_MS,
   ) {}
 
   setQueued(): void {
@@ -91,6 +96,7 @@ export class StatusReactionController {
 
     this.terminalStatus = 'done';
     this.cancelDoneTimer();
+    this.cancelDebounce();
     this.desiredEmoji = STATUS_EMOJI.done;
     this.triggerReconcile();
   }
@@ -102,6 +108,7 @@ export class StatusReactionController {
 
     this.terminalStatus = 'error';
     this.cancelDoneTimer();
+    this.cancelDebounce();
     this.desiredEmoji = STATUS_EMOJI.error;
     this.triggerReconcile();
   }
@@ -114,6 +121,9 @@ export class StatusReactionController {
       }
       if (this.doneTimerPromise != null) {
         tasks.push(this.doneTimerPromise);
+      }
+      if (this.debouncePromise != null) {
+        tasks.push(this.debouncePromise);
       }
 
       if (tasks.length === 0) {
@@ -130,7 +140,40 @@ export class StatusReactionController {
     }
 
     this.desiredEmoji = emoji;
-    this.triggerReconcile();
+    this.scheduleReconcile();
+  }
+
+  private scheduleReconcile(): void {
+    this.cancelDebounce();
+
+    if (this.appliedEmoji == null && this.reconcilePromise == null) {
+      this.triggerReconcile();
+      return;
+    }
+
+    this.debouncePromise = new Promise<void>((resolve) => {
+      this.resolveDebounce = resolve;
+      this.debounceTimer = setTimeout(() => {
+        this.debounceTimer = null;
+        this.debouncePromise = null;
+        this.resolveDebounce = null;
+        this.triggerReconcile();
+        resolve();
+      }, this.debounceMs);
+    });
+  }
+
+  private cancelDebounce(): void {
+    if (this.debounceTimer == null) {
+      return;
+    }
+
+    clearTimeout(this.debounceTimer);
+    this.debounceTimer = null;
+    this.debouncePromise = null;
+    const resolveDebounce = this.resolveDebounce;
+    this.resolveDebounce = null;
+    resolveDebounce?.();
   }
 
   private triggerReconcile(): void {
@@ -138,6 +181,7 @@ export class StatusReactionController {
       return;
     }
 
+    this.cancelDebounce();
     this.reconcilePromise = this.reconcile()
       .catch((error) => {
         logger.error('Unexpected status reaction reconcile failure', error, {
