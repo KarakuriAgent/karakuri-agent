@@ -2,7 +2,7 @@ import { generateText, stepCountIs, type LanguageModel, type ModelMessage } from
 
 import type { Config } from '../config.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
-import { createNoThinkingFetch, NO_THINKING_PROVIDER_OPTIONS } from '../llm/no-thinking-fetch.js';
+import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
@@ -395,7 +395,7 @@ export class KarakuriAgent implements IAgent {
         tools,
         stopWhen: stepCountIs(isKarakuriWorldMode ? KW_MODE_MAX_STEPS : this.config.maxSteps),
         ...(isKarakuriWorldMode ? { toolChoice: 'required' as const } : {}),
-        ...(disableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
+        ...(disableThinking ? { providerOptions: noThinkingProviderOptions(this.config.llmModelSelector.api) } : {}),
         ...(lifecycle != null
           ? {
               experimental_onStepStart: () => {
@@ -490,7 +490,7 @@ export class KarakuriAgent implements IAgent {
     const result = await this.generateTextFn({
       model: (thinkingDisabled ? this.noThinkingModelFactory : this.modelFactory)(this.config.llmModelSelector),
       prompt,
-      ...(thinkingDisabled ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
+      ...(thinkingDisabled ? { providerOptions: noThinkingProviderOptions(this.config.llmModelSelector.api) } : {}),
     });
 
     const summary = result.text.trim();
@@ -532,7 +532,7 @@ export class KarakuriAgent implements IAgent {
           currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
-          ...(!this.config.llmEnableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
+          ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
         });
       } catch (error) {
         logger.error('SNS user evaluation task failed', error, { userId });
@@ -581,7 +581,7 @@ export class KarakuriAgent implements IAgent {
           currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
-          ...(!this.config.llmEnableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
+          ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
         });
       } catch (error) {
         logger.warn('Post-response evaluation task failed', error, { userId });

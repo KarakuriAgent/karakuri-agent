@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createNoThinkingFetch, NO_THINKING_PROVIDER_OPTIONS } from '../src/llm/no-thinking-fetch.js';
+import { createNoThinkingFetch, noThinkingProviderOptions } from '../src/llm/no-thinking-fetch.js';
 
 describe('createNoThinkingFetch', () => {
   it('injects enable_thinking: false into JSON request bodies', async () => {
@@ -61,10 +61,14 @@ describe('createNoThinkingFetch', () => {
   });
 });
 
-describe('NO_THINKING_PROVIDER_OPTIONS', () => {
-  it('contains reasoningEffort none for openai', () => {
-    expect(NO_THINKING_PROVIDER_OPTIONS).toEqual({
-      openai: { reasoningEffort: 'none' },
+describe('noThinkingProviderOptions', () => {
+  it('returns reasoningEffort low for responses api', () => {
+    expect(noThinkingProviderOptions('responses')).toEqual({
+      openai: { reasoningEffort: 'low' },
     });
+  });
+
+  it('returns empty options for chat api', () => {
+    expect(noThinkingProviderOptions('chat')).toEqual({});
   });
 });

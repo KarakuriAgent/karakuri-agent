@@ -1409,7 +1409,7 @@ describe('KarakuriAgent', () => {
     expect(userStore.ensureCalls).toEqual([]);
     expect(Object.keys(capturedTools).sort()).toEqual([...EXPECTED_KW_TOOL_NAMES].sort());
     expect(capturedToolChoice).toBe('required');
-    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'low' } });
     expect(capturedSystem).toContain('You are custom.');
     expect(capturedSystem).toContain('Be precise.');
     expect(capturedSystem).toContain('<memory>');
@@ -2391,7 +2391,30 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('session-1', 'hello', 'Alice');
 
-    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'low' } });
+  });
+
+  it('sets empty providerOptions when llmEnableThinking is false with chat api', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedProviderOptions: unknown;
+
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown }) => {
+      capturedProviderOptions = options.providerOptions;
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: false, llmModel: 'openai/chat/gpt-4o', llmModelSelector: parseModelSelector('openai/chat/gpt-4o') },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hello', 'Alice');
+
+    expect(capturedProviderOptions).toEqual({});
   });
 
   it('does not set providerOptions when llmEnableThinking is true in normal mode', async () => {
@@ -2440,7 +2463,7 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('session-1', 'hi', 'Alice');
 
-    expect(summaryProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+    expect(summaryProviderOptions).toEqual({ openai: { reasoningEffort: 'low' } });
   });
 
   it('does not set providerOptions in summary when llmEnableThinking is true', async () => {

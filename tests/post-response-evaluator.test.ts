@@ -317,7 +317,7 @@ describe('evaluatePostResponse', () => {
       currentProfile: null,
       currentCoreMemory: '',
       timezone: 'UTC',
-      providerOptions: { openai: { reasoningEffort: 'none' } },
+      providerOptions: { openai: { reasoningEffort: 'low' } },
       generateTextFn: vi.fn(async (options: { providerOptions?: unknown }) => {
         capturedProviderOptions = options.providerOptions;
         return makeStructuredResult({
@@ -330,7 +330,7 @@ describe('evaluatePostResponse', () => {
       }) as unknown as typeof import('ai').generateText,
     });
 
-    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'low' } });
   });
 
   it('does not set providerOptions when not provided', async () => {
