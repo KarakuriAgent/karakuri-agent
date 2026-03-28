@@ -461,6 +461,72 @@ describe('karakuri-world tools', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('returns a not_logged_in response instead of throwing for 403 not_logged_in errors', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          error: 'not_logged_in',
+          message: 'Agent is not logged in.',
+        }),
+        {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    const result = await tools.karakuri_world_move!.execute!(
+      { target_node_id: '1-2' },
+      DEFAULT_OPTIONS,
+    );
+
+    expect(result).toEqual({
+      status: 'not_logged_in',
+      message: 'Agent is not logged in.',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws for non-not_logged_in 403 errors like forbidden', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          error: 'forbidden',
+          message: 'Access denied.',
+        }),
+        {
+          status: 403,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    let thrownError: unknown;
+    try {
+      await tools.karakuri_world_move!.execute!(
+        { target_node_id: '1-2' },
+        DEFAULT_OPTIONS,
+      );
+    } catch (error) {
+      thrownError = error;
+    }
+
+    expect(thrownError).toBeInstanceOf(KarakuriWorldApiError);
+    expect(thrownError).toMatchObject({
+      status: 403,
+      code: 'forbidden',
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('throws for non-busy 409 errors like target_unavailable', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(

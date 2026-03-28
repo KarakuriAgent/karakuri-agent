@@ -625,6 +625,14 @@ function isBusyError(error: unknown): error is KarakuriWorldApiError {
   );
 }
 
+function isNotLoggedInError(error: unknown): error is KarakuriWorldApiError {
+  return (
+    error instanceof KarakuriWorldApiError
+    && error.status === 403
+    && error.code === 'not_logged_in'
+  );
+}
+
 async function executeKarakuriWorldTool<TOperation extends KarakuriWorldOperation>(
   operation: TOperation,
   input: KarakuriWorldToolInput<TOperation>,
@@ -643,6 +651,18 @@ async function executeKarakuriWorldTool<TOperation extends KarakuriWorldOperatio
         status: 'busy',
         message: error.apiMessage,
         instruction: BUSY_INSTRUCTION,
+      };
+    }
+
+    if (isNotLoggedInError(error)) {
+      logger.warn('Agent is not logged in, returning informational response', {
+        operation,
+        status: error.status,
+        code: error.code,
+      });
+      return {
+        status: 'not_logged_in',
+        message: error.apiMessage,
       };
     }
 

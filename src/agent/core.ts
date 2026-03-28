@@ -244,6 +244,7 @@ export class KarakuriAgent implements IAgent {
     const skillContextScope = this.snsContextRegistry?.createScope();
     let result: Awaited<ReturnType<typeof this.generateTextFn>>;
     let assistantResponse = '';
+    let kwNotLoggedIn = false;
     try {
       const autoLoadedSkillContexts: SkillContextEntry[] = shouldAutoLoadSnsSkill && skillContextScope != null
         ? await Promise.all(autoLoadedSkills.map(async (skill) => {
@@ -419,16 +420,27 @@ export class KarakuriAgent implements IAgent {
           logger.debug('Tool result', { step: i, toolName: toolResult?.toolName, output: JSON.stringify(toolResult?.output) });
         }
       }
-      if (isKarakuriWorldMode) {
+      kwNotLoggedIn = isKarakuriWorldMode && hasKarakuriWorldNotLoggedIn(result);
+      if (isKarakuriWorldMode && !kwNotLoggedIn) {
         assertSingleKarakuriWorldAction(result);
       }
       logger.debug(`Response text:\n${result.text}`);
-      assistantResponse = isKarakuriWorldMode ? buildKarakuriWorldModeResponse(result) : result.text;
-      if (!ephemeral) {
-        await this.sessionManager.addMessages(
-          sessionId,
-          buildPersistedResponseMessages(result.response.messages, assistantResponse, isKarakuriWorldMode),
-        );
+      if (kwNotLoggedIn) {
+        logger.info('KarakuriWorld not_logged_in detected, suppressing response and skipping evaluation', { sessionId });
+        assistantResponse = '';
+        if (!ephemeral) {
+          await this.sessionManager.addMessages(sessionId, [
+            { role: 'assistant', content: 'OK' },
+          ]);
+        }
+      } else {
+        assistantResponse = isKarakuriWorldMode ? buildKarakuriWorldModeResponse(result) : result.text;
+        if (!ephemeral) {
+          await this.sessionManager.addMessages(
+            sessionId,
+            buildPersistedResponseMessages(result.response.messages, assistantResponse, isKarakuriWorldMode),
+          );
+        }
       }
       await skillContextScope?.commit();
     } catch (error) {
@@ -436,7 +448,7 @@ export class KarakuriAgent implements IAgent {
       throw error;
     }
 
-    if (isRealUser) {
+    if (!kwNotLoggedIn && isRealUser) {
       this.enqueuePostResponseEvaluation({
         userId,
         userName,
@@ -444,7 +456,7 @@ export class KarakuriAgent implements IAgent {
         assistantResponse,
         ...(isKarakuriWorldMode ? { skipUserStore: true } : {}),
       });
-    } else if (isSystemUser) {
+    } else if (!kwNotLoggedIn && isSystemUser) {
       this.enqueuePostResponseEvaluation({
         userId: 'system',
         userName,
@@ -622,9 +634,23 @@ function mergeBuiltinSkills(skills: SkillDefinition[], builtinSkills: SkillDefin
   return [...merged.values()];
 }
 
-function isToolResultBusy(output: unknown): boolean {
+function hasToolResultStatus(output: unknown, status: string): boolean {
   return typeof output === 'object' && output != null && 'status' in output
-    && (output as Record<string, unknown>).status === 'busy';
+    && (output as Record<string, unknown>).status === status;
+}
+
+function hasKarakuriWorldNotLoggedIn(result: Awaited<ReturnType<typeof generateText>>): boolean {
+  for (const step of result.steps) {
+    for (const toolResult of step.toolResults) {
+      if (
+        String(toolResult?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)
+        && hasToolResultStatus(toolResult?.output, 'not_logged_in')
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof generateText>>): string {
@@ -637,7 +663,7 @@ function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof genera
         continue;
       }
 
-      if (isToolResultBusy(toolResult?.output)) {
+      if (hasToolResultStatus(toolResult?.output, 'busy')) {
         logger.info('KarakuriWorld tool returned busy, suppressing comment for Discord reply', {
           toolName: toolResult?.toolName,
         });
