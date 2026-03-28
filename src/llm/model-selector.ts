@@ -22,6 +22,7 @@ export interface OpenAiModelProvider {
 export interface OpenAiProviderOptions {
   apiKey: string;
   baseURL?: string | undefined;
+  fetch?: typeof globalThis.fetch | undefined;
 }
 
 export function parseModelSelector(value: string): LlmModelSelector {
@@ -74,6 +75,7 @@ export function createConfiguredOpenAiModelFactory(options: OpenAiProviderOption
   return createOpenAiModelFactory(createOpenAI({
     apiKey: options.apiKey,
     ...(options.baseURL != null ? { baseURL: options.baseURL } : {}),
+    ...(options.fetch != null ? { fetch: options.fetch } : {}),
   }));
 }
 

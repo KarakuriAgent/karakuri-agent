@@ -62,6 +62,7 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
     state: createFileStateAdapter({
       dataDir: config.dataDir,
     }),
+    onLockConflict: 'force',
   });
 
   let gatewayAbortController: AbortController | null = null;

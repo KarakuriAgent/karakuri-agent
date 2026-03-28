@@ -1,4 +1,5 @@
 import { Output, generateText, type LanguageModel } from 'ai';
+import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { z } from 'zod';
 
 import type { IMemoryStore } from '../memory/types.js';
@@ -38,6 +39,7 @@ export interface EvaluatePostResponseOptions {
   timezone: string;
   now?: () => Date;
   generateTextFn?: typeof generateText;
+  providerOptions?: ProviderOptions | undefined;
   logger?: Logger | undefined;
 }
 
@@ -55,6 +57,7 @@ export async function evaluatePostResponse({
   timezone,
   now = () => new Date(),
   generateTextFn = generateText,
+  providerOptions,
   logger: customLogger = logger,
 }: EvaluatePostResponseOptions): Promise<void> {
   try {
@@ -91,6 +94,7 @@ export async function evaluatePostResponse({
         name: 'post_response_evaluation',
         description: 'Post-response evaluation with profileAction, profile, displayName, coreMemoryAppend, and diaryEntry fields.',
       }),
+      ...(providerOptions != null ? { providerOptions } : {}),
     });
 
     const evaluation = result.output as PostResponseEvaluation | undefined;

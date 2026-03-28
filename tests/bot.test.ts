@@ -84,6 +84,7 @@ const baseConfig: Config = {
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,
+  llmEnableThinking: true,
 };
 
 const agentStub: IAgent = {
@@ -766,13 +767,11 @@ describe('createBot', () => {
     await vi.runAllTimersAsync();
     await task;
 
+    // With 700ms debounce, rapid tool transitions (💭→🔍→💭) within 10ms intervals
+    // are coalesced — only the initial thinking and terminal done states are applied.
     expect(reactionEvents).toEqual([
       `add:thread-1:message-1:${STATUS_EMOJI.queued}`,
       `remove:thread-1:message-1:${STATUS_EMOJI.queued}`,
-      `add:thread-1:message-1:${STATUS_EMOJI.thinking}`,
-      `remove:thread-1:message-1:${STATUS_EMOJI.thinking}`,
-      `add:thread-1:message-1:${STATUS_EMOJI.web}`,
-      `remove:thread-1:message-1:${STATUS_EMOJI.web}`,
       `add:thread-1:message-1:${STATUS_EMOJI.thinking}`,
       `remove:thread-1:message-1:${STATUS_EMOJI.thinking}`,
       `add:thread-1:message-1:${STATUS_EMOJI.done}`,

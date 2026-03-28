@@ -461,6 +461,36 @@ describe('loadConfig', () => {
     })).toThrow('LLM_MODEL must not contain empty path segments');
   });
 
+  it('defaults llmEnableThinking to true when LLM_ENABLE_THINKING is not set', () => {
+    const config = loadConfig(validEnv);
+    expect(config.llmEnableThinking).toBe(true);
+  });
+
+  it('defaults llmEnableThinking to true when LLM_ENABLE_THINKING is empty', () => {
+    const config = loadConfig({ ...validEnv, LLM_ENABLE_THINKING: '   ' });
+    expect(config.llmEnableThinking).toBe(true);
+  });
+
+  it.each([
+    ['false', false],
+    ['0', false],
+    ['no', false],
+    ['true', true],
+    ['1', true],
+    ['yes', true],
+    ['TRUE', true],
+    ['FALSE', false],
+  ])('parses LLM_ENABLE_THINKING=%s as %s', (input, expected) => {
+    const config = loadConfig({ ...validEnv, LLM_ENABLE_THINKING: input });
+    expect(config.llmEnableThinking).toBe(expected);
+  });
+
+  it('throws for an invalid LLM_ENABLE_THINKING value', () => {
+    expect(() => loadConfig({ ...validEnv, LLM_ENABLE_THINKING: 'maybe' })).toThrow(
+      'Invalid LLM_ENABLE_THINKING value: "maybe"',
+    );
+  });
+
   it('throws for an invalid timezone', () => {
     expect(() => loadConfig({
       ...validEnv,

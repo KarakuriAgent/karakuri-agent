@@ -41,6 +41,7 @@ const configSchema = z.object({
   reportChannelId: z.string().trim().min(1).optional(),
   adminUserIds: z.string().optional(),
   karakuriWorldBotIds: z.string().optional(),
+  llmEnableThinking: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -82,6 +83,7 @@ export interface Config {
   reportChannelId?: string | undefined;
   adminUserIds?: string[] | undefined;
   karakuriWorldBotIds?: string[] | undefined;
+  llmEnableThinking: boolean;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -121,6 +123,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     reportChannelId: normalizeOptionalString(env.REPORT_CHANNEL_ID),
     adminUserIds: env.ADMIN_USER_IDS,
     karakuriWorldBotIds: env.KARAKURI_WORLD_BOT_IDS,
+    llmEnableThinking: env.LLM_ENABLE_THINKING,
   };
 
   try {
@@ -196,6 +199,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       karakuriWorldBotIds,
       ...(karakuriWorld != null ? { karakuriWorld } : {}),
       ...(sns != null ? { sns } : {}),
+      llmEnableThinking: parseBooleanEnv(parsed.llmEnableThinking, 'LLM_ENABLE_THINKING', true),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,
@@ -212,6 +216,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       hasAdminUsers: (config.adminUserIds?.length ?? 0) > 0,
       hasKarakuriWorldBots: (config.karakuriWorldBotIds?.length ?? 0) > 0,
       hasReportChannel: config.reportChannelId != null,
+      llmEnableThinking: config.llmEnableThinking,
     });
     return config;
   } catch (error) {
@@ -266,6 +271,14 @@ function normalizeBaseUrl(value: string | undefined, label = 'LLM_BASE_URL'): st
   }
 
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+function parseBooleanEnv(value: string | undefined, label: string, defaultValue: boolean): boolean {
+  if (value == null || value.trim().length === 0) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (['true', '1', 'yes'].includes(normalized)) return true;
+  if (['false', '0', 'no'].includes(normalized)) return false;
+  throw new Error(`Invalid ${label} value: "${value}" (expected true/false/1/0/yes/no)`);
 }
 
 function resolveEnvAliases(...values: Array<string | undefined>): string | undefined {

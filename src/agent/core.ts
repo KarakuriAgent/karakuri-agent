@@ -2,6 +2,7 @@ import { generateText, stepCountIs, type LanguageModel, type ModelMessage } from
 
 import type { Config } from '../config.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
+import { createNoThinkingFetch, NO_THINKING_PROVIDER_OPTIONS } from '../llm/no-thinking-fetch.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
@@ -98,6 +99,7 @@ export class KarakuriAgent implements IAgent {
   private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
+  private readonly noThinkingModelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly postResponseModelFactory: ((selector: LlmModelSelector) => LanguageModel) | undefined;
   private readonly keepRecentTurns: number;
   private readonly recentDiaryCount: number;
@@ -136,9 +138,17 @@ export class KarakuriAgent implements IAgent {
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
 
+    const noThinkingFetch = createNoThinkingFetch();
+
     this.modelFactory = modelFactory ?? createConfiguredOpenAiModelFactory({
       apiKey: config.llmApiKey,
       ...(config.llmBaseUrl != null ? { baseURL: config.llmBaseUrl } : {}),
+      ...(!config.llmEnableThinking ? { fetch: noThinkingFetch } : {}),
+    });
+    this.noThinkingModelFactory = modelFactory ?? createConfiguredOpenAiModelFactory({
+      apiKey: config.llmApiKey,
+      ...(config.llmBaseUrl != null ? { baseURL: config.llmBaseUrl } : {}),
+      fetch: noThinkingFetch,
     });
     this.postResponseModelFactory = config.postResponseLlmApiKey != null || config.postResponseLlmBaseUrl != null
       ? createConfiguredOpenAiModelFactory({
@@ -146,6 +156,7 @@ export class KarakuriAgent implements IAgent {
           ...((config.postResponseLlmBaseUrl ?? config.llmBaseUrl) != null
             ? { baseURL: config.postResponseLlmBaseUrl ?? config.llmBaseUrl }
             : {}),
+          ...(!config.llmEnableThinking ? { fetch: noThinkingFetch } : {}),
         })
       : undefined;
   }
@@ -373,13 +384,17 @@ export class KarakuriAgent implements IAgent {
           autoLoadedSkills,
           includeSystemOnly,
         });
+      const disableThinking = isKarakuriWorldMode || !this.config.llmEnableThinking;
+      const effectiveModelFactory = disableThinking ? this.noThinkingModelFactory : this.modelFactory;
+
       result = await this.generateTextFn({
-        model: this.modelFactory(this.config.llmModelSelector),
+        model: effectiveModelFactory(this.config.llmModelSelector),
         system: systemPrompt,
         messages: session.messages,
         tools,
         stopWhen: stepCountIs(isKarakuriWorldMode ? KW_MODE_MAX_STEPS : this.config.maxSteps),
         ...(isKarakuriWorldMode ? { toolChoice: 'required' as const } : {}),
+        ...(disableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
         ...(lifecycle != null
           ? {
               experimental_onStepStart: () => {
@@ -458,9 +473,12 @@ export class KarakuriAgent implements IAgent {
       .filter((section) => section.length > 0)
       .join('\n\n');
 
+    const thinkingDisabled = !this.config.llmEnableThinking;
+
     const result = await this.generateTextFn({
-      model: this.modelFactory(this.config.llmModelSelector),
+      model: (thinkingDisabled ? this.noThinkingModelFactory : this.modelFactory)(this.config.llmModelSelector),
       prompt,
+      ...(thinkingDisabled ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
     });
 
     const summary = result.text.trim();
@@ -502,6 +520,7 @@ export class KarakuriAgent implements IAgent {
           currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
+          ...(!this.config.llmEnableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
         });
       } catch (error) {
         logger.error('SNS user evaluation task failed', error, { userId });
@@ -550,6 +569,7 @@ export class KarakuriAgent implements IAgent {
           currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
+          ...(!this.config.llmEnableThinking ? { providerOptions: NO_THINKING_PROVIDER_OPTIONS } : {}),
         });
       } catch (error) {
         logger.warn('Post-response evaluation task failed', error, { userId });

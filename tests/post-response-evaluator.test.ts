@@ -303,6 +303,65 @@ describe('evaluatePostResponse', () => {
     expect(memoryStore.coreWrites).toEqual([]);
   });
 
+  it('passes providerOptions through to generateText when provided', async () => {
+    const memoryStore = new MemoryStoreStub();
+    let capturedProviderOptions: unknown;
+
+    await evaluatePostResponse({
+      model: {} as LanguageModel,
+      memoryStore,
+      userId: 'user-1',
+      userName: 'Alice',
+      userMessage: 'hi',
+      assistantResponse: 'hello',
+      currentProfile: null,
+      currentCoreMemory: '',
+      timezone: 'UTC',
+      providerOptions: { openai: { reasoningEffort: 'none' } },
+      generateTextFn: vi.fn(async (options: { providerOptions?: unknown }) => {
+        capturedProviderOptions = options.providerOptions;
+        return makeStructuredResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }) as unknown as typeof import('ai').generateText,
+    });
+
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+  });
+
+  it('does not set providerOptions when not provided', async () => {
+    const memoryStore = new MemoryStoreStub();
+    let generateTextCall: Record<string, unknown> = {};
+
+    await evaluatePostResponse({
+      model: {} as LanguageModel,
+      memoryStore,
+      userId: 'user-1',
+      userName: 'Alice',
+      userMessage: 'hi',
+      assistantResponse: 'hello',
+      currentProfile: null,
+      currentCoreMemory: '',
+      timezone: 'UTC',
+      generateTextFn: vi.fn(async (options: Record<string, unknown>) => {
+        generateTextCall = options;
+        return makeStructuredResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }) as unknown as typeof import('ai').generateText,
+    });
+
+    expect(generateTextCall).not.toHaveProperty('providerOptions');
+  });
+
   it('accepts realistically sized merged profiles in the schema', () => {
     expect(postResponseEvaluationSchema.safeParse({
       profileAction: 'update',

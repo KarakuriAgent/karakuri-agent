@@ -26,6 +26,7 @@ const baseConfig: Config = {
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,
+  llmEnableThinking: true,
 };
 
 class MemoryStoreStub implements IMemoryStore {
@@ -1338,7 +1339,9 @@ describe('KarakuriAgent', () => {
     let capturedToolChoice: unknown;
     let evaluationPrompt = '';
 
-    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; toolChoice?: unknown; output?: unknown; prompt?: string }) => {
+    let capturedProviderOptions: unknown;
+
+    const generateTextFn = vi.fn(async (options: { system?: string; tools?: Record<string, unknown>; toolChoice?: unknown; output?: unknown; prompt?: string; providerOptions?: unknown }) => {
       if (options.output != null) {
         evaluationPrompt = options.prompt ?? '';
         return makeStructuredEvaluationResult({
@@ -1352,6 +1355,7 @@ describe('KarakuriAgent', () => {
       capturedSystem = options.system ?? '';
       capturedTools = options.tools ?? {};
       capturedToolChoice = options.toolChoice;
+      capturedProviderOptions = options.providerOptions;
       return makeKwModeGenerateTextResult('周囲を確認します。');
     }) as unknown as typeof import('ai').generateText;
 
@@ -1390,6 +1394,7 @@ describe('KarakuriAgent', () => {
     expect(userStore.ensureCalls).toEqual([]);
     expect(Object.keys(capturedTools).sort()).toEqual([...EXPECTED_KW_TOOL_NAMES].sort());
     expect(capturedToolChoice).toBe('required');
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
     expect(capturedSystem).toContain('You are custom.');
     expect(capturedSystem).toContain('Be precise.');
     expect(capturedSystem).toContain('<memory>');
@@ -2302,6 +2307,104 @@ describe('KarakuriAgent', () => {
     await agent.handleMessage('session-1', 'hi', 'Alice');
 
     expect(seenSelectors).toEqual(['openai/chat/gpt-4o-mini']);
+  });
+
+  it('sets providerOptions when llmEnableThinking is false in normal mode', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedProviderOptions: unknown;
+
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown }) => {
+      capturedProviderOptions = options.providerOptions;
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: false },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hello', 'Alice');
+
+    expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+  });
+
+  it('does not set providerOptions when llmEnableThinking is true in normal mode', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let capturedProviderOptions: unknown;
+
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown }) => {
+      capturedProviderOptions = options.providerOptions;
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: true },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hello', 'Alice');
+
+    expect(capturedProviderOptions).toBeUndefined();
+  });
+
+  it('sets providerOptions in summary when llmEnableThinking is false', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    sessionManager.forceSummarization = true;
+
+    let summaryProviderOptions: unknown;
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown; system?: string }) => {
+      if (options.system == null) {
+        summaryProviderOptions = options.providerOptions;
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: false },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(summaryProviderOptions).toEqual({ openai: { reasoningEffort: 'none' } });
+  });
+
+  it('does not set providerOptions in summary when llmEnableThinking is true', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    sessionManager.forceSummarization = true;
+
+    let summaryProviderOptions: unknown;
+    const generateTextFn = vi.fn(async (options: { providerOptions?: unknown; system?: string }) => {
+      if (options.system == null) {
+        summaryProviderOptions = options.providerOptions;
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: { ...baseConfig, llmEnableThinking: true },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Alice');
+
+    expect(summaryProviderOptions).toBeUndefined();
   });
 
   it('routes OpenAI selectors to the matching provider surface', () => {
