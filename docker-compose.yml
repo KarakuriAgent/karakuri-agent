@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       network: host
-    container_name: karakuri-agent
+    container_name: ${CONTAINER_NAME:-karakuri-agent}
     restart: unless-stopped
     user: "${UID:?Set UID in .env}:${GID:?Set GID in .env}"
     env_file:
