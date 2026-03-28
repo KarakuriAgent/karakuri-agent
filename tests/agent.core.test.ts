@@ -320,7 +320,7 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
   } as const;
 }
 
-function makeBusyKwModeGenerateTextResult(comment: string) {
+function makeKwModeGenerateTextResultWithOutput(comment: string, output: Record<string, unknown>) {
   const toolCallId = 'kw-tool-1';
   return {
     text: 'ignored kw mode text',
@@ -331,7 +331,7 @@ function makeBusyKwModeGenerateTextResult(comment: string) {
       }],
       toolResults: [{
         toolName: 'karakuri_world_move',
-        output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.' },
+        output,
       }],
     }],
     response: {
@@ -357,13 +357,28 @@ function makeBusyKwModeGenerateTextResult(comment: string) {
               type: 'tool-result',
               toolCallId,
               toolName: 'karakuri_world_move',
-              output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.' },
+              output,
             },
           ],
         },
       ],
     },
   } as const;
+}
+
+function makeBusyKwModeGenerateTextResult(comment: string) {
+  return makeKwModeGenerateTextResultWithOutput(comment, {
+    status: 'busy',
+    message: 'Agent is not idle',
+    instruction: 'Wait for next notification.',
+  });
+}
+
+function makeNotLoggedInKwModeGenerateTextResult(comment: string) {
+  return makeKwModeGenerateTextResultWithOutput(comment, {
+    status: 'not_logged_in',
+    message: 'Agent is not logged in.',
+  });
 }
 
 function makeInvalidZeroActionKwModeGenerateTextResult() {
@@ -1495,6 +1510,53 @@ describe('KarakuriAgent', () => {
 
     expect(sessionManager.session.messages.length).toBeGreaterThanOrEqual(2);
     expect(evaluationPrompt).toContain('Latest assistant response:\n');
+  });
+
+  it('returns an empty string and persists only OK when a karakuri-world tool result is not_logged_in', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    let evaluationCalled = false;
+
+    const generateTextFn = vi.fn(async (options: { output?: unknown; prompt?: string }) => {
+      if (options.output != null) {
+        evaluationCalled = true;
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      return makeNotLoggedInKwModeGenerateTextResult('門へ向かいます。');
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'からくりワールドアプリ: ログアウトしました。', 'KWBot', { userId: 'kw-bot-1' })).resolves.toBe('');
+    await agent.drainPendingEvaluations();
+
+    // セッションにはユーザーメッセージ + assistant OK だけ残る（tool-call/tool-result は含まない）
+    expect(sessionManager.session.messages).toHaveLength(2);
+    expect(sessionManager.session.messages[1]).toEqual({
+      role: 'assistant',
+      content: 'OK',
+    });
+    // not_logged_in 時は post-response evaluation をスキップ
+    expect(evaluationCalled).toBe(false);
   });
 
   it('rejects multiple karakuri-world actions in a single notification', async () => {
