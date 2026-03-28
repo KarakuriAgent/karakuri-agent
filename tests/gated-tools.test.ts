@@ -29,7 +29,7 @@ describe('buildGatedToolSets', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
-        allowedTools: ['karakuri_world_get_perception', 'karakuri_world_move'],
+        allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
       }),
     ];
 
@@ -65,7 +65,7 @@ describe('buildGatedToolSets', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
-        allowedTools: ['karakuri_world_get_perception'],
+        allowedTools: ['karakuri_world_get_map'],
       }),
     ];
 
@@ -78,7 +78,7 @@ describe('buildGatedToolSets', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
-        allowedTools: ['karakuri_world_get_perception'],
+        allowedTools: ['karakuri_world_get_map'],
       }),
       makeSkill({ name: 'plain-skill' }),
       makeSkill({
@@ -127,7 +127,7 @@ describe('filterSkillsToAvailableTools', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
-        allowedTools: ['karakuri_world_get_perception', 'karakuri_world_move'],
+        allowedTools: ['karakuri_world_get_map', 'karakuri_world_move'],
       }),
     ];
 
@@ -152,7 +152,7 @@ describe('filterSkillsToAvailableTools', () => {
     const skills = [
       makeSkill({
         name: 'karakuri-world',
-        allowedTools: ['karakuri_world_get_perception'],
+        allowedTools: ['karakuri_world_get_map'],
       }),
     ];
 
@@ -179,7 +179,7 @@ describe('filterSkillsToAvailableTools', () => {
       makeSkill({ name: 'plain-skill' }),
       makeSkill({
         name: 'karakuri-world',
-        allowedTools: ['karakuri_world_get_perception'],
+        allowedTools: ['karakuri_world_get_map'],
       }),
       makeSkill({
         name: 'unavailable-skill',

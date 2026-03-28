@@ -240,18 +240,17 @@ function makeGenerateTextResult(text: string, messages: ModelMessage[]) {
 
 function makeKwModeGenerateTextResult(comment?: string) {
   const toolCallId = 'kw-tool-1';
+  const toolInput = comment == null ? {} : { comment };
   return {
     text: 'ignored kw mode text',
     steps: [{
       toolCalls: [{
-        toolName: 'karakuri_world_get_perception',
-        input: { comment: comment ?? '周囲を確認します。' },
+        toolName: 'karakuri_world_get_map',
+        input: toolInput,
       }],
       toolResults: [{
-        toolName: 'karakuri_world_get_perception',
-        output: comment == null
-          ? { current_node: { node_id: '1-1', type: 'plain' } }
-          : { current_node: { node_id: '1-1', type: 'plain' }, comment },
+        toolName: 'karakuri_world_get_map',
+        output: { ok: true, message: 'Map request accepted.' },
       }],
     }],
     response: {
@@ -265,8 +264,8 @@ function makeKwModeGenerateTextResult(comment?: string) {
             {
               type: 'tool-call',
               toolCallId,
-              toolName: 'karakuri_world_get_perception',
-              input: { comment: comment ?? '周囲を確認します。' },
+              toolName: 'karakuri_world_get_map',
+              input: toolInput,
             },
           ],
         },
@@ -276,10 +275,8 @@ function makeKwModeGenerateTextResult(comment?: string) {
             {
               type: 'tool-result',
               toolCallId,
-              toolName: 'karakuri_world_get_perception',
-              output: comment == null
-                ? { current_node: { node_id: '1-1', type: 'plain' } }
-                : { current_node: { node_id: '1-1', type: 'plain' }, comment },
+              toolName: 'karakuri_world_get_map',
+              output: { ok: true, message: 'Map request accepted.' },
             },
           ],
         },
@@ -294,7 +291,7 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
     steps: [{
       toolCalls: [
         {
-          toolName: 'karakuri_world_get_perception',
+          toolName: 'karakuri_world_get_map',
           input: { comment: '周囲を確認します。' },
         },
         {
@@ -304,12 +301,12 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
       ],
       toolResults: [
         {
-          toolName: 'karakuri_world_get_perception',
-          output: { current_node: { node_id: '1-1', type: 'plain' }, comment: '周囲を確認します。' },
+          toolName: 'karakuri_world_get_map',
+          output: { ok: true, message: 'Map request accepted.' },
         },
         {
           toolName: 'karakuri_world_move',
-          output: { from_node_id: '1-1', to_node_id: '1-2', arrives_at: 42, comment: '門へ向かいます。' },
+          output: { from_node_id: '1-1', to_node_id: '1-2', arrives_at: 42 },
         },
       ],
     }],
@@ -333,7 +330,7 @@ function makeBusyKwModeGenerateTextResult(comment: string) {
       }],
       toolResults: [{
         toolName: 'karakuri_world_move',
-        output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.', comment },
+        output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.' },
       }],
     }],
     response: {
@@ -359,7 +356,7 @@ function makeBusyKwModeGenerateTextResult(comment: string) {
               type: 'tool-result',
               toolCallId,
               toolName: 'karakuri_world_move',
-              output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.', comment },
+              output: { status: 'busy', message: 'Agent is not idle', instruction: 'Wait for next notification.' },
             },
           ],
         },
@@ -418,8 +415,6 @@ function createSchedulerStore(): ISchedulerStore {
 }
 
 const EXPECTED_KW_TOOL_NAMES = [
-  'karakuri_world_get_perception',
-  'karakuri_world_get_available_actions',
   'karakuri_world_get_map',
   'karakuri_world_get_world_agents',
   'karakuri_world_move',
@@ -429,6 +424,7 @@ const EXPECTED_KW_TOOL_NAMES = [
   'karakuri_world_conversation_accept',
   'karakuri_world_conversation_reject',
   'karakuri_world_conversation_speak',
+  'karakuri_world_end_conversation',
   'karakuri_world_server_event_select',
 ] as const;
 
@@ -1409,7 +1405,7 @@ describe('KarakuriAgent', () => {
         {
           type: 'tool-call',
           toolCallId: 'kw-tool-1',
-          toolName: 'karakuri_world_get_perception',
+          toolName: 'karakuri_world_get_map',
           input: { comment: '周囲を確認します。' },
         },
         { type: 'text', text: '周囲を確認します。' },
@@ -1421,8 +1417,8 @@ describe('KarakuriAgent', () => {
         {
           type: 'tool-result',
           toolCallId: 'kw-tool-1',
-          toolName: 'karakuri_world_get_perception',
-          output: { current_node: { node_id: '1-1', type: 'plain' }, comment: '周囲を確認します。' },
+          toolName: 'karakuri_world_get_map',
+          output: { ok: true, message: 'Map request accepted.' },
         },
       ],
     });
@@ -1431,7 +1427,7 @@ describe('KarakuriAgent', () => {
     expect(userStore.displayNameUpdates).toEqual([]);
   });
 
-  it('falls back to a default completion reply when a karakuri-world tool result has no comment', async () => {
+  it('falls back to a default completion reply when a karakuri-world tool call input has no comment', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
 
@@ -1582,7 +1578,7 @@ describe('KarakuriAgent', () => {
 
     expect(capturedToolChoice).toBeUndefined();
     expect(capturedTools).toHaveProperty('recallDiary');
-    expect(capturedTools).not.toHaveProperty('karakuri_world_get_perception');
+    expect(capturedTools).not.toHaveProperty('karakuri_world_get_map');
     expect(capturedSystem).not.toContain('KarakuriWorld mode is active.');
     expect(capturedSystem).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
   });
