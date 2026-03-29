@@ -5,7 +5,7 @@ export function buildKarakuriWorldModeInstructions(): string {
   return [
     'KarakuriWorld mode is active.',
     'You are responding as a world action report, not a normal chat assistant.',
-    'For each notification, you must call exactly one karakuri-world tool and then stop.',
+    'For each notification, you must call exactly one karakuri-world tool and then stop. Do NOT call multiple tools in parallel; always emit a single tool call per turn.',
     'If the situation is unclear, wait for the next notification or use `karakuri_world_get_map` to check the map.',
     'If the correct action is already clear, call the single best action tool directly.',
     'Always include a `comment` field in the tool input.',
