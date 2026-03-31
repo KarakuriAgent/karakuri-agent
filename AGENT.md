@@ -46,26 +46,27 @@ Discord を主導線にした TypeScript 製の AI エージェント。Vercel A
 
 ## アーキテクチャ
 
-### レイヤー構成
+### レイヤー構成（`src/` 配下）
 
 ```text
-index.ts                — 設定ロード → 各ストア/ランナー初期化 → Bot/Scheduler 起動 → HTTP/healthz 提供 → graceful shutdown
-bot.ts                  — Chat SDK + Discord adapter 統合、Webhook/Gateway 受付、スレッド単位の排他制御、応答投稿
-agent/core.ts           — generateText による応答生成、セッション要約判定、ツール構築、system/user turn 制御
-agent/prompt*.ts        — システムプロンプト構築、AGENT.md / RULES.md 読み込み、trusted / untrusted 文脈の分離
-agent/tools/            — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_*, karakuri_world_*）
-session/                — JSON ファイルベースのセッション保存。ハッシュ化ファイル名 + メモリキャッシュを使用
-memory/                 — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore
-skill/                  — `data/skills/` と `data/system-skills/` を監視する frontmatter 付き SKILL.md ストア
-scheduler/              — HEARTBEAT.md 読み込み、CRON.md frontmatter 解釈、Heartbeat/Cron 実行、scheduler store
-sns/                    — SNS provider、活動/予約アクションの SQLite ストア、SNS skill dynamic context、スケジュール実行
-user/                   — SqliteUserStore と PostResponseEvaluator によるユーザープロファイル永続化・更新
-state/                  — Chat SDK の state adapter を `data/state/chat-state.json` に永続化
-status-reaction.ts      — Discord 上の進行状態リアクション制御
-karakuri-world/         — Karakuri World 専用のビルトイン指示
-llm/                    — OpenAI 互換 API / Chat Completions 切り替え、no-thinking fetch 調整
-shutdown.ts             — サーバー、scheduler、bot、各種ストアを段階的に停止する graceful shutdown 補助
-config.ts               — Zod ベースの環境変数バリデーションと runtime config 構築
+src/index.ts                  — 設定ロード → 各ストア/ランナー初期化 → Bot/Scheduler 起動 → HTTP/healthz 提供 → graceful shutdown
+src/bot.ts                    — Chat SDK + Discord adapter 統合、Webhook/Gateway 受付、スレッド単位の排他制御、応答投稿
+src/agent/core.ts             — generateText による応答生成、セッション要約判定、ツール構築、system/user turn 制御
+src/agent/prompt.ts           — システムプロンプト構築、AGENT.md / RULES.md 読み込み
+src/agent/prompt-context.ts   — trusted / untrusted 文脈の分離などプロンプト用コンテキスト構築
+src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_*, karakuri_world_*）
+src/session/                  — JSON ファイルベースのセッション保存。ハッシュ化ファイル名 + メモリキャッシュを使用
+src/memory/                   — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore
+src/skill/                    — `data/skills/` と `data/system-skills/` を監視する frontmatter 付き SKILL.md ストア
+src/scheduler/                — HEARTBEAT.md 読み込み、CRON.md frontmatter 解釈、Heartbeat/Cron 実行、scheduler store
+src/sns/                      — SNS provider、活動/予約アクションの SQLite ストア、SNS skill dynamic context、スケジュール実行
+src/user/                     — SqliteUserStore と PostResponseEvaluator によるユーザープロファイル永続化・更新
+src/state/                    — Chat SDK の state adapter を `data/state/chat-state.json` に永続化
+src/status-reaction.ts        — Discord 上の進行状態リアクション制御
+src/karakuri-world/           — Karakuri World 専用のビルトイン指示
+src/llm/                      — OpenAI 互換 API / Chat Completions 切り替え、no-thinking fetch 調整
+src/shutdown.ts               — サーバー、scheduler、bot、各種ストアを段階的に停止する graceful shutdown 補助
+src/config.ts                 — Zod ベースの環境変数バリデーションと runtime config 構築
 ```
 
 ### 主要な設計パターン
@@ -100,19 +101,19 @@ config.ts               — Zod ベースの環境変数バリデーションと
 
 `data/` は `.gitignore` 対象。通常は `data.example/` をコピーして使う。主な runtime artifact は以下。
 
-- `AGENT.md` — エージェント基本指示
-- `RULES.md` — 追加ルール
-- `HEARTBEAT.md` — heartbeat 用 system 指示
-- `skills/*/SKILL.md` — ユーザー向けスキル（frontmatter 必須）
-- `system-skills/*/SKILL.md` — system 用スキル（frontmatter 必須）
-- `cron/*/CRON.md` — cron ジョブ定義（frontmatter 必須）
-- `memory/core/memory.md` — コアメモリ
-- `memory/diary/*.md` — 旧形式の日記。起動時に `diary.db` へ一度だけ import されうる
-- `sessions/{hash}.json` — セッションファイル
-- `state/chat-state.json` — Chat SDK の永続 state
-- `diary.db` — 日記ストア
-- `users.db` — ユーザープロファイルストア
-- `sns-activity.db` — SNS 活動履歴 / 通知予約 / 予約アクションストア
+- `data/AGENT.md` — エージェント基本指示
+- `data/RULES.md` — 追加ルール
+- `data/HEARTBEAT.md` — heartbeat 用 system 指示
+- `data/skills/*/SKILL.md` — ユーザー向けスキル（frontmatter 必須）
+- `data/system-skills/*/SKILL.md` — system 用スキル（frontmatter 必須）
+- `data/cron/*/CRON.md` — cron ジョブ定義（frontmatter 必須）
+- `data/memory/core/memory.md` — コアメモリ
+- `data/memory/diary/*.md` — 旧形式の日記。起動時に `diary.db` へ一度だけ import されうる
+- `data/sessions/{hash}.json` — セッションファイル
+- `data/state/chat-state.json` — Chat SDK の永続 state
+- `data/diary.db` — 日記ストア
+- `data/users.db` — ユーザープロファイルストア
+- `data/sns-activity.db` — SNS 活動履歴 / 通知予約 / 予約アクションストア
 
 ## セキュリティ
 
