@@ -273,7 +273,10 @@ export class KarakuriAgent implements IAgent {
       const runtimeSkillStore = builtinSkills.length > 0 && visibleSkills.length > 0
         ? createStaticSkillStore(visibleSkills)
         : undefined;
-      const combinedExtraSystemPrompt = [options?.extraSystemPrompt, isKarakuriWorldMode
+      const snsHeartbeatReminder = hasBuiltinHeartbeatSnsSkill
+        ? 'SNSツールが有効です。`<skill-context>` 内の新着通知がある場合、通知を無視せず必ず sns_post / sns_like / sns_repost のいずれかを実行してください。日記にネタがあれば sns_post で新規投稿も行ってください。通知がある場合に HEARTBEAT_OK のみを返さないでください。'
+        : undefined;
+      const combinedExtraSystemPrompt = [options?.extraSystemPrompt, snsHeartbeatReminder, isKarakuriWorldMode
         ? buildKarakuriWorldModeInstructions()
         : undefined]
         .filter((value): value is string => value != null && value.trim().length > 0)
