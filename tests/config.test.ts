@@ -338,7 +338,7 @@ describe('loadConfig', () => {
     })).toThrow('KARAKURI_WORLD_API_BASE_URL must be a valid URL');
   });
 
-  it('loads SNS settings only when all three env vars are set', () => {
+  it('loads Mastodon SNS settings when required env vars are set', () => {
     const config = loadConfig({
       ...validEnv,
       SNS_PROVIDER: 'mastodon',
@@ -357,18 +357,20 @@ describe('loadConfig', () => {
     expect(loadConfig(validEnv).sns).toBeUndefined();
   });
 
-  it('throws when SNS configuration is only partially set', () => {
+  it('throws when Mastodon SNS configuration is partially set', () => {
     expect(() => loadConfig({
       ...validEnv,
       SNS_PROVIDER: 'mastodon',
       SNS_INSTANCE_URL: 'https://social.example',
-    })).toThrow('Partial SNS configuration');
+    })).toThrow('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER is configured.');
+  });
 
-    expect(() => loadConfig({
+  it('ignores leftover SNS env vars when SNS_PROVIDER is absent', () => {
+    expect(loadConfig({
       ...validEnv,
       SNS_INSTANCE_URL: 'https://social.example',
       SNS_ACCESS_TOKEN: 'sns-token',
-    })).toThrow('Partial SNS configuration');
+    }).sns).toBeUndefined();
   });
 
   it('rejects invalid SNS_INSTANCE_URL with the correct label', () => {
@@ -380,13 +382,29 @@ describe('loadConfig', () => {
     })).toThrow('SNS_INSTANCE_URL must be a valid URL');
   });
 
-  it('rejects invalid SNS_PROVIDER values', () => {
-    expect(() => loadConfig({
+  it('loads X SNS settings without instanceUrl', () => {
+    const config = loadConfig({
       ...validEnv,
       SNS_PROVIDER: 'x',
-      SNS_INSTANCE_URL: 'https://social.example',
       SNS_ACCESS_TOKEN: 'sns-token',
-    })).toThrow(/Invalid configuration: .*mastodon/i);
+      SNS_CLIENT_ID: 'client-id',
+      SNS_REFRESH_TOKEN: 'refresh-token',
+    });
+
+    expect(config.sns).toEqual({
+      provider: 'x',
+      accessToken: 'sns-token',
+      clientId: 'client-id',
+      refreshToken: 'refresh-token',
+    });
+  });
+
+  it('requires SNS_INSTANCE_URL for mastodon', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'mastodon',
+      SNS_ACCESS_TOKEN: 'sns-token',
+    })).toThrow('Partial SNS configuration: SNS_INSTANCE_URL must be set when SNS_PROVIDER=mastodon.');
   });
 
   it('throws when a required field is missing', () => {

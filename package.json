@@ -21,6 +21,7 @@
     "@ai-sdk/openai": "3.0.41",
     "@chat-adapter/discord": "4.20.2",
     "@mozilla/readability": "0.6.0",
+    "@xdevplatform/xdk": "0.5.0",
     "ai": "6.0.116",
     "better-sqlite3": "^11.10.0",
     "chat": "4.20.2",

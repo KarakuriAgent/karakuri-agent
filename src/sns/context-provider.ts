@@ -2,6 +2,7 @@ import type { SkillContextProvider, SkillContextResult } from '../skill/context-
 import type {
   ISnsActivityStore,
   ISnsScheduleStore,
+  NotificationFetchResult,
   ScheduledAction,
   SnsActivity,
   SnsNotification,
@@ -55,8 +56,8 @@ export class SnsSkillContextProvider implements SkillContextProvider {
       let notificationReservationToken: string | undefined;
 
       if (notificationsResult.status === 'fulfilled') {
-        const notifications = notificationsResult.value;
-        latestNotificationId = notifications[0]?.id;
+        const { notifications, complete } = notificationsResult.value;
+        latestNotificationId = complete ? notifications[0]?.id : undefined;
         if (
           latestNotificationId != null
           && this.options.activityStore.reserveLastNotificationId != null
@@ -136,26 +137,36 @@ export class SnsSkillContextProvider implements SkillContextProvider {
     });
   }
 
-  private async loadNotifications(sinceId: string | null): Promise<SnsNotification[]> {
-    const notifications: SnsNotification[] = [];
+  private async loadNotifications(sinceId: string | null): Promise<NotificationFetchResult> {
+    const result: NotificationFetchResult = {
+      notifications: [],
+      complete: true,
+    };
     let nextMaxId: string | undefined;
     let pageCount = 0;
 
-    while (notifications.length < this.notificationLimit && pageCount < MAX_CONTEXT_NOTIFICATION_PAGES) {
+    while (result.notifications.length < this.notificationLimit && pageCount < MAX_CONTEXT_NOTIFICATION_PAGES) {
       pageCount++;
-      const remainingLimit = this.notificationLimit - notifications.length;
-      const page = await this.options.snsProvider.getNotifications({
+      const remainingLimit = this.notificationLimit - result.notifications.length;
+      const pageResult = await this.options.snsProvider.getNotifications({
         sinceId: sinceId ?? undefined,
         maxId: nextMaxId,
         limit: remainingLimit,
         types: ['mention', 'reply'],
       });
+      const page = pageResult.notifications;
+      if (!pageResult.complete) {
+        result.complete = false;
+      }
       if (page.length === 0) {
         break;
       }
 
-      notifications.push(...page.slice(0, remainingLimit));
-      if (page.length < remainingLimit || notifications.length >= this.notificationLimit) {
+      result.notifications.push(...page.slice(0, remainingLimit));
+      if (!pageResult.complete) {
+        break;
+      }
+      if (page.length < remainingLimit || result.notifications.length >= this.notificationLimit) {
         break;
       }
 
@@ -166,7 +177,11 @@ export class SnsSkillContextProvider implements SkillContextProvider {
       nextMaxId = oldestNotificationId;
     }
 
-    return notifications;
+    if (pageCount >= MAX_CONTEXT_NOTIFICATION_PAGES && result.notifications.length < this.notificationLimit) {
+      result.complete = false;
+    }
+
+    return result;
   }
 }
 

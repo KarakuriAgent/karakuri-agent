@@ -23,6 +23,7 @@ const logger = createLogger('AgentTools');
 
 export interface CreateAgentToolsOptions {
   memoryStore: IMemoryStore;
+  dataDir?: string | undefined;
   braveApiKey?: string | undefined;
   sns?: SnsCredentials | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
@@ -45,6 +46,7 @@ export interface CreateAgentToolsOptions {
 
 export function createAgentTools({
   memoryStore,
+  dataDir,
   braveApiKey,
   sns,
   snsActivityStore,
@@ -113,6 +115,7 @@ export function createAgentTools({
     ...autoLoadedSkills,
   ], {
     sns,
+    dataDir,
     snsActivityStore,
     snsScheduleStore,
     userStore,

@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const snsReportError = messageSink != null && config.reportChannelId != null
     ? (message: string) => { void messageSink.postMessage(config.reportChannelId!, message).catch((err) => { logger.error('Failed to report SNS context error', err); }); }
     : undefined;
-  const snsProvider = config.sns != null ? createSnsProvider(config.sns) : undefined;
+  const snsProvider = config.sns != null ? createSnsProvider({ ...config.sns, dataDir: config.dataDir }) : undefined;
   const snsContextRegistry = config.sns != null && snsActivityStore != null && snsProvider != null
     ? (() => {
         const registry = new SkillContextRegistry();

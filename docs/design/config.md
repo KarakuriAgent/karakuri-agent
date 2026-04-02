@@ -23,9 +23,15 @@
 | `BRAVE_API_KEY` |  | - | Brave Search API キー（設定時のみ `webSearch` を有効化） |
 | `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（`KARAKURI_WORLD_API_KEY` と両方あるときのみ、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーへ KW モードを有効化） |
 | `KARAKURI_WORLD_API_KEY` |  | - | karakuri-world API の Bearer token |
-| `SNS_PROVIDER` |  | - | SNS provider 種別。現状は `mastodon` のみ |
-| `SNS_INSTANCE_URL` |  | - | Mastodon instance の Base URL（`SNS_PROVIDER` / `SNS_ACCESS_TOKEN` と 3 つそろったときのみ `sns_*` skill-gated tool を有効化。標準添付 skill は system 専用） |
-| `SNS_ACCESS_TOKEN` |  | - | Mastodon API 用の access token |
+| `SNS_PROVIDER` |  | - | SNS provider 種別。`mastodon` / `x` |
+| `SNS_INSTANCE_URL` |  | - | Mastodon instance の Base URL（`SNS_PROVIDER=mastodon` のとき必須。標準添付 skill は system 専用） |
+| `SNS_ACCESS_TOKEN` |  | - | SNS API 用の access token（X では必須、Mastodon でも使用） |
+| `SNS_CLIENT_ID` |  | - | X OAuth 2.0 client id |
+| `SNS_CLIENT_SECRET` |  | - | X OAuth 2.0 client secret（任意） |
+| `SNS_REFRESH_TOKEN` |  | - | X OAuth 2.0 refresh token（任意、rotation 後は `DATA_DIR/sns-token-state.json` に永続化） |
+| `SNS_API_KEY` |  | - | X OAuth 1.0a / consumer key（任意） |
+| `SNS_API_SECRET` |  | - | X OAuth 1.0a / consumer secret（任意） |
+| `SNS_ACCESS_TOKEN_SECRET` |  | - | X OAuth 1.0a access token secret（任意） |
 | `DATA_DIR` |  | `./data` | memory / session / user / bot state ファイルの保存ディレクトリ |
 | `TIMEZONE` |  | `Asia/Tokyo` | diary 日付の基準タイムゾーン |
 | `MAX_STEPS` |  | `10` | ツールループの最大ステップ数 |
@@ -69,13 +75,20 @@
 ## 設定オブジェクト
 
 ```typescript
-type SnsProviderType = 'mastodon';
+type SnsProviderType = 'mastodon' | 'x';
 
-interface SnsCredentials {
-  provider: SnsProviderType;
-  instanceUrl: string;
-  accessToken: string;
-}
+type SnsCredentials =
+  | { provider: 'mastodon'; instanceUrl: string; accessToken: string }
+  | {
+      provider: 'x';
+      accessToken: string;
+      clientId?: string | undefined;
+      clientSecret?: string | undefined;
+      refreshToken?: string | undefined;
+      apiKey?: string | undefined;
+      apiSecret?: string | undefined;
+      accessTokenSecret?: string | undefined;
+    };
 
 interface Config {
   discordApplicationId: string;
@@ -123,7 +136,7 @@ interface Config {
 `postMessageChannelIds` は `ALLOWED_CHANNEL_IDS` 由来の「送信可能チャンネル」のみを保持し、
 `allowedChannelIds` は `REPORT_CHANNEL_ID` をマージした bot 全体の許可チャンネル一覧を保持する。
 `karakuriWorld` は `KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` が両方そろったときだけ含まれる。
-`sns` は `SNS_PROVIDER` / `SNS_INSTANCE_URL` / `SNS_ACCESS_TOKEN` がすべてそろったときだけ含まれる。
+`sns` は `SNS_PROVIDER` 設定時のみ検討される。`mastodon` では `SNS_INSTANCE_URL` + `SNS_ACCESS_TOKEN`、`x` では `SNS_ACCESS_TOKEN` が必須で、その他の X 認証情報は任意で含まれる。既存の Mastodon 環境も `SNS_PROVIDER=mastodon` を追加しない限り SNS は無効として扱われる。
 
 ## `loadConfig()` の動作
 
@@ -134,7 +147,8 @@ function loadConfig(): Config {
   // 任意項目はデフォルト値を使用
   // LLM selector を parse して canonical 形式へ正規化する
   // post-response evaluator 用 selector / endpoint も同様に解決する
-  // KARAKURI_WORLD_* は 2 変数、SNS_* は 3 変数の部分設定を fail-fast で拒否する
+  // KARAKURI_WORLD_* は 2 変数の部分設定を fail-fast で拒否する
+  // SNS_* は SNS_PROVIDER がある場合だけ provider ごとの必須項目を検証する
 }
 ```
 
@@ -142,7 +156,7 @@ function loadConfig(): Config {
 
 - `.env` は `.gitignore` に含め、リポジトリにコミットしない
 - `DISCORD_BOT_TOKEN` / `LLM_API_KEY` などのシークレットをログに出力しない
-- `SNS_INSTANCE_URL` も `LLM_BASE_URL` と同様に `http` / `https` のみ許可し、credentials / query / fragment を含む URL を拒否する
+- `SNS_INSTANCE_URL` は `SNS_PROVIDER=mastodon` のときだけ `LLM_BASE_URL` と同様に `http` / `https` のみ許可し、credentials / query / fragment を含む URL を拒否する
 
 ## 互換用エイリアス
 

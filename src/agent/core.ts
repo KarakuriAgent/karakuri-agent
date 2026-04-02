@@ -223,6 +223,7 @@ export class KarakuriAgent implements IAgent {
       ? []
       : filterSkillsToAvailableTools(mergedSkills, {
         sns: this.config.sns,
+        dataDir: this.config.dataDir,
         snsActivityStore: this.snsActivityStore,
         snsScheduleStore: this.snsScheduleStore,
         userStore: this.userStore,
@@ -358,6 +359,7 @@ export class KarakuriAgent implements IAgent {
         ? createKarakuriWorldTools(this.config.karakuriWorld)
         : createAgentTools({
           memoryStore: this.memoryStore,
+          dataDir: this.config.dataDir,
           braveApiKey: this.config.braveApiKey,
           sns: this.config.sns,
           postMessageEnabled: hasPostMessage,

@@ -12,6 +12,7 @@ const logger = createLogger('GatedTools');
 
 export interface AvailableGatedToolSources {
   sns?: SnsCredentials | undefined;
+  dataDir?: string | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
   snsScheduleStore?: ISnsScheduleStore | undefined;
   userStore?: IUserStore | undefined;
@@ -81,7 +82,8 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
 
   if (availableToolSources.sns != null) {
     Object.assign(allGatedTools, createSnsTools({
-      ...availableToolSources.sns,
+      sns: availableToolSources.sns,
+      ...(availableToolSources.dataDir != null ? { dataDir: availableToolSources.dataDir } : {}),
       ...(availableToolSources.snsActivityStore != null ? { activityStore: availableToolSources.snsActivityStore } : {}),
       ...(availableToolSources.snsScheduleStore != null ? { scheduleStore: availableToolSources.snsScheduleStore } : {}),
       ...(availableToolSources.userStore != null ? { userStore: availableToolSources.userStore } : {}),

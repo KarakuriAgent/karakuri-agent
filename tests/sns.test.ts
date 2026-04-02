@@ -17,6 +17,8 @@ const SNS_CREDS = {
   accessToken: 'secret-token',
 };
 
+const SNS_OPTIONS = { sns: SNS_CREDS };
+
 const EXPECTED_TOOL_NAMES = [
   'sns_post',
   'sns_get_post',
@@ -92,7 +94,7 @@ describe('sns tools', () => {
   });
 
   it('exports only the six supported SNS tools', () => {
-    const tools = createSnsTools({ ...SNS_CREDS, fetch: vi.fn() });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch: vi.fn() });
     expect(Object.keys(tools)).toEqual(EXPECTED_TOOL_NAMES);
   });
 
@@ -102,7 +104,7 @@ describe('sns tools', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }));
-    const tools = createSnsTools({ ...SNS_CREDS, fetch });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch });
 
     const result = await tools.sns_post!.execute!({
       text: 'Hello SNS',
@@ -143,7 +145,7 @@ describe('sns tools', () => {
       close: vi.fn(async () => {}),
     };
     const fetch = vi.fn<typeof globalThis.fetch>();
-    const tools = createSnsTools({ ...SNS_CREDS, fetch, activityStore });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore });
 
     await expect(tools.sns_like!.execute!({ post_id: 'post-1' }, DEFAULT_OPTIONS)).resolves.toEqual({
       status: 'skipped',
@@ -173,7 +175,7 @@ describe('sns tools', () => {
       close: vi.fn(async () => {}),
     };
     const fetch = vi.fn<typeof globalThis.fetch>();
-    const tools = createSnsTools({ ...SNS_CREDS, fetch, activityStore });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore });
 
     await expect(tools.sns_post!.execute!({ text: 'reply', reply_to_id: 'root-1' }, DEFAULT_OPTIONS)).resolves.toEqual({
       status: 'skipped',
@@ -203,7 +205,7 @@ describe('sns tools', () => {
       close: vi.fn(async () => {}),
     };
     const fetch = vi.fn<typeof globalThis.fetch>();
-    const tools = createSnsTools({ ...SNS_CREDS, fetch, activityStore });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore });
 
     await expect(tools.sns_like!.execute!({ post_id: 'post-1' }, DEFAULT_OPTIONS)).resolves.toEqual({
       error: 'Failed to verify duplicate protection for hasLiked: db failed',
@@ -243,7 +245,7 @@ describe('sns tools', () => {
     const evaluateUser = vi.fn();
     const reportError = vi.fn();
     const tools = createSnsTools({
-      ...SNS_CREDS,
+      ...SNS_OPTIONS,
       fetch,
       activityStore,
       userStore: userStore as never,
@@ -295,7 +297,7 @@ describe('sns tools', () => {
     };
     const evaluateUser = vi.fn();
     const tools = createSnsTools({
-      ...SNS_CREDS,
+      ...SNS_OPTIONS,
       fetch,
       activityStore,
       userStore: { ensureUser: vi.fn(async () => ({})) } as never,
@@ -330,7 +332,7 @@ describe('sns tools', () => {
     const userStore = { ensureUser: vi.fn(async () => ({ userId: 'sns:mastodon:acct-1' })) };
     const evaluateUser = vi.fn();
     const tools = createSnsTools({
-      ...SNS_CREDS,
+      ...SNS_OPTIONS,
       fetch,
       activityStore,
       userStore: userStore as never,
@@ -372,7 +374,7 @@ describe('sns tools', () => {
         headers: { 'content-type': 'application/json' },
       });
     });
-    const tools = createSnsTools({ ...SNS_CREDS, fetch, activityStore });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore });
 
     const first = tools.sns_like!.execute!({ post_id: 'post-1' }, DEFAULT_OPTIONS);
     const second = tools.sns_like!.execute!({ post_id: 'post-1' }, DEFAULT_OPTIONS);
@@ -416,8 +418,8 @@ describe('sns tools', () => {
         headers: { 'content-type': 'application/json' },
       });
     });
-    const firstTools = createSnsTools({ ...SNS_CREDS, fetch, activityStore });
-    const secondTools = createSnsTools({ ...SNS_CREDS, fetch, activityStore });
+    const firstTools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore });
+    const secondTools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore });
 
     const first = firstTools.sns_like!.execute!({ post_id: 'post-2' }, DEFAULT_OPTIONS);
     const second = secondTools.sns_like!.execute!({ post_id: 'post-2' }, DEFAULT_OPTIONS);
@@ -442,7 +444,7 @@ describe('sns tools', () => {
         ancestors: [createStatus({ id: 'ancestor-1' })],
         descendants: [createStatus({ id: 'descendant-1' })],
       }), { status: 200 }));
-    const tools = createSnsTools({ ...SNS_CREDS, fetch });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch });
 
     await expect(tools.sns_get_post!.execute!({ post_id: 'post-1' }, DEFAULT_OPTIONS)).resolves.toEqual(expect.objectContaining({ id: 'post-1' }));
     await expect(tools.sns_get_thread!.execute!({ post_id: 'thread-1' }, DEFAULT_OPTIONS)).resolves.toEqual({
@@ -469,7 +471,7 @@ describe('sns tools', () => {
     };
     const scheduleStore = createScheduleStore();
     const tools = createSnsTools({
-      ...SNS_CREDS,
+      ...SNS_OPTIONS,
       fetch,
       activityStore,
       scheduleStore,
@@ -496,7 +498,7 @@ describe('sns tools', () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const scheduleStore = createScheduleStore();
     const tools = createSnsTools({
-      ...SNS_CREDS,
+      ...SNS_OPTIONS,
       fetch,
       scheduleStore,
       now: () => new Date('2025-01-01T00:00:00.000Z'),
@@ -513,11 +515,35 @@ describe('sns tools', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('rejects scheduling non-public X posts before they are queued', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const scheduleStore = createScheduleStore();
+    const tools = createSnsTools({
+      sns: {
+        provider: 'x',
+        accessToken: 'x-token',
+      },
+      fetch,
+      scheduleStore,
+      now: () => new Date('2025-01-01T00:00:00.000Z'),
+    });
+
+    await expect(tools.sns_post!.execute!({
+      text: 'Hello later',
+      scheduled_at: '2025-01-01T01:00:00.000Z',
+      visibility: 'direct',
+    }, DEFAULT_OPTIONS)).resolves.toEqual({
+      error: 'X only supports public visibility',
+    });
+    expect(scheduleStore.schedule).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('rejects scheduled_at values in the past', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const scheduleStore = createScheduleStore();
     const tools = createSnsTools({
-      ...SNS_CREDS,
+      ...SNS_OPTIONS,
       fetch,
       scheduleStore,
       now: () => new Date('2025-01-01T03:00:00.000Z'),
@@ -567,7 +593,7 @@ describe('sns tools', () => {
       getPendingAndExecuting: vi.fn(async () => scheduledActions),
     });
     const tools = createSnsTools({
-      ...SNS_CREDS,
+      ...SNS_OPTIONS,
       fetch,
       activityStore,
       scheduleStore,
@@ -622,7 +648,7 @@ describe('sns tools', () => {
     const scheduleStore = createScheduleStore({
       getPendingAndExecuting: vi.fn(async () => queuedReplies),
     });
-    const tools = createSnsTools({ ...SNS_CREDS, fetch, activityStore, scheduleStore });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore, scheduleStore });
 
     await expect(tools.sns_post!.execute!({
       text: 'reply now',
@@ -647,7 +673,7 @@ describe('sns tools', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }));
-    const tools = createSnsTools({ ...SNS_CREDS, fetch, lookupFn: createPublicLookup() });
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, lookupFn: createPublicLookup() });
 
     await expect(tools.sns_upload_media!.execute!({ url: 'https://cdn.example/path/image.png', alt_text: 'A sample image' }, DEFAULT_OPTIONS)).resolves.toEqual({ mediaId: 'media-123' });
     const secondCallBody = fetch.mock.calls[1]?.[1]?.body;
