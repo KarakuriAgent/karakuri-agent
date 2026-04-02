@@ -160,26 +160,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function inferFileName(url: string): string {
-  try {
-    const parsed = new URL(url);
-    const segment = parsed.pathname.split('/').filter(Boolean).at(-1);
-    return segment != null && segment.length > 0 ? segment : 'upload';
-  } catch {
-    return 'upload';
-  }
-}
 
-function createBlobFromBytes(bodyBytes?: Uint8Array, contentType?: string): Blob {
-  if (bodyBytes == null) {
-    return contentType != null ? new Blob([], { type: contentType }) : new Blob([]);
-  }
-
-  const exactBytes = new Uint8Array(bodyBytes.byteLength);
-  exactBytes.set(bodyBytes);
-  return contentType != null ? new Blob([exactBytes], { type: contentType }) : new Blob([exactBytes]);
-}
-
+// XProvider はターンごとに再生成されるため毎回読み込まれるが、
+// ファイルは数百バイトの JSON なので同期 I/O のブロックは無視できる。
+// 非同期化するとコンストラクタを async にする必要があり、構造が複雑になるため同期のまま維持する。
 function readPersistedTokenState(path: string): XTokenState | undefined {
   let raw: string;
   try {
@@ -597,13 +581,14 @@ export class XProvider implements SnsProvider {
       throw new Error(`Failed to fetch media from ${params.url}: ${mediaResponse.status} ${mediaResponse.statusText}`);
     }
 
-    const mediaBlob = createBlobFromBytes(mediaBodyBytes, mediaResponse.headers.get('content-type') ?? undefined);
-    const bytes = new Uint8Array(await mediaBlob.arrayBuffer());
+    const contentType = mediaResponse.headers.get('content-type') ?? undefined;
+    const bytes = mediaBodyBytes ?? new Uint8Array(0);
+    // SDK の型定義が特定リテラル型を要求するため as キャストで回避
     const initialize = await this.callWithRefresh((client) => client.media.initializeUpload({
       body: {
         totalBytes: bytes.byteLength,
-        mediaType: (mediaBlob.type || 'image/png') as 'image/png',
-        mediaCategory: normalizeMediaCategory(mediaBlob.type) as 'tweet_image' | 'tweet_gif' | 'tweet_video',
+        mediaType: (contentType || 'image/png') as 'image/png',
+        mediaCategory: normalizeMediaCategory(contentType) as 'tweet_image' | 'tweet_gif' | 'tweet_video',
       },
     }));
     const mediaId = (initialize as XMediaUploadResponse).data?.id ?? (initialize as XMediaUploadResponse).data?.mediaId;

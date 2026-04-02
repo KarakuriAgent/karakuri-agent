@@ -142,12 +142,14 @@ function resetMocks(): void {
 describe('XProvider', () => {
   beforeEach(async () => {
     resetMocks();
+    vi.unstubAllGlobals();
     await rm(TEST_DATA_DIR, { recursive: true, force: true });
     await mkdir(TEST_DATA_DIR, { recursive: true });
     vi.restoreAllMocks();
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     await rm(TEST_DATA_DIR, { recursive: true, force: true });
   });
