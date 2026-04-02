@@ -455,6 +455,71 @@ describe('XProvider', () => {
     });
   });
 
+  it('throws when initializeUpload returns no media id', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('image-bytes', {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    })));
+    mockState.media.initializeUpload.mockResolvedValue({ data: {} });
+
+    const provider = new XProvider({
+      accessToken: 'token',
+      lookupFn: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
+    });
+
+    await expect(provider.uploadMedia({ url: 'https://cdn.example/image.png' })).rejects.toThrow('Invalid X media upload response');
+  });
+
+  it('throws when media processing fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('image-bytes', {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    })));
+    mockState.media.initializeUpload.mockResolvedValue({ data: { id: 'media-1' } });
+    mockState.media.appendUpload.mockResolvedValue({ data: {} });
+    mockState.media.finalizeUpload.mockResolvedValue({ data: { id: 'media-1' } });
+    mockState.media.getUploadStatus.mockResolvedValue({
+      data: { processingInfo: { state: 'failed', error: { message: 'Unsupported format' } } },
+    });
+
+    const provider = new XProvider({
+      accessToken: 'token',
+      lookupFn: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
+    });
+
+    await expect(provider.uploadMedia({ url: 'https://cdn.example/image.png' })).rejects.toThrow('Unsupported format');
+  });
+
+  it('throws when media processing times out', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('image-bytes', {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    })));
+    mockState.media.initializeUpload.mockResolvedValue({ data: { id: 'media-1' } });
+    mockState.media.appendUpload.mockResolvedValue({ data: {} });
+    mockState.media.finalizeUpload.mockResolvedValue({ data: { id: 'media-1' } });
+    mockState.media.getUploadStatus.mockResolvedValue({
+      data: { processingInfo: { state: 'in_progress' } },
+    });
+
+    const provider = new XProvider({
+      accessToken: 'token',
+      lookupFn: vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]),
+      sleep: async () => {},
+    });
+
+    await expect(provider.uploadMedia({ url: 'https://cdn.example/image.png' })).rejects.toThrow('X media is still processing');
+  });
+
+  it('propagates 401 errors without attempting refresh when OAuth2 is not configured', async () => {
+    mockState.posts.getById.mockRejectedValue(Object.assign(new Error('unauthorized'), { status: 401 }));
+
+    const provider = new XProvider({ accessToken: 'token' });
+
+    await expect(provider.getPost('post-1')).rejects.toThrow('unauthorized');
+    expect(mockState.refreshTokenMock).not.toHaveBeenCalled();
+  });
+
   it('returns empty thread for posts older than seven days and excludes sibling branches from recent conversations', async () => {
     const now = Date.now();
     const recentRoot = new Date(now - (2 * 24 * 60 * 60 * 1_000)).toISOString();

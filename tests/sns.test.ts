@@ -539,6 +539,35 @@ describe('sns tools', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('rejects post text exceeding 140 characters', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch });
+
+    const longText = 'あ'.repeat(141);
+    const result = await tools.sns_post!.execute!({
+      text: longText,
+      visibility: 'public',
+    }, DEFAULT_OPTIONS) as { error?: string };
+    expect(result.error).toBeDefined();
+  });
+
+  it('accepts post text at exactly 140 characters', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify(createStatus()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch });
+
+    const exactText = 'あ'.repeat(140);
+    const result = await tools.sns_post!.execute!({
+      text: exactText,
+      visibility: 'public',
+    }, DEFAULT_OPTIONS) as { error?: string };
+    expect(result.error).toBeUndefined();
+    expect(fetch).toHaveBeenCalled();
+  });
+
   it('rejects scheduled_at values in the past', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const scheduleStore = createScheduleStore();
