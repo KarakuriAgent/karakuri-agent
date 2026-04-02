@@ -171,6 +171,15 @@ export interface NotificationParams {
   maxId?: string | undefined;
 }
 
+export interface NotificationFetchResult {
+  notifications: SnsNotification[];
+  /**
+   * 取得可能な通知をすべて取得できたかどうか。
+   * `false` の場合（レート制限やページネーション上限など）、呼び出し側は通知カーソルを進めるべきではない。
+   */
+  complete: boolean;
+}
+
 export interface UploadMediaParams {
   url: string;
   altText?: string | undefined;
@@ -198,7 +207,7 @@ export interface SnsProvider {
   search(params: SearchParams): Promise<SearchResult>;
   like(postId: string): Promise<SnsPost>;
   repost(postId: string): Promise<SnsPost>;
-  getNotifications(params?: NotificationParams): Promise<SnsNotification[]>;
+  getNotifications(params?: NotificationParams): Promise<NotificationFetchResult>;
   uploadMedia(params: UploadMediaParams): Promise<UploadMediaResult>;
   getThread(postId: string): Promise<ThreadResult>;
   getUserPosts(params: UserPostsParams): Promise<SnsPost[]>;

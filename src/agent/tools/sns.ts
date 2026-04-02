@@ -27,7 +27,7 @@ const scheduledAtSchema = z.string().trim().min(1).refine((value) => {
 const MAX_USER_EVALUATIONS_PER_TURN = 3;
 
 const snsPostInputSchema = z.object({
-  text: z.string().trim().min(1),
+  text: z.string().trim().min(1).max(140),
   reply_to_id: z.string().trim().min(1).optional(),
   quote_post_id: z.string().trim().min(1).optional(),
   media_ids: z.array(z.string().trim().min(1)).optional(),
@@ -58,7 +58,9 @@ const snsGetThreadInputSchema = z.object({
   post_id: z.string().trim().min(1),
 }).strict();
 
-export interface CreateSnsToolsOptions extends SnsCredentials {
+export interface CreateSnsToolsOptions {
+  sns: SnsCredentials;
+  dataDir?: string;
   fetch?: typeof fetch;
   lookupFn?: LookupFn;
   now?: () => Date;
@@ -203,10 +205,25 @@ function buildScheduledResponse(scheduledAt: Date) {
   };
 }
 
+function assertSupportedVisibility(provider: SnsCredentials['provider'], visibility: z.infer<typeof visibilitySchema>): void {
+  if (provider === 'x' && visibility !== 'public') {
+    throw new Error('X only supports public visibility');
+  }
+}
+
 export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
-  const provider = createSnsProvider(options);
+  const provider = createSnsProvider({
+    ...options.sns,
+    ...(options.dataDir != null ? { dataDir: options.dataDir } : {}),
+    ...(options.fetch != null ? { fetch: options.fetch } : {}),
+    ...(options.lookupFn != null ? { lookupFn: options.lookupFn } : {}),
+    ...(options.sleep != null ? { sleep: options.sleep } : {}),
+  });
   const evaluatedUsers = new Set<string>();
   const now = options.now ?? (() => new Date());
+  const threadDescription = options.sns.provider === 'x'
+    ? '投稿のスレッド文脈を取得する。X では自分の返信を除外しつつ、過去7日以内の対象投稿から辿れる会話のみを返す。7日を超える投稿は空の結果を返す。'
+    : '投稿のスレッド文脈を取得する。';
 
   if (options.activityStore == null) {
     logger.warn('SNS activity store is not configured; duplicate prevention is disabled');
@@ -217,7 +234,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
   return {
     sns_post: tool({
-      description: 'SNS に投稿する。必要なら返信先や引用元、メディア、公開範囲を指定する。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_replied" | "already_quoted" | "reply_already_scheduled" | "quote_already_scheduled", reply_to_id?, quote_post_id? }` を返す。',
+      description: 'SNS に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_replied" | "already_quoted" | "reply_already_scheduled" | "quote_already_scheduled", reply_to_id?, quote_post_id? }` を返す。',
       inputSchema: snsPostInputSchema,
       execute: async (input) => executeSafely('sns_post', async () => runWithSnsActionLocks([
         input.reply_to_id != null ? buildReplyLockKey(input.reply_to_id) : '',
@@ -248,6 +265,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
           if (options.scheduleStore == null) {
             throw new Error('SNS schedule store is not configured');
           }
+          assertSupportedVisibility(options.sns.provider, input.visibility);
           const scheduledAt = parseScheduledAt(input.scheduled_at, now());
           await options.scheduleStore.schedule({
             actionType: 'post',
@@ -279,7 +297,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       inputSchema: snsGetPostInputSchema,
       execute: async (input) => executeSafely('sns_get_post', async () => {
         const result = await provider.getPost(input.post_id);
-        trackPost(result, options.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackPost(result, options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
         return result;
       }),
     }),
@@ -312,7 +330,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
         const result = await provider.like(input.post_id);
         const warning = await safeRecord('sns_like', () => options.activityStore?.recordLike(input.post_id) ?? Promise.resolve(), options.reportError);
-        trackPost(result, options.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackPost(result, options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
@@ -345,7 +363,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
         const result = await provider.repost(input.post_id);
         const warning = await safeRecord('sns_repost', () => options.activityStore?.recordRepost(input.post_id) ?? Promise.resolve(), options.reportError);
-        trackPost(result, options.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackPost(result, options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
@@ -358,11 +376,11 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       })),
     }),
     sns_get_thread: tool({
-      description: '投稿のスレッド文脈を取得する。',
+      description: threadDescription,
       inputSchema: snsGetThreadInputSchema,
       execute: async (input) => executeSafely('sns_get_thread', async () => {
         const result = await provider.getThread(input.post_id);
-        trackThread([...result.ancestors, ...result.descendants], options.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackThread([...result.ancestors, ...result.descendants], options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
         return result;
       }),
     }),

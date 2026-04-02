@@ -11,7 +11,7 @@ const BUILTIN_SNS_ALLOWED_TOOLS = [
   'sns_get_thread',
 ] as const;
 
-const BUILTIN_SNS_DESCRIPTION = 'SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う';
+const BUILTIN_SNS_DESCRIPTION = 'SNS に投稿・閲覧・エンゲージメント操作を行う';
 
 export function createBuiltinSnsSkillDefinition(): SkillDefinition {
   return {
@@ -41,6 +41,7 @@ export function buildBuiltinSnsSkillInstructions(): string {
     '- 同じ投稿に対して二重にリプライされない',
     '- 既に引用済みの投稿は再引用されない',
     '- pending / executing のスケジュール済みアクションとも重複しない',
+    '- X では crash recovery 時に like / repost 済み判定ができない場合があり、再起動をまたぐ scheduled like / repost の重複防止は保証されない',
     '',
     '## 投稿方針',
     '',
@@ -48,6 +49,7 @@ export function buildBuiltinSnsSkillInstructions(): string {
     '- 日記に書かれた日常の体験・感想・遊び・発見など、些細なことでも自分なりの感想や気持ちがあれば積極的に投稿する',
     '- 「重要かどうか」ではなく「自分が何か感じたかどうか」を投稿の判断基準にする',
     '- 日記やメモリに投稿ネタがある場合は、迷わず `sns_post` を呼び出すこと。投稿を見送る判断は、本当にネタがない場合のみ',
+    '- 投稿本文は140文字以内で構成する。伝えたいことを短く凝縮して書く',
     '- 直近の行動ログとスケジュール済みアクションを参照し、同じ内容やトーンの繰り返しを避ける（行動の種類を変える必要はない）',
     '- SNSアクションを遅延実行する場合は `scheduled_at` に未来のタイムゾーン付き日時（例: `2025-01-01T00:00:00Z`, `2025-01-01T09:00:00+09:00`）を指定する',
   ].join('\n');

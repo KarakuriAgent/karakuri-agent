@@ -163,12 +163,12 @@ interface IAgent {
 
 ### `sns_*` skill-gated tools (`src/agent/tools/sns.ts`, `src/sns/*`)
 
-- `SNS_PROVIDER` / `SNS_INSTANCE_URL` / `SNS_ACCESS_TOKEN` がすべて設定されると、system ユーザー向けにビルトイン SNS skill が利用可能になる
+- `SNS_PROVIDER` に応じた必須 SNS 設定（Mastodon: `SNS_INSTANCE_URL` + `SNS_ACCESS_TOKEN`, X: `SNS_ACCESS_TOKEN`）がそろうと、system ユーザー向けにビルトイン SNS skill が利用可能になる
 - cron では `loadSkill("sns")` したターンで `sns_*` ツールが公開される。heartbeat では `isSystemUser && ephemeral && snsContextRegistry != null && effectiveSkills にビルトイン SNS skill が含まれる` のときに自動ロードされ、`<skill-context>` と `sns_*` ツールが事前注入される
 - heartbeat の活動指示にある `postMessage` レポート要求は、実際に `postMessage` ツールが公開され、かつ `REPORT_CHANNEL_ID` がその送信許可先にも含まれる構成のときだけ含める
 - cron/manual で返すビルトイン SNS skill の本文でも、`scheduled_at` は未来の日時かつ明示的なタイムゾーン付き（例: `Z`, `+09:00`）で指定するよう案内する
 - `data/system-skills/sns/SKILL.md` は存在しなくてもビルトイン定義で動作する。legacy な同名ファイルが残っていてもすべての system ユーザー文脈ではビルトイン側を優先し、対話ユーザーに公開したい場合は運用側で `data/skills/*` に shared skill を追加する
-- 初期実装 provider は Mastodon
+- provider は Mastodon / X をサポート
 - 公開ツール:
   - `sns_post`
   - `sns_get_post`
@@ -177,10 +177,11 @@ interface IAgent {
   - `sns_upload_media`
   - `sns_get_thread`
 - `loadSkill("sns")` 時に、新着通知・トレンド・直近行動ログ・スケジュール済みアクションを動的コンテキストとして注入する
+- `sns_post` の投稿本文は 140 文字以内に制限される（Zod スキーマの `.max(140)` + ツール description + ビルトインスキル instructions の 3 層で制御）。プラットフォームごとの上限ではなく、エージェントの投稿スタイルとして全 SNS プロバイダ共通で適用する設計判断
 - `sns_post` / `sns_like` / `sns_repost` は SQLite の SNS activity store と schedule store を参照し、重複返信・引用・いいね・リポストを API 呼び出し前に抑止する
-- `scheduled_at` を指定した `sns_post` / `sns_like` / `sns_repost` は即時 API 実行せず `sns_scheduled_actions` にキュー投入し、専用ランナーが指定時刻に直接 API 実行する
+- `scheduled_at` を指定した `sns_post` / `sns_like` / `sns_repost` は即時 API 実行せず `sns_scheduled_actions` にキュー投入し、専用ランナーが指定時刻に直接 API 実行する。X では `sns_post` の visibility は `public` のみ許可し、API 制約により再起動をまたぐ scheduled like / repost の crash recovery は完全には保証できない
 - `sns_upload_media` は remote URL を直接渡してアップロードできるが、`webFetch` と同じ SSRF 対策を共有し、`http` / `https` 以外のスキーム、private / loopback / link-local 宛て、およびそれらへ到達する redirect を拒否する
-- remote media はサイズ上限付きで読み込み、Mastodon が `202 Accepted` を返した場合は `GET /api/v1/media/:id` を短時間ポーリングして ready を待つ。所定回数で ready にならなければエラーにする
+- remote media はサイズ上限付きで読み込む。Mastodon が `202 Accepted` を返した場合は `GET /api/v1/media/:id` を短時間ポーリングし、X では chunked upload の `getUploadStatus()` をポーリングして ready を待つ。所定回数で ready にならなければエラーにする
 
 ## 要約処理 (`Agent.summarizeSession`)
 

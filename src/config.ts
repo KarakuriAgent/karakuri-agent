@@ -28,9 +28,15 @@ const configSchema = z.object({
   braveApiKey: z.string().trim().min(1).optional(),
   karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
-  snsProvider: z.enum(['mastodon']).optional(),
+  snsProvider: z.enum(['mastodon', 'x']).optional(),
   snsInstanceUrl: z.string().trim().min(1).optional(),
   snsAccessToken: z.string().trim().min(1).optional(),
+  snsClientId: z.string().trim().min(1).optional(),
+  snsClientSecret: z.string().trim().min(1).optional(),
+  snsRefreshToken: z.string().trim().min(1).optional(),
+  snsApiKey: z.string().trim().min(1).optional(),
+  snsApiSecret: z.string().trim().min(1).optional(),
+  snsAccessTokenSecret: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
   maxSteps: z.coerce.number().int().positive().default(10),
@@ -49,13 +55,20 @@ export interface ApiCredentials {
   apiKey: string;
 }
 
-export type SnsProviderType = 'mastodon';
+export type SnsProviderType = 'mastodon' | 'x';
 
-export interface SnsCredentials {
-  provider: SnsProviderType;
-  instanceUrl: string;
-  accessToken: string;
-}
+export type SnsCredentials =
+  | { provider: 'mastodon'; instanceUrl: string; accessToken: string }
+  | {
+      provider: 'x';
+      accessToken: string;
+      clientId?: string | undefined;
+      clientSecret?: string | undefined;
+      refreshToken?: string | undefined;
+      apiKey?: string | undefined;
+      apiSecret?: string | undefined;
+      accessTokenSecret?: string | undefined;
+    };
 
 export interface Config {
   discordApplicationId: string;
@@ -113,6 +126,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     snsProvider: normalizeOptionalString(env.SNS_PROVIDER),
     snsInstanceUrl: normalizeOptionalString(env.SNS_INSTANCE_URL),
     snsAccessToken: normalizeOptionalString(env.SNS_ACCESS_TOKEN),
+    snsClientId: normalizeOptionalString(env.SNS_CLIENT_ID),
+    snsClientSecret: normalizeOptionalString(env.SNS_CLIENT_SECRET),
+    snsRefreshToken: normalizeOptionalString(env.SNS_REFRESH_TOKEN),
+    snsApiKey: normalizeOptionalString(env.SNS_API_KEY),
+    snsApiSecret: normalizeOptionalString(env.SNS_API_SECRET),
+    snsAccessTokenSecret: normalizeOptionalString(env.SNS_ACCESS_TOKEN_SECRET),
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
     maxSteps: env.MAX_STEPS ?? env.AGENT_MAX_STEPS,
@@ -133,8 +152,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
     const karakuriWorldApiBaseUrl = normalizeBaseUrl(parsed.karakuriWorldApiBaseUrl, 'KARAKURI_WORLD_API_BASE_URL');
     const karakuriWorldApiKey = normalizeOptionalString(parsed.karakuriWorldApiKey);
-    const snsInstanceUrl = normalizeBaseUrl(parsed.snsInstanceUrl, 'SNS_INSTANCE_URL');
     const snsAccessToken = normalizeOptionalString(parsed.snsAccessToken);
+    const snsClientId = normalizeOptionalString(parsed.snsClientId);
+    const snsClientSecret = normalizeOptionalString(parsed.snsClientSecret);
+    const snsRefreshToken = normalizeOptionalString(parsed.snsRefreshToken);
+    const snsApiKey = normalizeOptionalString(parsed.snsApiKey);
+    const snsApiSecret = normalizeOptionalString(parsed.snsApiSecret);
+    const snsAccessTokenSecret = normalizeOptionalString(parsed.snsAccessTokenSecret);
 
     const llmModelSelector = parseModelSelector(parsed.llmModel);
     const postResponseLlmModel = normalizeOptionalString(parsed.postResponseLlmModel);
@@ -168,20 +192,46 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         + 'KW mode will not activate.',
       );
     }
-    const snsFields = [parsed.snsProvider, snsInstanceUrl, snsAccessToken];
-    const snsSetCount = snsFields.filter((value) => value != null).length;
-    if (snsSetCount > 0 && snsSetCount < 3) {
-      throw new Error(
-        'Partial SNS configuration: all of SNS_PROVIDER, SNS_INSTANCE_URL, and SNS_ACCESS_TOKEN must be set.',
-      );
-    }
-    const sns = parsed.snsProvider != null && snsInstanceUrl != null && snsAccessToken != null
-      ? {
-          provider: parsed.snsProvider,
+    let sns: SnsCredentials | undefined;
+    if (parsed.snsProvider != null) {
+      if (snsAccessToken == null) {
+        throw new Error('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER is configured.');
+      }
+
+      if (parsed.snsProvider === 'mastodon') {
+        const snsInstanceUrl = normalizeBaseUrl(parsed.snsInstanceUrl, 'SNS_INSTANCE_URL');
+        if (snsInstanceUrl == null) {
+          throw new Error('Partial SNS configuration: SNS_INSTANCE_URL must be set when SNS_PROVIDER=mastodon.');
+        }
+        sns = {
+          provider: 'mastodon',
           instanceUrl: snsInstanceUrl,
           accessToken: snsAccessToken,
+        };
+      } else {
+        const oauth1Fields = [snsApiKey, snsApiSecret, snsAccessTokenSecret];
+        const oauth1SetCount = oauth1Fields.filter((v) => v != null).length;
+        if (oauth1SetCount > 0 && oauth1SetCount < 3) {
+          logger.warn(
+            'Partial X OAuth 1.0a configuration: all of SNS_API_KEY, SNS_API_SECRET, and SNS_ACCESS_TOKEN_SECRET must be set together. '
+            + 'Falling back to bearer token mode.',
+          );
         }
-      : undefined;
+        if (snsClientId != null && snsRefreshToken == null) {
+          logger.warn('SNS_CLIENT_ID is set but SNS_REFRESH_TOKEN is missing; OAuth2 token refresh will not work.');
+        }
+        sns = {
+          provider: 'x',
+          accessToken: snsAccessToken,
+          ...(snsClientId != null ? { clientId: snsClientId } : {}),
+          ...(snsClientSecret != null ? { clientSecret: snsClientSecret } : {}),
+          ...(snsRefreshToken != null ? { refreshToken: snsRefreshToken } : {}),
+          ...(snsApiKey != null ? { apiKey: snsApiKey } : {}),
+          ...(snsApiSecret != null ? { apiSecret: snsApiSecret } : {}),
+          ...(snsAccessTokenSecret != null ? { accessTokenSecret: snsAccessTokenSecret } : {}),
+        };
+      }
+    }
     const config = {
       ...parsed,
       llmBaseUrl,

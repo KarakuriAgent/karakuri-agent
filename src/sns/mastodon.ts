@@ -1,4 +1,5 @@
 import type {
+  NotificationFetchResult,
   NotificationParams,
   PostParams,
   SearchParams,
@@ -356,7 +357,7 @@ export class MastodonProvider implements SnsProvider {
     ));
   }
 
-  async getNotifications(params: NotificationParams = {}): Promise<SnsNotification[]> {
+  async getNotifications(params: NotificationParams = {}): Promise<NotificationFetchResult> {
     const requestedLimit = params.limit ?? 5;
     const requestedTypes = params.types != null ? new Set(params.types) : null;
     const needsClientSideFiltering = requestedTypes != null
@@ -420,7 +421,10 @@ export class MastodonProvider implements SnsProvider {
       }
     }
 
-    return collected.slice(0, requestedLimit);
+    return {
+      notifications: collected.slice(0, requestedLimit),
+      complete: true,
+    };
   }
 
   async uploadMedia(params: UploadMediaParams): Promise<UploadMediaResult> {

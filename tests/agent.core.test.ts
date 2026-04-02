@@ -734,7 +734,7 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).toContain('## 新着通知');
     expect(capturedSystem).toContain('## スキル活動');
     expect(capturedSystem).toContain('Available skills:\n- code-review: Review code');
-    expect(capturedSystem).not.toContain('- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(capturedSystem).not.toContain('- sns: SNS に投稿・閲覧・エンゲージメント操作を行う');
     expect(capturedSystem).toContain('- sns_post: publish an SNS post, optionally as a reply, quote, media post, or delayed scheduled action.');
     expect(capturedSystem).toContain('- sns_like: like an SNS post immediately or schedule the like for later.');
     expect(capturedTools).toHaveProperty('sns_post');
@@ -785,14 +785,14 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('cron:job', '(cron tick)', 'system', { userId: 'system' });
 
-    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う (tools: sns_post, sns_get_post, sns_like, sns_repost, sns_upload_media, sns_get_thread)');
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS に投稿・閲覧・エンゲージメント操作を行う (tools: sns_post, sns_get_post, sns_like, sns_repost, sns_upload_media, sns_get_thread)');
     expect(capturedSystem).not.toContain('\n\n<skill-context>\n### sns');
     expect(capturedSystem).not.toContain('## スキル活動');
 
     expect(loadSkillResult).toEqual(expect.objectContaining({
       loaded: true,
       name: 'sns',
-      description: 'SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う',
+      description: 'SNS に投稿・閲覧・エンゲージメント操作を行う',
       allowedTools: ['sns_post', 'sns_get_post', 'sns_like', 'sns_repost', 'sns_upload_media', 'sns_get_thread'],
       instructions: expect.stringContaining('## 新着通知'),
     }));
@@ -976,7 +976,7 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('cron:job', '(cron tick)', 'system', { userId: 'system' });
 
-    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS に投稿・閲覧・エンゲージメント操作を行う');
     expect(capturedSystem).not.toContain('Available skills:\n- sns: Custom SNS');
   });
 
@@ -1089,7 +1089,7 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('cron:job', '(cron tick)', 'system', { userId: 'system' });
 
-    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS に投稿・閲覧・エンゲージメント操作を行う');
     expect(capturedSystem).not.toContain('Available skills:\n- sns: Shared SNS');
   });
 
@@ -1209,7 +1209,7 @@ describe('KarakuriAgent', () => {
 
     await agent.handleMessage('session-1', 'load sns', 'Admin', { userId: 'admin-user' });
 
-    expect(capturedSystem).toContain('Available skills:\n- sns: SNS（Mastodon）に投稿・閲覧・エンゲージメント操作を行う');
+    expect(capturedSystem).toContain('Available skills:\n- sns: SNS に投稿・閲覧・エンゲージメント操作を行う');
     expect(loadSkillResult).toEqual(expect.objectContaining({
       loaded: true,
       name: 'sns',

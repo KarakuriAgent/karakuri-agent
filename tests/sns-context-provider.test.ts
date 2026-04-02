@@ -4,6 +4,7 @@ import { SnsSkillContextProvider } from '../src/sns/context-provider.js';
 import type {
   ISnsActivityStore,
   ISnsScheduleStore,
+  NotificationFetchResult,
   ScheduledAction,
   SnsNotification,
   SnsPost,
@@ -24,6 +25,13 @@ function createPost(id: string, text: string): SnsPost {
     likeCount: 2,
     replyCount: 3,
   };
+}
+
+function createNotificationResult(
+  notifications: SnsNotification[],
+  complete = true,
+): NotificationFetchResult {
+  return { notifications, complete };
 }
 
 function createActivityStore(overrides: Partial<ISnsActivityStore> = {}): ISnsActivityStore {
@@ -67,7 +75,7 @@ function createProvider(overrides: Partial<SnsProvider> = {}): SnsProvider {
     search: vi.fn(),
     like: vi.fn(),
     repost: vi.fn(),
-    getNotifications: vi.fn(async () => []),
+    getNotifications: vi.fn(async () => createNotificationResult([])),
     uploadMedia: vi.fn(),
     getThread: vi.fn(),
     getUserPosts: vi.fn(),
@@ -103,7 +111,7 @@ describe('SnsSkillContextProvider', () => {
       getPendingAndExecuting: vi.fn(async () => scheduledActions),
     });
     const snsProvider = createProvider({
-      getNotifications: vi.fn(async () => notifications),
+      getNotifications: vi.fn(async () => createNotificationResult(notifications)),
       getTrends: vi.fn(async () => [createPost('trend-1', 'Trend text')]),
     });
 
@@ -128,16 +136,16 @@ describe('SnsSkillContextProvider', () => {
     });
     const scheduleStore = createScheduleStore();
     const snsProvider = createProvider({
-      getNotifications: vi.fn(async ({ maxId }): Promise<SnsNotification[]> => {
+      getNotifications: vi.fn(async ({ maxId }): Promise<NotificationFetchResult> => {
         if (maxId == null) {
-          return [
+          return createNotificationResult([
             { id: 'notif-5', type: 'reply', createdAt: '2025-01-05T00:00:00.000Z', accountId: 'acct-5', accountName: 'Eve', accountHandle: 'eve@example.com', post: createPost('post-5', 'Newest') },
             { id: 'notif-4', type: 'mention', createdAt: '2025-01-04T00:00:00.000Z', accountId: 'acct-4', accountName: 'Dana', accountHandle: 'dana@example.com', post: createPost('post-4', 'Older') },
-          ];
+          ]);
         }
-        return [
+        return createNotificationResult([
           { id: 'notif-3', type: 'reply', createdAt: '2025-01-03T00:00:00.000Z', accountId: 'acct-3', accountName: 'Cara', accountHandle: 'cara@example.com', post: createPost('post-3', 'Oldest unseen') },
-        ];
+        ]);
       }),
     });
 
@@ -157,6 +165,7 @@ describe('SnsSkillContextProvider', () => {
       types: ['mention', 'reply'],
     });
     expect(snsProvider.getNotifications).toHaveBeenCalledTimes(1);
+    expect(activityStore.reserveLastNotificationId).toHaveBeenCalledWith('notif-5');
     expect(activityStore.commitLastNotificationReservation).toHaveBeenCalledWith('reservation-1');
     expect(context.text).toContain('Newest');
     expect(context.text).toContain('Older');
@@ -178,7 +187,7 @@ describe('SnsSkillContextProvider', () => {
     });
     const scheduleStore = createScheduleStore();
     const snsProvider = createProvider({
-      getNotifications: vi.fn(async () => notifications),
+      getNotifications: vi.fn(async () => createNotificationResult(notifications)),
       getTrends: vi.fn(async () => [createPost('trend-1', 'Trend text')]),
     });
 
@@ -204,7 +213,7 @@ describe('SnsSkillContextProvider', () => {
       post: createPost('post-2', 'Reply text'),
     }];
     const snsProvider = createProvider({
-      getNotifications: vi.fn(async () => notifications),
+      getNotifications: vi.fn(async () => createNotificationResult(notifications)),
     });
 
     const provider = new SnsSkillContextProvider({ activityStore, scheduleStore, snsProvider });
@@ -235,6 +244,33 @@ describe('SnsSkillContextProvider', () => {
     expect(context.text).toContain('[ERROR: 行動ログの取得に失敗しました: activity db failed]');
     expect(context.text).toContain('[ERROR: スケジュール済みアクションの取得に失敗しました: schedule db failed]');
     expect(activityStore.commitLastNotificationReservation).not.toHaveBeenCalled();
+  });
+
+  it('does not reserve or advance the notification cursor when notification loading returns partial results', async () => {
+    const activityStore = createActivityStore({
+      getLastNotificationId: vi.fn(async () => 'notif-1'),
+    });
+    const scheduleStore = createScheduleStore();
+    const notifications: SnsNotification[] = [{
+      id: 'notif-2',
+      type: 'reply',
+      createdAt: '2025-01-02T00:00:00.000Z',
+      accountId: 'acct-2',
+      accountName: 'Bob',
+      accountHandle: 'bob@example.com',
+      post: createPost('post-2', 'Partial reply text'),
+    }];
+    const snsProvider = createProvider({
+      getNotifications: vi.fn(async () => createNotificationResult(notifications, false)),
+    });
+
+    const provider = new SnsSkillContextProvider({ activityStore, scheduleStore, snsProvider });
+    const context = await provider.getContext();
+
+    expect(context.text).toContain('Partial reply text');
+    expect(activityStore.reserveLastNotificationId).not.toHaveBeenCalled();
+    expect(activityStore.commitLastNotificationReservation).not.toHaveBeenCalled();
+    expect(context.onSuccess).toBeUndefined();
   });
 
   it('preserves successful activity history when scheduled action loading fails', async () => {
@@ -268,6 +304,24 @@ describe('SnsSkillContextProvider', () => {
     expect(activityStore.reserveLastNotificationId).not.toHaveBeenCalled();
   });
 
+  it('preserves incomplete notification state even when the partial page is empty', async () => {
+    const activityStore = createActivityStore({
+      getLastNotificationId: vi.fn(async () => 'notif-1'),
+    });
+    const scheduleStore = createScheduleStore();
+    const snsProvider = createProvider({
+      getNotifications: vi.fn(async () => createNotificationResult([], false)),
+    });
+
+    const provider = new SnsSkillContextProvider({ activityStore, scheduleStore, snsProvider });
+    const context = await provider.getContext();
+
+    expect(context.text).toContain('## 新着通知\n- なし');
+    expect(activityStore.reserveLastNotificationId).not.toHaveBeenCalled();
+    expect(activityStore.commitLastNotificationReservation).not.toHaveBeenCalled();
+    expect(context.onSuccess).toBeUndefined();
+  });
+
   it('defers notification cursor persistence until the turn succeeds', async () => {
     const activityStore = createActivityStore({
       getLastNotificationId: vi.fn(async () => 'notif-1'),
@@ -283,7 +337,7 @@ describe('SnsSkillContextProvider', () => {
       post: createPost('post-2', 'Reply text'),
     }];
     const snsProvider = createProvider({
-      getNotifications: vi.fn(async () => notifications),
+      getNotifications: vi.fn(async () => createNotificationResult(notifications)),
     });
 
     const provider = new SnsSkillContextProvider({ activityStore, scheduleStore, snsProvider });
@@ -321,9 +375,9 @@ describe('SnsSkillContextProvider', () => {
     });
     const scheduleStore = createScheduleStore();
     const snsProvider = createProvider({
-      getNotifications: vi.fn(async ({ sinceId }): Promise<SnsNotification[]> => {
+      getNotifications: vi.fn(async ({ sinceId }): Promise<NotificationFetchResult> => {
         if (sinceId === '100') {
-          return [{
+          return createNotificationResult([{
             id: '200',
             type: 'reply',
             createdAt: '2025-01-02T00:00:00.000Z',
@@ -331,10 +385,10 @@ describe('SnsSkillContextProvider', () => {
             accountName: 'Bob',
             accountHandle: 'bob@example.com',
             post: createPost('post-2', 'First batch'),
-          }];
+          }]);
         }
         if (sinceId === '200') {
-          return [{
+          return createNotificationResult([{
             id: '300',
             type: 'reply',
             createdAt: '2025-01-03T00:00:00.000Z',
@@ -342,9 +396,9 @@ describe('SnsSkillContextProvider', () => {
             accountName: 'Cara',
             accountHandle: 'cara@example.com',
             post: createPost('post-3', 'Second batch'),
-          }];
+          }]);
         }
-        return [];
+        return createNotificationResult([]);
       }),
     });
 
