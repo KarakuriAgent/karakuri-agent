@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSnsTools } from '../src/agent/tools/sns.js';
 import { MastodonProvider } from '../src/sns/mastodon.js';
-import type { ISnsActivityStore, ISnsScheduleStore, ScheduledAction } from '../src/sns/types.js';
+import type { ISnsActivityStore } from '../src/sns/types.js';
 import type { LookupFn } from '../src/utils/safe-fetch.js';
 
 const DEFAULT_OPTIONS: ToolExecutionOptions = {
@@ -52,18 +52,6 @@ async function waitFor(predicate: () => boolean, attempts = 50): Promise<void> {
 }
 
 
-function createScheduleStore(overrides: Partial<ISnsScheduleStore> = {}): ISnsScheduleStore {
-  return {
-    schedule: vi.fn(async () => 1),
-    claimPendingActions: vi.fn(async () => []),
-    completeWithRecord: vi.fn(async () => {}),
-    markFailed: vi.fn(async () => {}),
-    recoverStaleExecuting: vi.fn(async () => 0),
-    getPendingAndExecuting: vi.fn(async () => []),
-    close: vi.fn(async () => {}),
-    ...overrides,
-  };
-}
 
 function createStatus(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -454,88 +442,22 @@ describe('sns tools', () => {
   });
 
 
-  it('schedules SNS actions when scheduled_at is provided', async () => {
+  it('rejects non-public X posts before they are published', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
-    const activityStore: ISnsActivityStore = {
-      recordPost: vi.fn(async () => {}),
-      recordLike: vi.fn(async () => {}),
-      recordRepost: vi.fn(async () => {}),
-      hasLiked: vi.fn(async () => false),
-      hasReposted: vi.fn(async () => false),
-      hasReplied: vi.fn(async () => false),
-      hasQuoted: vi.fn(async () => false),
-      getRecentActivities: vi.fn(async () => []),
-      getLastNotificationId: vi.fn(async () => null),
-      setLastNotificationId: vi.fn(async () => {}),
-      close: vi.fn(async () => {}),
-    };
-    const scheduleStore = createScheduleStore();
-    const tools = createSnsTools({
-      ...SNS_OPTIONS,
-      fetch,
-      activityStore,
-      scheduleStore,
-      now: () => new Date('2025-01-01T00:00:00.000Z'),
-    });
-
-    await expect(tools.sns_post!.execute!({
-      text: 'Hello later',
-      scheduled_at: '2025-01-01T01:00:00.000Z',
-      visibility: 'public',
-    }, DEFAULT_OPTIONS)).resolves.toEqual({
-      status: 'scheduled',
-      scheduled_at: '2025-01-01T01:00:00.000Z',
-    });
-    expect(scheduleStore.schedule).toHaveBeenCalledWith({
-      actionType: 'post',
-      scheduledAt: new Date('2025-01-01T01:00:00.000Z'),
-      params: { text: 'Hello later', visibility: 'public' },
-    });
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('rejects scheduled_at values without an explicit timezone', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const scheduleStore = createScheduleStore();
-    const tools = createSnsTools({
-      ...SNS_OPTIONS,
-      fetch,
-      scheduleStore,
-      now: () => new Date('2025-01-01T00:00:00.000Z'),
-    });
-
-    await expect(tools.sns_post!.execute!({
-      text: 'Hello later',
-      scheduled_at: '2025-01-01T01:00:00',
-      visibility: 'public',
-    }, DEFAULT_OPTIONS)).resolves.toEqual({
-      error: 'scheduled_at must be a valid datetime string with an explicit timezone offset (for example, Z or +09:00)',
-    });
-    expect(scheduleStore.schedule).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('rejects scheduling non-public X posts before they are queued', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const scheduleStore = createScheduleStore();
     const tools = createSnsTools({
       sns: {
         provider: 'x',
         accessToken: 'x-token',
       },
       fetch,
-      scheduleStore,
-      now: () => new Date('2025-01-01T00:00:00.000Z'),
     });
 
     await expect(tools.sns_post!.execute!({
       text: 'Hello later',
-      scheduled_at: '2025-01-01T01:00:00.000Z',
       visibility: 'direct',
     }, DEFAULT_OPTIONS)).resolves.toEqual({
       error: 'X only supports public visibility',
     });
-    expect(scheduleStore.schedule).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -568,128 +490,6 @@ describe('sns tools', () => {
     expect(fetch).toHaveBeenCalled();
   });
 
-  it('rejects scheduled_at values in the past', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const scheduleStore = createScheduleStore();
-    const tools = createSnsTools({
-      ...SNS_OPTIONS,
-      fetch,
-      scheduleStore,
-      now: () => new Date('2025-01-01T03:00:00.000Z'),
-    });
-
-    await expect(tools.sns_like!.execute!({
-      post_id: 'post-1',
-      scheduled_at: '2025-01-01T02:59:59.000Z',
-    }, DEFAULT_OPTIONS)).resolves.toEqual({
-      error: 'scheduled_at must be in the future',
-    });
-    expect(scheduleStore.schedule).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('skips scheduling duplicates that already exist in the schedule queue', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const activityStore: ISnsActivityStore = {
-      recordPost: vi.fn(async () => {}),
-      recordLike: vi.fn(async () => {}),
-      recordRepost: vi.fn(async () => {}),
-      hasLiked: vi.fn(async () => false),
-      hasReposted: vi.fn(async () => false),
-      hasReplied: vi.fn(async () => false),
-      hasQuoted: vi.fn(async () => false),
-      getRecentActivities: vi.fn(async () => []),
-      getLastNotificationId: vi.fn(async () => null),
-      setLastNotificationId: vi.fn(async () => {}),
-      close: vi.fn(async () => {}),
-    };
-    const scheduledActions: ScheduledAction[] = [{
-      id: 5,
-      actionType: 'like',
-      scheduledAt: new Date('2025-01-01T01:00:00.000Z'),
-      params: { postId: 'post-1' },
-      status: 'pending',
-      createdAt: '2025-01-01T00:00:00.000Z',
-    }, {
-      id: 6,
-      actionType: 'post',
-      scheduledAt: new Date('2025-01-01T01:30:00.000Z'),
-      params: { text: 'reply', replyToId: 'root-1', visibility: 'public' },
-      status: 'executing',
-      createdAt: '2025-01-01T00:10:00.000Z',
-    }];
-    const scheduleStore = createScheduleStore({
-      getPendingAndExecuting: vi.fn(async () => scheduledActions),
-    });
-    const tools = createSnsTools({
-      ...SNS_OPTIONS,
-      fetch,
-      activityStore,
-      scheduleStore,
-      now: () => new Date('2025-01-01T00:00:00.000Z'),
-    });
-
-    await expect(tools.sns_like!.execute!({
-      post_id: 'post-1',
-      scheduled_at: '2025-01-01T02:00:00.000Z',
-    }, DEFAULT_OPTIONS)).resolves.toEqual({
-      status: 'skipped',
-      reason: 'like_already_scheduled',
-      post_id: 'post-1',
-    });
-    await expect(tools.sns_post!.execute!({
-      text: 'duplicate reply',
-      reply_to_id: 'root-1',
-      scheduled_at: '2025-01-01T02:05:00.000Z',
-      visibility: 'public',
-    }, DEFAULT_OPTIONS)).resolves.toEqual({
-      status: 'skipped',
-      reason: 'reply_already_scheduled',
-      reply_to_id: 'root-1',
-    });
-    expect(scheduleStore.schedule).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('skips immediate replies when an equivalent scheduled reply is already pending recovery', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const activityStore: ISnsActivityStore = {
-      recordPost: vi.fn(async () => {}),
-      recordLike: vi.fn(async () => {}),
-      recordRepost: vi.fn(async () => {}),
-      hasLiked: vi.fn(async () => false),
-      hasReposted: vi.fn(async () => false),
-      hasReplied: vi.fn(async () => false),
-      hasQuoted: vi.fn(async () => false),
-      getRecentActivities: vi.fn(async () => []),
-      getLastNotificationId: vi.fn(async () => null),
-      setLastNotificationId: vi.fn(async () => {}),
-      close: vi.fn(async () => {}),
-    };
-    const queuedReplies: ScheduledAction[] = [{
-      id: 7,
-      actionType: 'post',
-      scheduledAt: new Date('2025-01-01T02:10:00.000Z'),
-      params: { text: 'queued reply', replyToId: 'root-2', visibility: 'public' },
-      status: 'executing',
-      createdAt: '2025-01-01T02:00:00.000Z',
-    }];
-    const scheduleStore = createScheduleStore({
-      getPendingAndExecuting: vi.fn(async () => queuedReplies),
-    });
-    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore, scheduleStore });
-
-    await expect(tools.sns_post!.execute!({
-      text: 'reply now',
-      reply_to_id: 'root-2',
-      visibility: 'public',
-    }, DEFAULT_OPTIONS)).resolves.toEqual({
-      status: 'skipped',
-      reason: 'reply_already_scheduled',
-      reply_to_id: 'root-2',
-    });
-    expect(fetch).not.toHaveBeenCalled();
-  });
 
   it('uploads media from a URL with multipart form data', async () => {
     const fetch = vi

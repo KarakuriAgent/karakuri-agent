@@ -3,7 +3,7 @@ import type { ToolSet } from 'ai';
 import type { SnsCredentials } from '../../config.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
-import type { ISnsActivityStore, ISnsScheduleStore } from '../../sns/types.js';
+import type { ISnsActivityStore } from '../../sns/types.js';
 import type { SkillContextScope } from '../../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
 import type { IUserStore } from '../../user/types.js';
@@ -27,7 +27,6 @@ export interface CreateAgentToolsOptions {
   braveApiKey?: string | undefined;
   sns?: SnsCredentials | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
-  snsScheduleStore?: ISnsScheduleStore | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   autoLoadedSkills?: SkillDefinition[] | undefined;
@@ -50,7 +49,6 @@ export function createAgentTools({
   braveApiKey,
   sns,
   snsActivityStore,
-  snsScheduleStore,
   skillStore,
   skills = [],
   autoLoadedSkills = [],
@@ -117,7 +115,6 @@ export function createAgentTools({
     sns,
     dataDir,
     snsActivityStore,
-    snsScheduleStore,
     userStore,
     evaluateUser,
     reportError,

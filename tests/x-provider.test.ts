@@ -253,6 +253,31 @@ describe('XProvider', () => {
     });
   });
 
+  it('classifies quote notifications when the mention quotes the current user post', async () => {
+    mockState.users.getMe.mockResolvedValue({ data: makeUser('me-1', 'bot', 'Bot') });
+    mockState.users.getMentions.mockResolvedValueOnce(makeListResponse([
+      makePost({
+        id: 'quote-1',
+        authorId: 'user-4',
+        referencedTweets: [{ id: 'bot-post-1', type: 'quoted' }],
+      }),
+      makePost({ id: 'mention-1', authorId: 'user-3' }),
+    ], {
+      users: [makeUser('user-3', 'mentioner', 'Mentioner'), makeUser('user-4', 'quoter', 'Quoter')],
+      tweets: [makePost({ id: 'bot-post-1', authorId: 'me-1', text: 'Original bot post' })],
+    }));
+
+    const provider = new XProvider({ accessToken: 'token' });
+
+    await expect(provider.getNotifications({ limit: 5 })).resolves.toEqual({
+      notifications: [
+        expect.objectContaining({ id: 'quote-1', type: 'quote', accountHandle: 'quoter' }),
+        expect.objectContaining({ id: 'mention-1', type: 'mention', accountHandle: 'mentioner' }),
+      ],
+      complete: true,
+    });
+  });
+
   it('filters reply and mention notifications using the classified type', async () => {
     mockState.users.getMe.mockResolvedValue({ data: makeUser('me-1', 'bot', 'Bot') });
     mockState.users.getMentions
@@ -280,6 +305,30 @@ describe('XProvider', () => {
     await expect(provider.getNotifications({ limit: 5, types: ['mention'] })).resolves.toEqual({
       notifications: [
         expect.objectContaining({ id: 'mention-1', type: 'mention' }),
+      ],
+      complete: true,
+    });
+  });
+
+  it('filters quote notifications using the classified type', async () => {
+    mockState.users.getMe.mockResolvedValue({ data: makeUser('me-1', 'bot', 'Bot') });
+    mockState.users.getMentions.mockResolvedValueOnce(makeListResponse([
+      makePost({
+        id: 'quote-1',
+        authorId: 'user-4',
+        referencedTweets: [{ id: 'bot-post-1', type: 'quoted' }],
+      }),
+      makePost({ id: 'mention-1', authorId: 'user-3' }),
+    ], {
+      users: [makeUser('user-3', 'mentioner', 'Mentioner'), makeUser('user-4', 'quoter', 'Quoter')],
+      tweets: [makePost({ id: 'bot-post-1', authorId: 'me-1', text: 'Original bot post' })],
+    }));
+
+    const provider = new XProvider({ accessToken: 'token' });
+
+    await expect(provider.getNotifications({ limit: 5, types: ['quote'] })).resolves.toEqual({
+      notifications: [
+        expect.objectContaining({ id: 'quote-1', type: 'quote' }),
       ],
       complete: true,
     });

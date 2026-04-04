@@ -29,10 +29,10 @@ export interface SkillContextEntry {
 // Keep this map in sync with BUILTIN_SNS_ALLOWED_TOOLS in sns/builtin-skill.ts.
 // Missing entries use a generic fallback description.
 const AUTO_LOADED_TOOL_GUIDANCE: Readonly<Record<string, string>> = {
-  sns_post: '- sns_post: publish an SNS post, optionally as a reply, quote, media post, or delayed scheduled action.',
+  sns_post: '- sns_post: publish an SNS post, optionally as a reply, quote, or media post.',
   sns_get_post: '- sns_get_post: fetch a specific SNS post by post_id.',
-  sns_like: '- sns_like: like an SNS post immediately or schedule the like for later.',
-  sns_repost: '- sns_repost: repost an SNS post immediately or schedule the repost for later.',
+  sns_like: '- sns_like: like an SNS post immediately.',
+  sns_repost: '- sns_repost: repost an SNS post immediately.',
   sns_upload_media: '- sns_upload_media: upload media from a URL and return a media ID for sns_post.',
   sns_get_thread: '- sns_get_thread: fetch the surrounding thread context for an SNS post.',
 };

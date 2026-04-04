@@ -196,6 +196,8 @@ function mapNotification(
         return 'like';
       case 'reblog':
         return 'repost';
+      case 'quote':
+        return 'quote';
       case 'follow':
         return 'follow';
       default:
@@ -230,6 +232,8 @@ function mapNotificationTypeToMastodon(
       return ['follow'];
     case 'reply':
       return ['mention'];
+    case 'quote':
+      return ['quote'];
     default:
       return [];
   }

@@ -32,6 +32,8 @@ describe('loadConfig', () => {
     expect(config.tokenBudget).toBe(80_000);
     expect(config.port).toBe(3_000);
     expect(config.heartbeatIntervalMinutes).toBe(120);
+    expect(config.snsLoopMinIntervalMinutes).toBe(60);
+    expect(config.snsLoopMaxIntervalMinutes).toBe(180);
     expect(config.braveApiKey).toBeUndefined();
     expect(config.postMessageChannelIds).toBeUndefined();
     expect(config.allowedChannelIds).toBeUndefined();
@@ -45,6 +47,8 @@ describe('loadConfig', () => {
       REPORT_CHANNEL_ID: 'report-1',
       ADMIN_USER_IDS: 'admin-1, admin-2',
       HEARTBEAT_INTERVAL_MINUTES: '15',
+      SNS_LOOP_MIN_INTERVAL_MINUTES: '30',
+      SNS_LOOP_MAX_INTERVAL_MINUTES: '90',
     });
 
     expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
@@ -52,6 +56,8 @@ describe('loadConfig', () => {
     expect(config.reportChannelId).toBe('report-1');
     expect(config.adminUserIds).toEqual(['admin-1', 'admin-2']);
     expect(config.heartbeatIntervalMinutes).toBe(15);
+    expect(config.snsLoopMinIntervalMinutes).toBe(30);
+    expect(config.snsLoopMaxIntervalMinutes).toBe(90);
   });
 
   it('treats an empty REPORT_CHANNEL_ID as omitted', () => {
@@ -405,6 +411,14 @@ describe('loadConfig', () => {
       SNS_PROVIDER: 'mastodon',
       SNS_ACCESS_TOKEN: 'sns-token',
     })).toThrow('Partial SNS configuration: SNS_INSTANCE_URL must be set when SNS_PROVIDER=mastodon.');
+  });
+
+  it('throws when SNS loop min exceeds max', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_LOOP_MIN_INTERVAL_MINUTES: '181',
+      SNS_LOOP_MAX_INTERVAL_MINUTES: '180',
+    })).toThrow('SNS_LOOP_MIN_INTERVAL_MINUTES must be less than or equal to SNS_LOOP_MAX_INTERVAL_MINUTES');
   });
 
   it('throws when a required field is missing', () => {

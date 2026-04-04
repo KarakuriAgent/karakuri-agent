@@ -84,6 +84,8 @@ const baseConfig: Config = {
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,
+  snsLoopMinIntervalMinutes: 60,
+  snsLoopMaxIntervalMinutes: 180,
   llmEnableThinking: true,
 };
 

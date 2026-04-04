@@ -7,8 +7,8 @@ import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
 import type { ISessionManager, SessionData } from '../session/types.js';
-import { createBuiltinSnsSkillDefinition, BUILTIN_SNS_SKILL_NAME, buildHeartbeatSnsSkillActivityInstructions } from '../sns/builtin-skill.js';
-import type { ISnsActivityStore, ISnsScheduleStore } from '../sns/types.js';
+import { createBuiltinSnsSkillDefinition, BUILTIN_SNS_SKILL_NAME } from '../sns/builtin-skill.js';
+import type { ISnsActivityStore } from '../sns/types.js';
 import type { SkillContextRegistry } from '../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../skill/types.js';
 import { evaluatePostResponse } from '../user/post-response-evaluator.js';
@@ -51,10 +51,10 @@ export interface HandleMessageOptions {
   userId?: string | undefined;
   /**
    * When true, the session is not loaded from or persisted to storage, and summarization is skipped.
-   * For system users, ephemeral turns also trigger auto-loading of the builtin SNS skill
-   * (context pre-injection + gated tool registration without requiring loadSkill).
    */
   ephemeral?: boolean | undefined;
+  skillActivityInstructions?: string | undefined;
+  autoLoadSnsSkill?: boolean | undefined;
 }
 
 export interface IAgent {
@@ -77,7 +77,6 @@ export interface KarakuriAgentOptions {
   messageSink?: IMessageSink | undefined;
   userStore?: IUserStore | undefined;
   snsActivityStore?: ISnsActivityStore | undefined;
-  snsScheduleStore?: ISnsScheduleStore | undefined;
   snsContextRegistry?: SkillContextRegistry | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
@@ -95,7 +94,6 @@ export class KarakuriAgent implements IAgent {
   private readonly messageSink: IMessageSink | undefined;
   private readonly userStore: IUserStore | undefined;
   private readonly snsActivityStore: ISnsActivityStore | undefined;
-  private readonly snsScheduleStore: ISnsScheduleStore | undefined;
   private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
@@ -116,7 +114,6 @@ export class KarakuriAgent implements IAgent {
     messageSink,
     userStore,
     snsActivityStore,
-    snsScheduleStore,
     snsContextRegistry,
     generateTextFn = generateText,
     modelFactory,
@@ -132,7 +129,6 @@ export class KarakuriAgent implements IAgent {
     this.messageSink = messageSink;
     this.userStore = userStore;
     this.snsActivityStore = snsActivityStore;
-    this.snsScheduleStore = snsScheduleStore;
     this.snsContextRegistry = snsContextRegistry;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
@@ -213,9 +209,6 @@ export class KarakuriAgent implements IAgent {
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
       && this.messageSink != null;
-    const canReportHeartbeatActivity = hasPostMessage
-      && this.config.reportChannelId != null
-      && (this.config.postMessageChannelIds ?? []).includes(this.config.reportChannelId);
     const hasManageCron = hasAdminAccess && this.schedulerStore != null;
     const hasUserLookup = !isKarakuriWorldMode && this.userStore != null;
     const mergedSkills = mergeBuiltinSkills(listedSkills, builtinSkills);
@@ -225,15 +218,13 @@ export class KarakuriAgent implements IAgent {
         sns: this.config.sns,
         dataDir: this.config.dataDir,
         snsActivityStore: this.snsActivityStore,
-        snsScheduleStore: this.snsScheduleStore,
         userStore: this.userStore,
       });
     // Auto-load the builtin SNS skill for system heartbeat turns so the LLM receives
     // dynamic context (notifications, trends, activity log) and gated tools without
     // needing to call loadSkill. Currently only heartbeat sets ephemeral on system turns;
     // if a future system job reuses ephemeral, revisit whether auto-loading is appropriate.
-    const shouldAutoLoadSnsSkill = isSystemUser
-      && ephemeral
+    const shouldAutoLoadSnsSkill = options?.autoLoadSnsSkill === true
       && this.snsContextRegistry != null
       && effectiveSkills.some((skill) => skill.name === BUILTIN_SNS_SKILL_NAME);
     const autoLoadedSkills = shouldAutoLoadSnsSkill
@@ -261,12 +252,7 @@ export class KarakuriAgent implements IAgent {
             };
           }))
         : [];
-      const hasBuiltinHeartbeatSnsSkill = shouldAutoLoadSnsSkill
-        && mergedSkills.some((skill) => skill.name === BUILTIN_SNS_SKILL_NAME && builtinSkills.includes(skill));
-      const skillActivityInstructions = shouldAutoLoadSnsSkill
-        && hasBuiltinHeartbeatSnsSkill
-        ? buildHeartbeatSnsSkillActivityInstructions({ hasPostMessage: canReportHeartbeatActivity })
-        : null;
+      const skillActivityInstructions = options?.skillActivityInstructions ?? null;
       // When builtins are merged, use a static snapshot so that code-defined skills
       // (not present in FileSkillStore) are visible via loadSkill. For heartbeat,
       // the snapshot also excludes auto-loaded skills. For users without builtins,
@@ -274,10 +260,7 @@ export class KarakuriAgent implements IAgent {
       const runtimeSkillStore = builtinSkills.length > 0 && visibleSkills.length > 0
         ? createStaticSkillStore(visibleSkills)
         : undefined;
-      const snsHeartbeatReminder = hasBuiltinHeartbeatSnsSkill
-        ? 'SNSツールが有効です。`<skill-context>` 内の新着通知がある場合、通知を無視せず必ず sns_post / sns_like / sns_repost のいずれかを実行してください。日記にネタがあれば sns_post で新規投稿も行ってください。通知がある場合に HEARTBEAT_OK のみを返さないでください。'
-        : undefined;
-      const combinedExtraSystemPrompt = [options?.extraSystemPrompt, snsHeartbeatReminder, isKarakuriWorldMode
+      const combinedExtraSystemPrompt = [options?.extraSystemPrompt, isKarakuriWorldMode
         ? buildKarakuriWorldModeInstructions()
         : undefined]
         .filter((value): value is string => value != null && value.trim().length > 0)
@@ -379,7 +362,6 @@ export class KarakuriAgent implements IAgent {
           ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
           ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
           ...(this.snsActivityStore != null ? { snsActivityStore: this.snsActivityStore } : {}),
-          ...(this.snsScheduleStore != null ? { snsScheduleStore: this.snsScheduleStore } : {}),
           ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
           ...(isSystemUser && this.userStore != null ? {
             evaluateUser: (snsUserId: string, displayName: string, postText: string) => {

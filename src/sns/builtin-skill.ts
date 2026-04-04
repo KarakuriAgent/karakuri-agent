@@ -40,8 +40,6 @@ export function buildBuiltinSnsSkillInstructions(): string {
     '- 既にいいね/リポスト済みの投稿には再実行されない',
     '- 同じ投稿に対して二重にリプライされない',
     '- 既に引用済みの投稿は再引用されない',
-    '- pending / executing のスケジュール済みアクションとも重複しない',
-    '- X では crash recovery 時に like / repost 済み判定ができない場合があり、再起動をまたぐ scheduled like / repost の重複防止は保証されない',
     '',
     '## 投稿方針',
     '',
@@ -50,12 +48,12 @@ export function buildBuiltinSnsSkillInstructions(): string {
     '- 「重要かどうか」ではなく「自分が何か感じたかどうか」を投稿の判断基準にする',
     '- 日記やメモリに投稿ネタがある場合は、迷わず `sns_post` を呼び出すこと。投稿を見送る判断は、本当にネタがない場合のみ',
     '- 投稿本文は140文字以内で構成する。伝えたいことを短く凝縮して書く',
-    '- 直近の行動ログとスケジュール済みアクションを参照し、同じ内容やトーンの繰り返しを避ける（行動の種類を変える必要はない）',
-    '- SNSアクションを遅延実行する場合は `scheduled_at` に未来のタイムゾーン付き日時（例: `2025-01-01T00:00:00Z`, `2025-01-01T09:00:00+09:00`）を指定する',
+    '- 直近の行動ログを参照し、同じ内容やトーンの繰り返しを避ける（行動の種類を変える必要はない）',
+    '- ハッシュタグは使わない',
   ].join('\n');
 }
 
-export function buildHeartbeatSnsSkillActivityInstructions(options: { hasPostMessage?: boolean } = {}): string {
+export function buildSnsLoopActivityInstructions(options: { hasPostMessage?: boolean } = {}): string {
   const lines = [
     '## スキル活動',
     '`<skill-context>` の動的コンテキストと `<diary>` の日記を確認し、各スキルの指示に従ってアクションを実行する。',
@@ -67,9 +65,9 @@ export function buildHeartbeatSnsSkillActivityInstructions(options: { hasPostMes
     '- 日記に何かしらの体験・感想・出来事が記載されていれば、それは投稿ネタになる。ネタがある場合は必ず `sns_post` を実行すること',
     '- 投稿するネタがあれば直近に投稿済みでも控える必要はない',
     '- 同じ内容やトーンの繰り返しは避けるが、行動の種類（投稿・いいね等）を前回と変える必要はない',
-    '- SNSアクションを遅延実行する場合は `scheduled_at` に未来のタイムゾーン付き日時を指定する',
+    '- 通知がなく投稿ネタもない場合は、無理に投稿せず `SNS_IDLE` と理由（例: `SNS_IDLE 通知なし、投稿ネタなし`）を返して終了してよい',
     '- 実行したアクションがあればその内容を簡潔に報告する',
-    '- 何もしなかった場合は `HEARTBEAT_OK` と理由（例: 投稿ネタなし、通知なし）を返答する',
+    '- 何もしなかった場合は `SNS_IDLE` と理由を返答する',
   ];
 
   if (options.hasPostMessage === true) {

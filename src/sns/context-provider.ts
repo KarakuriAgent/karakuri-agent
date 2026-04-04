@@ -1,9 +1,7 @@
 import type { SkillContextProvider, SkillContextResult } from '../skill/context-provider.js';
 import type {
   ISnsActivityStore,
-  ISnsScheduleStore,
   NotificationFetchResult,
-  ScheduledAction,
   SnsActivity,
   SnsNotification,
   SnsPost,
@@ -14,7 +12,6 @@ import { KeyedMutex } from '../utils/mutex.js';
 
 export interface SnsSkillContextProviderOptions {
   activityStore: ISnsActivityStore;
-  scheduleStore: ISnsScheduleStore;
   snsProvider: SnsProvider;
   notificationLimit?: number;
   trendLimit?: number;
@@ -26,9 +23,6 @@ const logger = createLogger('SnsSkillContextProvider');
 const MAX_CONTEXT_NOTIFICATION_PAGES = 5;
 
 export class SnsSkillContextProvider implements SkillContextProvider {
-  // Serialize context generation to prevent read-then-update races on the
-  // notification cursor (concurrent calls could read the same sinceId,
-  // fetch overlapping notifications, and advance the cursor past unread items).
   private readonly mutex = new KeyedMutex();
   private readonly notificationLimit: number;
   private readonly trendLimit: number;
@@ -43,11 +37,10 @@ export class SnsSkillContextProvider implements SkillContextProvider {
   async getContext(): Promise<SkillContextResult> {
     return this.mutex.runExclusive('sns-skill-context', async () => {
       const sinceId = await this.options.activityStore.getLastNotificationId();
-      const [notificationsResult, trendsResult, activitiesResult, scheduledResult] = await Promise.allSettled([
+      const [notificationsResult, trendsResult, activitiesResult] = await Promise.allSettled([
         this.loadNotifications(sinceId),
         this.options.snsProvider.getTrends(this.trendLimit),
         this.options.activityStore.getRecentActivities(this.recentActivityLimit),
-        this.options.scheduleStore.getPendingAndExecuting(),
       ]);
 
       const sections: string[] = [];
@@ -84,18 +77,13 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         sections.push(`## トレンド\n[ERROR: トレンドの取得に失敗しました: ${formatContextError(trendsResult.reason)}]`);
       }
 
-      const activityErrors: { activity?: string; scheduled?: string } = {};
+      const activityErrors: { activity?: string } = {};
       if (activitiesResult.status === 'rejected') {
         logger.error('Failed to load SNS recent activities for context', activitiesResult.reason);
         activityErrors.activity = `行動ログの取得に失敗しました: ${formatContextError(activitiesResult.reason)}`;
       }
-      if (scheduledResult.status === 'rejected') {
-        logger.error('Failed to load scheduled SNS actions for context', scheduledResult.reason);
-        activityErrors.scheduled = `スケジュール済みアクションの取得に失敗しました: ${formatContextError(scheduledResult.reason)}`;
-      }
       sections.push(formatActivities(
         activitiesResult.status === 'fulfilled' ? activitiesResult.value : null,
-        scheduledResult.status === 'fulfilled' ? scheduledResult.value : null,
         activityErrors,
       ));
 
@@ -152,7 +140,7 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         sinceId: sinceId ?? undefined,
         maxId: nextMaxId,
         limit: remainingLimit,
-        types: ['mention', 'reply'],
+        types: ['mention', 'reply', 'quote'],
       });
       const page = pageResult.notifications;
       if (!pageResult.complete) {
@@ -220,8 +208,7 @@ function formatTrends(posts: SnsPost[]): string {
 
 function formatActivities(
   activities: SnsActivity[] | null,
-  scheduledActions: ScheduledAction[] | null,
-  errors: { activity?: string; scheduled?: string } = {},
+  errors: { activity?: string } = {},
 ): string {
   return [
     '## 直近の行動ログ',
@@ -242,22 +229,5 @@ function formatActivities(
             }
           })
         : ['- なし']),
-    '',
-    '## スケジュール済みアクション',
-    ...(errors.scheduled != null
-      ? [`[ERROR: ${errors.scheduled}]`]
-      : scheduledActions != null && scheduledActions.length > 0
-        ? scheduledActions.map((action) => formatScheduledAction(action))
-        : ['- なし']),
   ].join('\n');
-}
-
-function formatScheduledAction(action: ScheduledAction): string {
-  switch (action.actionType) {
-    case 'post':
-      return `- [post] "${action.params.text}" (scheduled: ${action.scheduledAt.toISOString()})`;
-    case 'like':
-    case 'repost':
-      return `- [${action.actionType}] post_id: ${action.params.postId} (scheduled: ${action.scheduledAt.toISOString()})`;
-  }
 }

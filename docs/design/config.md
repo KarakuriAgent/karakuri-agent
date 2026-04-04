@@ -38,6 +38,8 @@
 | `TOKEN_BUDGET` |  | `80000` | 要約トリガーのトークン予算 |
 | `PORT` |  | `3000` | Webhook / healthcheck HTTP サーバーの待受ポート |
 | `HEARTBEAT_INTERVAL_MINUTES` |  | `120` | Heartbeat scheduler の実行間隔（API コスト削減のため長めの既定値） |
+| `SNS_LOOP_MIN_INTERVAL_MINUTES` |  | `60` | SNS 専用ループの最短実行間隔（分） |
+| `SNS_LOOP_MAX_INTERVAL_MINUTES` |  | `180` | SNS 専用ループの最長実行間隔（分）。`MIN` 以上である必要がある |
 | `ALLOWED_CHANNEL_IDS` |  | - | `postMessage` で送信可能なチャンネル ID 一覧（`,` 区切り） |
 | `REPORT_CHANNEL_ID` |  | - | scheduler/report 用の専用チャンネル ID。`allowedChannelIds` には含まれるが `postMessage` の送信先には含めない |
 | `ADMIN_USER_IDS` |  | - | admin-only tool を使えるユーザー ID 一覧（`,` 区切り） |
@@ -124,6 +126,8 @@ interface Config {
   tokenBudget: number;
   port: number;
   heartbeatIntervalMinutes?: number | undefined;
+  snsLoopMinIntervalMinutes: number;
+  snsLoopMaxIntervalMinutes: number;
   postMessageChannelIds?: string[] | undefined;
   allowedChannelIds?: string[] | undefined;
   reportChannelId?: string | undefined;
@@ -148,6 +152,7 @@ function loadConfig(): Config {
   // LLM selector を parse して canonical 形式へ正規化する
   // post-response evaluator 用 selector / endpoint も同様に解決する
   // KARAKURI_WORLD_* は 2 変数の部分設定を fail-fast で拒否する
+  // SNS_LOOP_MIN_INTERVAL_MINUTES <= SNS_LOOP_MAX_INTERVAL_MINUTES を検証する
   // SNS_* は SNS_PROVIDER がある場合だけ provider ごとの必須項目を検証する
 }
 ```
