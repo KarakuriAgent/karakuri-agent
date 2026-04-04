@@ -43,6 +43,8 @@ const configSchema = z.object({
   tokenBudget: z.coerce.number().int().positive().default(80_000),
   port: z.coerce.number().int().min(1).max(65_535).default(3_000),
   heartbeatIntervalMinutes: z.coerce.number().positive().default(120),
+  snsLoopMinIntervalMinutes: z.coerce.number().positive().default(60),
+  snsLoopMaxIntervalMinutes: z.coerce.number().positive().default(180),
   allowedChannelIds: z.string().optional(),
   reportChannelId: z.string().trim().min(1).optional(),
   adminUserIds: z.string().optional(),
@@ -91,6 +93,8 @@ export interface Config {
   tokenBudget: number;
   port: number;
   heartbeatIntervalMinutes?: number | undefined;
+  snsLoopMinIntervalMinutes: number;
+  snsLoopMaxIntervalMinutes: number;
   postMessageChannelIds?: string[] | undefined;
   allowedChannelIds?: string[] | undefined;
   reportChannelId?: string | undefined;
@@ -138,6 +142,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tokenBudget: env.TOKEN_BUDGET ?? env.AGENT_TOKEN_BUDGET,
     port: env.PORT,
     heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES,
+    snsLoopMinIntervalMinutes: env.SNS_LOOP_MIN_INTERVAL_MINUTES,
+    snsLoopMaxIntervalMinutes: env.SNS_LOOP_MAX_INTERVAL_MINUTES,
     allowedChannelIds: env.ALLOWED_CHANNEL_IDS,
     reportChannelId: normalizeOptionalString(env.REPORT_CHANNEL_ID),
     adminUserIds: env.ADMIN_USER_IDS,
@@ -170,6 +176,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const mergedAllowedChannelIds = reportChannelId != null
       ? [...new Set([...(postMessageChannelIds ?? []), reportChannelId])]
       : postMessageChannelIds;
+    if (parsed.snsLoopMinIntervalMinutes > parsed.snsLoopMaxIntervalMinutes) {
+      throw new Error('SNS_LOOP_MIN_INTERVAL_MINUTES must be less than or equal to SNS_LOOP_MAX_INTERVAL_MINUTES');
+    }
     if ((karakuriWorldApiBaseUrl != null) !== (karakuriWorldApiKey != null)) {
       throw new Error(
         'Partial karakuri-world configuration: both KARAKURI_WORLD_API_BASE_URL and KARAKURI_WORLD_API_KEY must be set. '

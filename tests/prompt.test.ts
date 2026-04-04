@@ -210,7 +210,7 @@ describe('buildSystemPrompt', () => {
     expect(toolIndex).toBeGreaterThan(skillIndex);
     expect(skillActivityIndex).toBeGreaterThan(toolIndex);
     expect(result).toContain('- sns_post: publish an SNS post');
-    expect(result).toContain('- sns_like: like an SNS post immediately or schedule the like for later.');
+    expect(result).toContain('- sns_like: like an SNS post immediately.');
   });
 
   it('omits summary section when summary is null', () => {
@@ -301,7 +301,7 @@ describe('prompt helper sections', () => {
           allowedTools: ['sns_post', 'sns_get_thread'],
         },
       ],
-    })).toContain('- sns_post: publish an SNS post, optionally as a reply, quote, media post, or delayed scheduled action.');
+    })).toContain('- sns_post: publish an SNS post, optionally as a reply, quote, or media post.');
   });
 });
 

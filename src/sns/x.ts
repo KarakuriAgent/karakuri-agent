@@ -224,6 +224,10 @@ function getReplyToReference(post: XPost): XReferencedPost | undefined {
   return post.referencedTweets?.find((reference) => reference.type === 'replied_to');
 }
 
+function getQuotedReference(post: XPost): XReferencedPost | undefined {
+  return post.referencedTweets?.find((reference) => reference.type === 'quoted');
+}
+
 function mergeIncludes(...includesList: Array<XIncludes | undefined>): XIncludes | undefined {
   const users = new Map<string, XUser>();
   const media = new Map<string, XMedia>();
@@ -309,9 +313,17 @@ function mapTweet(post: XPost, includes: XIncludes | undefined): SnsPost {
 
 function mapNotification(post: XPost, includes: XIncludes | undefined, currentUserId: string): SnsNotification {
   const mappedPost = mapTweet(post, includes);
+  const quotedReference = getQuotedReference(post);
+  const quotedPost = quotedReference != null
+    ? includes?.tweets?.find((candidate) => candidate.id === quotedReference.id)
+    : undefined;
   return {
     id: mappedPost.id,
-    type: post.inReplyToUserId === currentUserId ? 'reply' : 'mention',
+    type: post.inReplyToUserId === currentUserId
+      ? 'reply'
+      : quotedPost?.authorId === currentUserId
+        ? 'quote'
+        : 'mention',
     createdAt: mappedPost.createdAt,
     accountId: mappedPost.authorId,
     accountName: mappedPost.authorName,

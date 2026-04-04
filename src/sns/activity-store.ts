@@ -6,14 +6,7 @@ import Database from 'better-sqlite3';
 
 import { createLogger } from '../utils/logger.js';
 import type {
-  ActivityRecord,
   ISnsActivityStore,
-  ISnsScheduleStore,
-  ScheduledAction,
-  ScheduledActionInput,
-  ScheduledLikeParams,
-  ScheduledPostParams,
-  ScheduledRepostParams,
   SnsActivity,
   SnsActivityType,
 } from './types.js';
@@ -23,8 +16,6 @@ const RECENT_ACTIVITY_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
 const DEFAULT_RECENT_ACTIVITY_LIMIT = 10;
 const LAST_NOTIFICATION_ID_KEY = 'last_notification_id';
 
-type ScheduledActionStatus = 'pending' | 'executing' | 'completed' | 'failed';
-
 interface ActivityRow {
   id: number;
   type: SnsActivityType;
@@ -33,16 +24,6 @@ interface ActivityRow {
   reply_to_id: string | null;
   quote_post_id: string | null;
   created_at: string;
-}
-
-interface ScheduledActionRow {
-  id: number;
-  action_type: 'post' | 'like' | 'repost';
-  scheduled_at: string;
-  params: string;
-  status: ScheduledActionStatus;
-  created_at: string;
-  executing_started_at: string | null;
 }
 
 interface ExistsRow {
@@ -59,8 +40,8 @@ interface NotificationReservationRow {
   created_at: string;
 }
 
-interface TableInfoRow {
-  name: string;
+interface PendingScheduledCountRow {
+  count: number;
 }
 
 export interface SqliteSnsActivityStoreOptions {
@@ -68,7 +49,7 @@ export interface SqliteSnsActivityStoreOptions {
   now?: (() => Date) | undefined;
 }
 
-export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleStore {
+export class SqliteSnsActivityStore implements ISnsActivityStore {
   private readonly db: Database.Database;
   private readonly now: () => Date;
   private readonly insertActivityStatement: Database.Statement<[
@@ -90,20 +71,6 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
   private readonly selectNotificationReservationStatement: Database.Statement<[string], NotificationReservationRow>;
   private readonly deleteNotificationReservationStatement: Database.Statement<[string]>;
   private readonly deleteAllNotificationReservationsStatement: Database.Statement<[]>;
-  private readonly insertScheduledActionStatement: Database.Statement<[
-    'post' | 'like' | 'repost',
-    string,
-    string,
-    string,
-    string,
-  ]>;
-  private readonly selectDueScheduledActionsStatement: Database.Statement<[string, number], ScheduledActionRow>;
-  private readonly claimScheduledActionStatement: Database.Statement<[string, number]>;
-  private readonly updateScheduledFailureStatement: Database.Statement<[string, number]>;
-  private readonly getPendingAndExecutingStatement: Database.Statement<[], ScheduledActionRow>;
-  private readonly recoverAllStaleExecutingStatement: Database.Statement<[]>;
-  private readonly recoverStaleExecutingBeforeStatement: Database.Statement<[string]>;
-  private readonly markScheduledCompletedStatement: Database.Statement<[number]>;
 
   constructor({ dataDir, now }: SqliteSnsActivityStoreOptions) {
     const dbPath = join(dataDir, 'sns-activity.db');
@@ -142,20 +109,7 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
           notification_id TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS sns_scheduled_actions (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          action_type TEXT NOT NULL CHECK(action_type IN ('post', 'like', 'repost')),
-          scheduled_at TEXT NOT NULL,
-          params TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'executing', 'completed', 'failed')),
-          error TEXT,
-          created_at TEXT NOT NULL,
-          executing_started_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_sns_scheduled_pending
-          ON sns_scheduled_actions (status, scheduled_at) WHERE status = 'pending';
       `);
-      ensureScheduledActionColumns(this.db);
 
       this.insertActivityStatement = this.db.prepare(`
         INSERT INTO sns_activities (type, post_id, text, reply_to_id, quote_post_id, created_at)
@@ -204,52 +158,8 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
       this.deleteAllNotificationReservationsStatement = this.db.prepare(`
         DELETE FROM sns_notification_reservations
       `);
-      this.insertScheduledActionStatement = this.db.prepare(`
-        INSERT INTO sns_scheduled_actions (action_type, scheduled_at, params, status, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `);
-      this.selectDueScheduledActionsStatement = this.db.prepare<[string, number], ScheduledActionRow>(`
-        SELECT id, action_type, scheduled_at, params, status, created_at, executing_started_at
-        FROM sns_scheduled_actions
-        WHERE status = 'pending' AND scheduled_at <= ?
-        ORDER BY scheduled_at ASC, id ASC
-        LIMIT ?
-      `);
-      this.claimScheduledActionStatement = this.db.prepare(`
-        UPDATE sns_scheduled_actions
-        SET status = 'executing', error = NULL, executing_started_at = ?
-        WHERE id = ?
-      `);
-      this.updateScheduledFailureStatement = this.db.prepare(`
-        UPDATE sns_scheduled_actions
-        SET status = 'failed', error = ?, executing_started_at = NULL
-        WHERE id = ? AND status = 'executing'
-      `);
-      this.getPendingAndExecutingStatement = this.db.prepare(`
-        SELECT id, action_type, scheduled_at, params, status, created_at, executing_started_at
-        FROM sns_scheduled_actions
-        WHERE status IN ('pending', 'executing')
-        ORDER BY scheduled_at ASC, id ASC
-      `);
-      this.recoverAllStaleExecutingStatement = this.db.prepare(`
-        UPDATE sns_scheduled_actions
-        SET status = 'pending', error = NULL
-        WHERE status = 'executing'
-      `);
-      this.recoverStaleExecutingBeforeStatement = this.db.prepare(`
-        UPDATE sns_scheduled_actions
-        SET status = 'pending', error = NULL
-        WHERE status = 'executing'
-          AND (executing_started_at IS NULL OR executing_started_at <= ?)
-      `);
-      this.markScheduledCompletedStatement = this.db.prepare(`
-        UPDATE sns_scheduled_actions
-        SET status = 'completed', error = NULL, executing_started_at = NULL
-        WHERE id = ?
-      `);
-      // Clear stale reservations from a previous process that may have crashed
-      // before committing or releasing its reservations.
       this.deleteAllNotificationReservationsStatement.run();
+      this.warnPendingLegacyScheduledActions();
     } catch (error) {
       this.db.close();
       throw error;
@@ -349,72 +259,6 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
     return Promise.resolve();
   }
 
-  async schedule(action: ScheduledActionInput): Promise<number> {
-    const result = this.insertScheduledActionStatement.run(
-      action.actionType,
-      action.scheduledAt.toISOString(),
-      JSON.stringify(action.params),
-      'pending',
-      this.now().toISOString(),
-    );
-    return Promise.resolve(Number(result.lastInsertRowid));
-  }
-
-  async claimPendingActions(now: Date, limit = Number.MAX_SAFE_INTEGER): Promise<ScheduledAction[]> {
-    const normalizedLimit = Number.isFinite(limit)
-      ? Math.max(1, Math.floor(limit))
-      : Number.MAX_SAFE_INTEGER;
-    return Promise.resolve(this.runImmediateTransaction(() => {
-      const rows = this.selectDueScheduledActionsStatement.all(now.toISOString(), normalizedLimit);
-      for (const row of rows) {
-        this.claimScheduledActionStatement.run(now.toISOString(), row.id);
-      }
-      return rows.map((row) => ({
-        ...mapScheduledActionRow(row),
-        status: 'executing' as const,
-        recoveredFromExecuting: row.executing_started_at != null,
-      }));
-    }));
-  }
-
-  async completeWithRecord(id: number, record: ActivityRecord): Promise<void> {
-    this.runImmediateTransaction(() => {
-      this.markScheduledCompletedStatement.run(id);
-      const createdAt = record.createdAt?.toISOString() ?? this.now().toISOString();
-      switch (record.type) {
-        case 'post':
-          this.insertActivity('post', record.postId, record.text.trim(), record.replyToId ?? null, record.quotePostId ?? null, createdAt);
-          break;
-        case 'like':
-          this.insertActivity('like', record.postId, null, null, null, createdAt);
-          break;
-        case 'repost':
-          this.insertActivity('repost', record.postId, null, null, null, createdAt);
-          break;
-      }
-    });
-    return Promise.resolve();
-  }
-
-  async markFailed(id: number, error: string): Promise<void> {
-    const result = this.updateScheduledFailureStatement.run(error, id);
-    if (result.changes === 0) {
-      logger.warn('markFailed was a no-op; action may have been recovered concurrently', { id, error });
-    }
-    return Promise.resolve();
-  }
-
-  async recoverStaleExecuting(before?: Date): Promise<number> {
-    const result = before != null
-      ? this.recoverStaleExecutingBeforeStatement.run(before.toISOString())
-      : this.recoverAllStaleExecutingStatement.run();
-    return Promise.resolve(result.changes);
-  }
-
-  async getPendingAndExecuting(): Promise<ScheduledAction[]> {
-    return Promise.resolve(this.getPendingAndExecutingStatement.all().map((row) => mapScheduledActionRow(row)));
-  }
-
   async close(): Promise<void> {
     if (this.db.open) {
       this.db.close();
@@ -444,109 +288,28 @@ export class SqliteSnsActivityStore implements ISnsActivityStore, ISnsScheduleSt
       throw error;
     }
   }
-}
 
-function mapScheduledActionRow(row: ScheduledActionRow): ScheduledAction {
-  const scheduledAt = new Date(row.scheduled_at);
-  if (Number.isNaN(scheduledAt.getTime())) {
-    throw new Error(`Invalid scheduled_at in sns_scheduled_actions row ${row.id}`);
-  }
+  private warnPendingLegacyScheduledActions(): void {
+    try {
+      const hasScheduledTable = this.db.prepare<[], { name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sns_scheduled_actions' LIMIT 1"
+      ).get();
+      if (hasScheduledTable == null) {
+        return;
+      }
 
-  switch (row.action_type) {
-    case 'post': {
-      const params = parseScheduledPostParams(row.params, row.id);
-      return {
-        id: row.id,
-        actionType: 'post',
-        scheduledAt,
-        params,
-        status: row.status as 'pending' | 'executing',
-        createdAt: row.created_at,
-        recoveredFromExecuting: row.executing_started_at != null,
-      };
+      const pending = this.db.prepare<[], PendingScheduledCountRow>(`
+        SELECT COUNT(*) AS count
+        FROM sns_scheduled_actions
+        WHERE status IN ('pending', 'executing')
+      `).get()?.count ?? 0;
+
+      if (pending > 0) {
+        logger.warn('Legacy scheduled SNS actions remain in the database and will no longer be processed', { count: pending });
+      }
+    } catch (error) {
+      logger.warn('Failed to check for legacy scheduled SNS actions', error);
     }
-    case 'like': {
-      const params = parseScheduledLikeParams(row.params, row.id);
-      return {
-        id: row.id,
-        actionType: 'like',
-        scheduledAt,
-        params,
-        status: row.status as 'pending' | 'executing',
-        createdAt: row.created_at,
-        recoveredFromExecuting: row.executing_started_at != null,
-      };
-    }
-    case 'repost': {
-      const params = parseScheduledRepostParams(row.params, row.id);
-      return {
-        id: row.id,
-        actionType: 'repost',
-        scheduledAt,
-        params,
-        status: row.status as 'pending' | 'executing',
-        createdAt: row.created_at,
-        recoveredFromExecuting: row.executing_started_at != null,
-      };
-    }
-  }
-}
-
-function parseScheduledPostParams(raw: string, id: number): ScheduledPostParams {
-  const params = parseJsonObject(raw, id);
-  if (typeof params.text !== 'string' || params.text.trim().length === 0) {
-    throw new Error(`Invalid scheduled post params in row ${id}: text is required`);
-  }
-  const validVisibilities = new Set(['public', 'unlisted', 'private', 'direct']);
-  if (typeof params.visibility !== 'string' || !validVisibilities.has(params.visibility)) {
-    throw new Error(`Invalid scheduled post params in row ${id}: visibility must be one of ${[...validVisibilities].join(', ')}`);
-  }
-  if (params.mediaIds != null && (!Array.isArray(params.mediaIds) || params.mediaIds.some((value) => typeof value !== 'string'))) {
-    throw new Error(`Invalid scheduled post params in row ${id}: mediaIds must be an array of strings`);
-  }
-
-  return {
-    text: params.text,
-    visibility: params.visibility as ScheduledPostParams['visibility'],
-    ...(typeof params.replyToId === 'string' ? { replyToId: params.replyToId } : {}),
-    ...(typeof params.quotePostId === 'string' ? { quotePostId: params.quotePostId } : {}),
-    ...(Array.isArray(params.mediaIds) ? { mediaIds: params.mediaIds as string[] } : {}),
-  };
-}
-
-function parseScheduledLikeParams(raw: string, id: number): ScheduledLikeParams {
-  const params = parseJsonObject(raw, id);
-  if (typeof params.postId !== 'string' || params.postId.trim().length === 0) {
-    throw new Error(`Invalid scheduled like params in row ${id}: postId is required`);
-  }
-  return { postId: params.postId };
-}
-
-function parseScheduledRepostParams(raw: string, id: number): ScheduledRepostParams {
-  const params = parseJsonObject(raw, id);
-  if (typeof params.postId !== 'string' || params.postId.trim().length === 0) {
-    throw new Error(`Invalid scheduled repost params in row ${id}: postId is required`);
-  }
-  return { postId: params.postId };
-}
-
-function parseJsonObject(raw: string, id: number): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Expected object');
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    throw new Error(`Invalid scheduled action params in row ${id}: ${error instanceof Error ? error.message : error}`);
-  }
-}
-
-function ensureScheduledActionColumns(db: Database.Database): void {
-  const columns = db.prepare<[], TableInfoRow>('PRAGMA table_info(sns_scheduled_actions)').all();
-  const columnNames = new Set(columns.map((column) => column.name));
-  if (!columnNames.has('executing_started_at')) {
-    db.exec('ALTER TABLE sns_scheduled_actions ADD COLUMN executing_started_at TEXT');
   }
 }
 
@@ -560,9 +323,6 @@ function maxNotificationId(left: string | null, right: string | null): string | 
   return compareNotificationIds(left, right) >= 0 ? left : right;
 }
 
-// Mastodon uses monotonically increasing numeric IDs, so for all-numeric IDs
-// of differing lengths, comparing by length is sufficient (longer = newer).
-// Falls back to lexicographic comparison for non-numeric or equal-length IDs.
 function compareNotificationIds(left: string, right: string): number {
   const numericPattern = /^\d+$/;
   if (numericPattern.test(left) && numericPattern.test(right)) {

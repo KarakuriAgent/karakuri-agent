@@ -5,7 +5,7 @@
 `data/skills/*/SKILL.md`（全ユーザー向け）と `data/system-skills/*/SKILL.md`（`userId === 'system'` 専用）で trusted な追加スキルを定義し、
 システムプロンプトには **その実行コンテキストで利用可能な一覧だけ** を注入する。
 加えて、SNS は `config.sns` 設定時に system ユーザー向けビルトインスキルとしてコード内でも定義される。
-スキル本文は通常は必要になったときだけ `loadSkill` ツールで取得するが、heartbeat の SNS だけは自動ロードされる。
+スキル本文は通常は必要になったときだけ `loadSkill` ツールで取得するが、SNS 専用ループの SNS だけは自動ロードされる。
 
 ## インターフェース: `ISkillStore` (`src/skill/types.ts`)
 
@@ -36,7 +36,7 @@ interface ISkillStore {
 ├── skills/              # 全ユーザーが利用可能
 │   └── research/
 │       └── SKILL.md
-└── system-skills/       # system ユーザー（cron / heartbeat）のみ
+└── system-skills/       # system ユーザー（cron / heartbeat / SNS loop）のみ
     └── maintenance/
         └── SKILL.md
 ```
@@ -91,9 +91,9 @@ allowed-tools: webFetch
 - `buildSystemPrompt()` には skill の一覧だけを注入し、`allowed-tools` があれば `(tools: ...)` も表示する
 - `createAgentTools()` は skill が 1 つ以上あるときだけ `loadSkill` を追加する
 - system user (`userId === 'system'`) のみ `includeSystemOnly: true` で system skill を参照できる
-- `config.sns` がある system user にはビルトイン SNS skill を追加し、同名の `data/system-skills/sns/SKILL.md` が残っていても SNS ビルトインを優先する。heartbeat の自動ロードでも同じ定義と活動指示を使う
+- `config.sns` がある system user にはビルトイン SNS skill を追加し、同名の `data/system-skills/sns/SKILL.md` が残っていても SNS ビルトインを優先する。SNS 専用ループの自動ロードでも同じ定義と活動指示を使う
 - skill-gated tool は初期 `tools` には含めず、`loadSkill(name)` 実行時に `allowedTools` に対応するツールだけを動的登録する
-- ただし heartbeat (`isSystemUser && ephemeral && snsContextRegistry != null && effectiveSkills にビルトイン SNS skill が含まれる`) では SNS だけ例外で、自動的にツール登録・動的コンテキスト注入を行い、Available skills からは除外する
+- ただし SNS 専用ループ（`autoLoadSnsSkill === true && snsContextRegistry != null && effectiveSkills にビルトイン SNS skill が含まれる`）では SNS だけ例外で、自動的にツール登録・動的コンテキスト注入を行い、Available skills からは除外する
 - `karakuri-world` は legacy skill 名として予約扱いで、`allowed-tools` の有無に関係なく通常の `listSkills()` / `getSkill()` / `loadSkill()` から除外する。ローカルの `data/skills/karakuri-world/SKILL.md` / `data/system-skills/karakuri-world/SKILL.md` が残っていても KW モード以外では無効
 - `karakuri_world_*` は shared skill としては同梱せず、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーかつ `config.karakuriWorld` 設定済みのときだけ、専用 KW モードで直接登録する
 - `handleMessage()` ごとに `tools` オブジェクトを作り直すため、skill-gated tool はターンをまたいで保持されない

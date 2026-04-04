@@ -4,24 +4,13 @@ import { z } from 'zod';
 import type { SnsCredentials } from '../../config.js';
 import { createSnsProvider } from '../../sns/index.js';
 import { buildLikeLockKey, buildQuoteLockKey, buildReplyLockKey, buildRepostLockKey, runWithSnsActionLocks } from '../../sns/action-locks.js';
-import type { ISnsActivityStore, ISnsScheduleStore, ScheduledAction, SnsPost } from '../../sns/types.js';
+import type { ISnsActivityStore, SnsPost } from '../../sns/types.js';
 import type { IUserStore } from '../../user/types.js';
 import { createLogger } from '../../utils/logger.js';
 import { httpUrlSchema, type LookupFn } from '../../utils/safe-fetch.js';
 
 const logger = createLogger('SnsTools');
 const visibilitySchema = z.enum(['public', 'unlisted', 'private', 'direct']);
-const SCHEDULED_AT_TIMEZONE_PATTERN = /(Z|[+-]\d{2}:\d{2})$/i;
-const SCHEDULED_AT_ERROR_MESSAGE = 'scheduled_at must be a valid datetime string with an explicit timezone offset (for example, Z or +09:00)';
-const SCHEDULED_AT_PAST_ERROR_MESSAGE = 'scheduled_at must be in the future';
-const scheduledAtSchema = z.string().trim().min(1).refine((value) => {
-  if (!SCHEDULED_AT_TIMEZONE_PATTERN.test(value)) {
-    return false;
-  }
-  return !Number.isNaN(new Date(value).getTime());
-}, {
-  message: SCHEDULED_AT_ERROR_MESSAGE,
-});
 // Cap LLM-based user evaluations per turn to limit cost and latency.
 // Relies on evaluatedUsers Set being recreated per createSnsTools() call (callers must create a fresh tool set per turn).
 const MAX_USER_EVALUATIONS_PER_TURN = 3;
@@ -32,7 +21,6 @@ const snsPostInputSchema = z.object({
   quote_post_id: z.string().trim().min(1).optional(),
   media_ids: z.array(z.string().trim().min(1)).optional(),
   visibility: visibilitySchema.default('public'),
-  scheduled_at: scheduledAtSchema.optional(),
 }).strict();
 
 const snsGetPostInputSchema = z.object({
@@ -41,12 +29,10 @@ const snsGetPostInputSchema = z.object({
 
 const snsLikeInputSchema = z.object({
   post_id: z.string().trim().min(1),
-  scheduled_at: scheduledAtSchema.optional(),
 }).strict();
 
 const snsRepostInputSchema = z.object({
   post_id: z.string().trim().min(1),
-  scheduled_at: scheduledAtSchema.optional(),
 }).strict();
 
 const snsUploadMediaInputSchema = z.object({
@@ -63,10 +49,8 @@ export interface CreateSnsToolsOptions {
   dataDir?: string;
   fetch?: typeof fetch;
   lookupFn?: LookupFn;
-  now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
   activityStore?: ISnsActivityStore;
-  scheduleStore?: ISnsScheduleStore;
   userStore?: IUserStore;
   evaluateUser?: (snsUserId: string, displayName: string, postText: string) => void;
   reportError?: (message: string) => void;
@@ -164,47 +148,6 @@ function trackThread(
   }
 }
 
-async function getScheduledActions(options: CreateSnsToolsOptions): Promise<ScheduledAction[]> {
-  return safeCheck('getPendingAndExecuting', () => options.scheduleStore?.getPendingAndExecuting() ?? Promise.resolve([]));
-}
-
-function hasScheduledReply(actions: ScheduledAction[], replyToId: string): boolean {
-  return actions.some((action) => action.actionType === 'post' && action.params.replyToId === replyToId);
-}
-
-function hasScheduledQuote(actions: ScheduledAction[], quotePostId: string): boolean {
-  return actions.some((action) => action.actionType === 'post' && action.params.quotePostId === quotePostId);
-}
-
-function hasScheduledLike(actions: ScheduledAction[], postId: string): boolean {
-  return actions.some((action) => action.actionType === 'like' && action.params.postId === postId);
-}
-
-function hasScheduledRepost(actions: ScheduledAction[], postId: string): boolean {
-  return actions.some((action) => action.actionType === 'repost' && action.params.postId === postId);
-}
-
-function parseScheduledAt(raw: string, now: Date): Date {
-  if (!SCHEDULED_AT_TIMEZONE_PATTERN.test(raw)) {
-    throw new Error(SCHEDULED_AT_ERROR_MESSAGE);
-  }
-  const scheduledAt = new Date(raw);
-  if (Number.isNaN(scheduledAt.getTime())) {
-    throw new Error(SCHEDULED_AT_ERROR_MESSAGE);
-  }
-  if (scheduledAt.getTime() <= now.getTime()) {
-    throw new Error(SCHEDULED_AT_PAST_ERROR_MESSAGE);
-  }
-  return scheduledAt;
-}
-
-function buildScheduledResponse(scheduledAt: Date) {
-  return {
-    status: 'scheduled' as const,
-    scheduled_at: scheduledAt.toISOString(),
-  };
-}
-
 function assertSupportedVisibility(provider: SnsCredentials['provider'], visibility: z.infer<typeof visibilitySchema>): void {
   if (provider === 'x' && visibility !== 'public') {
     throw new Error('X only supports public visibility');
@@ -220,7 +163,6 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     ...(options.sleep != null ? { sleep: options.sleep } : {}),
   });
   const evaluatedUsers = new Set<string>();
-  const now = options.now ?? (() => new Date());
   const threadDescription = options.sns.provider === 'x'
     ? '投稿のスレッド文脈を取得する。X では自分の返信を除外しつつ、過去7日以内の対象投稿から辿れる会話のみを返す。7日を超える投稿は空の結果を返す。'
     : '投稿のスレッド文脈を取得する。';
@@ -228,18 +170,16 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
   if (options.activityStore == null) {
     logger.warn('SNS activity store is not configured; duplicate prevention is disabled');
   }
-  if (options.scheduleStore == null) {
-    logger.warn('SNS schedule store is not configured; delayed SNS execution is disabled');
-  }
 
   return {
     sns_post: tool({
-      description: 'SNS に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_replied" | "already_quoted" | "reply_already_scheduled" | "quote_already_scheduled", reply_to_id?, quote_post_id? }` を返す。',
+      description: 'SNS に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? }` を返す。',
       inputSchema: snsPostInputSchema,
       execute: async (input) => executeSafely('sns_post', async () => runWithSnsActionLocks([
         input.reply_to_id != null ? buildReplyLockKey(input.reply_to_id) : '',
         input.quote_post_id != null ? buildQuoteLockKey(input.quote_post_id) : '',
       ], async () => {
+        assertSupportedVisibility(options.sns.provider, input.visibility);
         if (input.reply_to_id != null) {
           const alreadyReplied = await safeCheck('hasReplied', () => options.activityStore?.hasReplied(input.reply_to_id!) ?? Promise.resolve(false));
           if (alreadyReplied) {
@@ -251,34 +191,6 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
           if (alreadyQuoted) {
             return { status: 'skipped' as const, reason: 'already_quoted' as const, quote_post_id: input.quote_post_id };
           }
-        }
-
-        const scheduledActions = await getScheduledActions(options);
-        if (input.reply_to_id != null && hasScheduledReply(scheduledActions, input.reply_to_id)) {
-          return { status: 'skipped' as const, reason: 'reply_already_scheduled' as const, reply_to_id: input.reply_to_id };
-        }
-        if (input.quote_post_id != null && hasScheduledQuote(scheduledActions, input.quote_post_id)) {
-          return { status: 'skipped' as const, reason: 'quote_already_scheduled' as const, quote_post_id: input.quote_post_id };
-        }
-
-        if (input.scheduled_at != null) {
-          if (options.scheduleStore == null) {
-            throw new Error('SNS schedule store is not configured');
-          }
-          assertSupportedVisibility(options.sns.provider, input.visibility);
-          const scheduledAt = parseScheduledAt(input.scheduled_at, now());
-          await options.scheduleStore.schedule({
-            actionType: 'post',
-            scheduledAt,
-            params: {
-              text: input.text,
-              ...(input.reply_to_id != null ? { replyToId: input.reply_to_id } : {}),
-              ...(input.quote_post_id != null ? { quotePostId: input.quote_post_id } : {}),
-              ...(input.media_ids != null ? { mediaIds: input.media_ids } : {}),
-              visibility: input.visibility,
-            },
-          });
-          return buildScheduledResponse(scheduledAt);
         }
 
         const result = await provider.post({
@@ -302,30 +214,12 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       }),
     }),
     sns_like: tool({
-      description: '指定した投稿にいいねする。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_liked" | "like_already_scheduled", post_id }` を返す。',
+      description: '指定した投稿にいいねする。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_liked", post_id }` を返す。',
       inputSchema: snsLikeInputSchema,
       execute: async (input) => executeSafely('sns_like', async () => runWithSnsActionLocks([buildLikeLockKey(input.post_id)], async () => {
         const alreadyLiked = await safeCheck('hasLiked', () => options.activityStore?.hasLiked(input.post_id) ?? Promise.resolve(false));
         if (alreadyLiked) {
           return { status: 'skipped' as const, reason: 'already_liked' as const, post_id: input.post_id };
-        }
-
-        const scheduledActions = await getScheduledActions(options);
-        if (hasScheduledLike(scheduledActions, input.post_id)) {
-          return { status: 'skipped' as const, reason: 'like_already_scheduled' as const, post_id: input.post_id };
-        }
-
-        if (input.scheduled_at != null) {
-          if (options.scheduleStore == null) {
-            throw new Error('SNS schedule store is not configured');
-          }
-          const scheduledAt = parseScheduledAt(input.scheduled_at, now());
-          await options.scheduleStore.schedule({
-            actionType: 'like',
-            scheduledAt,
-            params: { postId: input.post_id },
-          });
-          return buildScheduledResponse(scheduledAt);
         }
 
         const result = await provider.like(input.post_id);
@@ -335,30 +229,12 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       })),
     }),
     sns_repost: tool({
-      description: '指定した投稿をリポストする。`scheduled_at` を指定すると即時実行せず時刻指定でキュー投入する。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_reposted" | "repost_already_scheduled", post_id }` を返す。',
+      description: '指定した投稿をリポストする。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_reposted", post_id }` を返す。',
       inputSchema: snsRepostInputSchema,
       execute: async (input) => executeSafely('sns_repost', async () => runWithSnsActionLocks([buildRepostLockKey(input.post_id)], async () => {
         const alreadyReposted = await safeCheck('hasReposted', () => options.activityStore?.hasReposted(input.post_id) ?? Promise.resolve(false));
         if (alreadyReposted) {
           return { status: 'skipped' as const, reason: 'already_reposted' as const, post_id: input.post_id };
-        }
-
-        const scheduledActions = await getScheduledActions(options);
-        if (hasScheduledRepost(scheduledActions, input.post_id)) {
-          return { status: 'skipped' as const, reason: 'repost_already_scheduled' as const, post_id: input.post_id };
-        }
-
-        if (input.scheduled_at != null) {
-          if (options.scheduleStore == null) {
-            throw new Error('SNS schedule store is not configured');
-          }
-          const scheduledAt = parseScheduledAt(input.scheduled_at, now());
-          await options.scheduleStore.schedule({
-            actionType: 'repost',
-            scheduledAt,
-            params: { postId: input.post_id },
-          });
-          return buildScheduledResponse(scheduledAt);
         }
 
         const result = await provider.repost(input.post_id);

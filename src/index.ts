@@ -13,7 +13,7 @@ import { FileSessionManager } from './session/manager.js';
 import { createSnsProvider } from './sns/index.js';
 import { SnsSkillContextProvider } from './sns/context-provider.js';
 import { SqliteSnsActivityStore } from './sns/activity-store.js';
-import { SnsScheduleRunner } from './sns/schedule-runner.js';
+import { SnsLoopRunner } from './sns/loop-runner.js';
 import { SkillContextRegistry } from './skill/context-provider.js';
 import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
@@ -55,20 +55,11 @@ async function main(): Promise<void> {
         const registry = new SkillContextRegistry();
         registry.register('sns', new SnsSkillContextProvider({
           activityStore: snsActivityStore,
-          scheduleStore: snsActivityStore,
           snsProvider,
           reportError: snsReportError,
         }));
         return registry;
       })()
-    : undefined;
-  const snsScheduleRunner = config.sns != null && snsActivityStore != null && snsProvider != null
-    ? new SnsScheduleRunner({
-        scheduleStore: snsActivityStore,
-        activityStore: snsActivityStore,
-        snsProvider,
-        reportError: snsReportError,
-      })
     : undefined;
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
@@ -89,9 +80,20 @@ async function main(): Promise<void> {
     messageSink,
     userStore,
     snsActivityStore,
-    snsScheduleStore: snsActivityStore,
     snsContextRegistry,
   });
+  const snsLoopRunner = config.sns != null
+    ? new SnsLoopRunner({
+        agent,
+        minIntervalMinutes: config.snsLoopMinIntervalMinutes,
+        maxIntervalMinutes: config.snsLoopMaxIntervalMinutes,
+        ...(messageSink != null ? { messageSink } : {}),
+        ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
+        hasPostMessage: messageSink != null
+          && config.reportChannelId != null
+          && (config.postMessageChannelIds ?? []).includes(config.reportChannelId),
+      })
+    : undefined;
   const scheduler = await createScheduler({
     agent,
     config,
@@ -100,7 +102,7 @@ async function main(): Promise<void> {
   });
   const bot = createBot(config, agent, { messageSink });
 
-  snsScheduleRunner?.start();
+  snsLoopRunner?.start();
   await bot.initialize();
   logger.debug('Bot initialized');
 
@@ -128,7 +130,7 @@ async function main(): Promise<void> {
         closeServer: () => closeServer(server),
         closeScheduler: () => Promise.all([
           scheduler.close(),
-          snsScheduleRunner?.close() ?? Promise.resolve(),
+          snsLoopRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
         drainEvaluations: () => agent.drainPendingEvaluations(),

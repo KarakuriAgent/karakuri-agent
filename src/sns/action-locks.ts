@@ -1,9 +1,5 @@
-import type { ScheduledAction } from './types.js';
 import { KeyedMutex } from '../utils/mutex.js';
 
-// Module-level singleton so that both SnsScheduleRunner and sns_* tool handlers
-// share the same lock space, preventing concurrent duplicate actions across
-// immediate tool execution and scheduled execution.
 const actionMutex = new KeyedMutex();
 
 export function buildReplyLockKey(replyToId: string): string {
@@ -34,20 +30,4 @@ export async function runWithSnsActionLocks<T>(keys: string[], task: () => Promi
   };
 
   return execute(0);
-}
-
-export function getSnsActionLockKeys(action: ScheduledAction): string[] {
-  switch (action.actionType) {
-    case 'post':
-      // Plain posts (no reply/quote) intentionally have no lock keys because
-      // there is no resource to protect against duplicate interaction.
-      return [
-        action.params.replyToId != null ? buildReplyLockKey(action.params.replyToId) : '',
-        action.params.quotePostId != null ? buildQuoteLockKey(action.params.quotePostId) : '',
-      ];
-    case 'like':
-      return [buildLikeLockKey(action.params.postId)];
-    case 'repost':
-      return [buildRepostLockKey(action.params.postId)];
-  }
 }
