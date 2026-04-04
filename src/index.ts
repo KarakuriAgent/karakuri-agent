@@ -89,7 +89,9 @@ async function main(): Promise<void> {
         maxIntervalMinutes: config.snsLoopMaxIntervalMinutes,
         ...(messageSink != null ? { messageSink } : {}),
         ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
-        hasPostMessage: messageSink != null && (config.postMessageChannelIds?.length ?? 0) > 0,
+        hasPostMessage: messageSink != null
+          && config.reportChannelId != null
+          && (config.postMessageChannelIds ?? []).includes(config.reportChannelId),
       })
     : undefined;
   const scheduler = await createScheduler({
