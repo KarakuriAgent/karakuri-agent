@@ -220,10 +220,9 @@ export class KarakuriAgent implements IAgent {
         snsActivityStore: this.snsActivityStore,
         userStore: this.userStore,
       });
-    // Auto-load the builtin SNS skill for system heartbeat turns so the LLM receives
-    // dynamic context (notifications, trends, activity log) and gated tools without
-    // needing to call loadSkill. Currently only heartbeat sets ephemeral on system turns;
-    // if a future system job reuses ephemeral, revisit whether auto-loading is appropriate.
+    // Auto-load the builtin SNS skill when explicitly requested via autoLoadSnsSkill option
+    // so the LLM receives dynamic context (notifications, trends, activity log) and gated
+    // tools without needing to call loadSkill. Currently only SnsLoopRunner sets this flag.
     const shouldAutoLoadSnsSkill = options?.autoLoadSnsSkill === true
       && this.snsContextRegistry != null
       && effectiveSkills.some((skill) => skill.name === BUILTIN_SNS_SKILL_NAME);
@@ -254,7 +253,7 @@ export class KarakuriAgent implements IAgent {
         : [];
       const skillActivityInstructions = options?.skillActivityInstructions ?? null;
       // When builtins are merged, use a static snapshot so that code-defined skills
-      // (not present in FileSkillStore) are visible via loadSkill. For heartbeat,
+      // (not present in FileSkillStore) are visible via loadSkill. For SNS loop turns,
       // the snapshot also excludes auto-loaded skills. For users without builtins,
       // fall through to the live FileSkillStore to preserve fs.watch hot-reload.
       const runtimeSkillStore = builtinSkills.length > 0 && visibleSkills.length > 0
@@ -762,7 +761,7 @@ function findLastAssistantMessageIndex(messages: ModelMessage[]): number {
   return -1;
 }
 
-/** Creates an in-memory ISkillStore snapshot. Used during heartbeat to exclude auto-loaded skills from loadSkill while keeping other skills available. */
+/** Creates an in-memory ISkillStore snapshot. Used during SNS loop turns to exclude auto-loaded skills from loadSkill while keeping other skills available. */
 function createStaticSkillStore(skills: SkillDefinition[]): ISkillStore {
   const byName = new Map(skills.map((skill) => [
     skill.name,

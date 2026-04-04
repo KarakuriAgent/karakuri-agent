@@ -80,8 +80,17 @@ export class SnsLoopRunner {
 
     this.timer = this.setTimeoutFn(() => {
       this.timer = null;
-      void this.tick().catch((error) => {
+      void this.tick().catch(async (error) => {
         logger.error('SNS loop tick crashed unexpectedly', error);
+        await reportSafely(
+          this.options.messageSink,
+          this.options.reportChannelId,
+          `❌ SNS loop tick crashed unexpectedly: ${formatError(error)}`,
+          logger,
+        );
+        if (!this.closed) {
+          this.scheduleNext();
+        }
       });
     }, this.nextDelayMs());
   }
@@ -124,11 +133,11 @@ export class SnsLoopRunner {
 
   private async runLoop(): Promise<void> {
     const startedAt = this.now();
-    const skillActivityInstructions = buildSnsLoopActivityInstructions(
-      this.options.hasPostMessage != null ? { hasPostMessage: this.options.hasPostMessage } : {},
-    );
 
     try {
+      const skillActivityInstructions = buildSnsLoopActivityInstructions(
+        this.options.hasPostMessage != null ? { hasPostMessage: this.options.hasPostMessage } : {},
+      );
       await runExclusiveSystemTurn(async () => {
         if (this.closed) {
           logger.debug('Skipping SNS loop execution because runner closed before system turn lock');
