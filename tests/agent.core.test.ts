@@ -1,9 +1,18 @@
 import type { LanguageModel, ModelMessage } from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mockState = vi.hoisted(() => ({
+  runExclusiveMemoryPersistence: vi.fn(async <T>(task: () => Promise<T>) => await task()),
+}));
+
+vi.mock('../src/memory/persistence-mutex.js', () => ({
+  runExclusiveMemoryPersistence: mockState.runExclusiveMemoryPersistence,
+}));
+
 import { countAdditionalContextTokens } from '../src/agent/prompt.js';
 import { KarakuriAgent } from '../src/agent/core.js';
 import { formatDateTimeInTimezone } from '../src/utils/date.js';
+import { KeyedMutex } from '../src/utils/mutex.js';
 import type { PromptContext } from '../src/agent/prompt-context.js';
 import type { Config } from '../src/config.js';
 import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from '../src/llm/model-selector.js';
@@ -44,8 +53,12 @@ class MemoryStoreStub implements IMemoryStore {
     return this.coreMemory;
   }
 
-  async writeCoreMemory(content: string): Promise<void> {
+  async writeCoreMemory(content: string, mode: 'append' | 'overwrite'): Promise<void> {
     this.coreWrites.push(content);
+    if (mode === 'overwrite') {
+      this.coreMemory = content;
+      return;
+    }
     this.coreMemory += content;
   }
 
@@ -56,6 +69,17 @@ class MemoryStoreStub implements IMemoryStore {
   async writeDiary(date: string, content: string): Promise<void> {
     this.diaryWrites.push({ date, content });
     this.diaries.push({ date, content });
+  }
+
+  async replaceDiary(date: string, content: string): Promise<void> {
+    this.diaries = this.diaries.filter((entry) => entry.date !== date);
+    this.diaries.push({ date, content });
+  }
+
+  async deleteDiary(date: string): Promise<boolean> {
+    const before = this.diaries.length;
+    this.diaries = this.diaries.filter((entry) => entry.date !== date);
+    return this.diaries.length !== before;
   }
 
   async getRecentDiaries(days: number): Promise<DiaryEntry[]> {
@@ -456,6 +480,8 @@ describe('KarakuriAgent', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    mockState.runExclusiveMemoryPersistence.mockReset();
+    mockState.runExclusiveMemoryPersistence.mockImplementation(async <T>(task: () => Promise<T>) => await task());
   });
 
   it('passes prompt-ready memory and diary tokens into the summarization decision', async () => {
@@ -1867,6 +1893,7 @@ describe('KarakuriAgent', () => {
     await expect(agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' })).resolves.toBe('reply');
     await agent.drainPendingEvaluations();
 
+    expect(mockState.runExclusiveMemoryPersistence).toHaveBeenCalledTimes(1);
     expect(userStore.ensureCalls).toEqual([{ userId: 'user-1', displayName: 'Alice' }]);
     expect(userStore.users.get('user-1')?.displayName).toBe('Alice Old');
     expect(capturedSystem).toContain('<user-profile>');
@@ -1911,6 +1938,7 @@ describe('KarakuriAgent', () => {
     await agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'system' });
     await agent.drainPendingEvaluations();
 
+    expect(mockState.runExclusiveMemoryPersistence).toHaveBeenCalledTimes(1);
     expect(userStore.ensureCalls).toEqual([]);
     expect(capturedSystem).not.toContain('\n\n<user-profile>\n');
     expect(memoryStore.coreWrites).toEqual(['system fact']);
@@ -2002,18 +2030,14 @@ describe('KarakuriAgent', () => {
     expect(drained).toBe(true);
   });
 
-  it('serializes background evaluations per user while allowing different users to evaluate concurrently', async () => {
+  it('allows different users to evaluate in parallel while serializing the same user', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
     const userStore = new UserStoreStub();
     const starts: string[] = [];
-    let releaseFirstUser1!: () => void;
-    const firstUser1Gate = new Promise<void>((resolve) => {
-      releaseFirstUser1 = resolve;
-    });
-    let releaseUser2!: () => void;
-    const user2Gate = new Promise<void>((resolve) => {
-      releaseUser2 = resolve;
+    let releaseUserOneEvaluation!: () => void;
+    const userOneGate = new Promise<void>((resolve) => {
+      releaseUserOneEvaluation = resolve;
     });
 
     const generateTextFn = vi.fn(async (options: { prompt?: string; output?: unknown }) => {
@@ -2021,10 +2045,7 @@ describe('KarakuriAgent', () => {
         const userId = options.prompt?.match(/User ID: ([^\n]+)/)?.[1] ?? 'unknown';
         starts.push(userId);
         if (userId === 'user-1' && starts.filter((id) => id === 'user-1').length === 1) {
-          await firstUser1Gate;
-        }
-        if (userId === 'user-2') {
-          await user2Gate;
+          await userOneGate;
         }
         return makeStructuredEvaluationResult({
           profileAction: 'none',
@@ -2054,18 +2075,77 @@ describe('KarakuriAgent', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(starts).toHaveLength(2);
+    expect(starts).toEqual(expect.arrayContaining(['user-1', 'user-2']));
     expect(starts.filter((id) => id === 'user-1')).toHaveLength(1);
-    expect(starts.filter((id) => id === 'user-2')).toHaveLength(1);
+    expect(starts).toHaveLength(2);
 
-    releaseFirstUser1();
-    for (let i = 0; i < 10 && starts.filter((id) => id === 'user-1').length < 2; i += 1) {
-      await Promise.resolve();
-    }
-    expect(starts.filter((id) => id === 'user-1')).toHaveLength(2);
-    expect(starts.filter((id) => id === 'user-2')).toHaveLength(1);
+    releaseUserOneEvaluation();
+    await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
+    expect(starts).toHaveLength(3);
+  });
 
-    releaseUser2();
+  it('does not block different users from starting evaluator model calls while persistence is locked', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    const persistenceMutex = new KeyedMutex();
+    const startedEvaluations: string[] = [];
+    let persistenceCallCount = 0;
+    let releasePersistenceLock!: () => void;
+    const persistenceLockReleased = new Promise<void>((resolve) => {
+      releasePersistenceLock = resolve;
+    });
+    let signalFirstPersistenceLock!: () => void;
+    const firstPersistenceLockEntered = new Promise<void>((resolve) => {
+      signalFirstPersistenceLock = resolve;
+    });
+
+    mockState.runExclusiveMemoryPersistence.mockImplementation(async <T>(task: () => Promise<T>) =>
+      await persistenceMutex.runExclusive('memory-persistence', async () => {
+        persistenceCallCount += 1;
+        if (persistenceCallCount === 1) {
+          signalFirstPersistenceLock();
+          await persistenceLockReleased;
+        }
+        return await task();
+      }));
+
+    const generateTextFn = vi.fn(async (options: { prompt?: string; output?: unknown }) => {
+      if (options.output != null) {
+        const userId = options.prompt?.match(/User ID: ([^\n]+)/)?.[1] ?? 'unknown';
+        startedEvaluations.push(userId);
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: `${userId} fact`,
+          diaryEntry: '',
+        });
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await Promise.all([
+      agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' }),
+      agent.handleMessage('session-2', 'hello', 'Bob', { userId: 'user-2' }),
+    ]);
+
+    await firstPersistenceLockEntered;
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(startedEvaluations).toEqual(expect.arrayContaining(['user-1', 'user-2']));
+
+    releasePersistenceLock();
     await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
   });
 
@@ -2190,10 +2270,148 @@ describe('KarakuriAgent', () => {
     expect(snsGetPost?.execute).toBeTypeOf('function');
     await snsGetPost.execute?.({ post_id: 'post-1' }, { toolCallId: 'tool-1', messages: [] });
     await agent.drainPendingEvaluations();
+    expect(mockState.runExclusiveMemoryPersistence).toHaveBeenCalledTimes(2);
     expect(userStore.ensureCalls).toContainEqual({ userId: 'sns:mastodon:acct-1', displayName: 'Alice' });
     expect(userStore.profileUpdates).toContainEqual({ userId: 'sns:mastodon:acct-1', profile: 'Friendly SNS user' });
     expect(memoryStore.coreWrites).toContain('SNS user fact');
     vi.unstubAllGlobals();
+  });
+
+  it('does not block SNS user evaluator model calls for other users while persistence is locked', async () => {
+    const memoryStore = new MemoryStoreStub('core memory');
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub();
+    const persistenceMutex = new KeyedMutex();
+    const startedEvaluations: string[] = [];
+    let capturedTools: Record<string, unknown> = {};
+    let persistenceCallCount = 0;
+    let releasePersistenceLock!: () => void;
+    const persistenceLockReleased = new Promise<void>((resolve) => {
+      releasePersistenceLock = resolve;
+    });
+    let signalFirstPersistenceLock!: () => void;
+    const firstPersistenceLockEntered = new Promise<void>((resolve) => {
+      signalFirstPersistenceLock = resolve;
+    });
+
+    mockState.runExclusiveMemoryPersistence.mockImplementation(async <T>(task: () => Promise<T>) =>
+      await persistenceMutex.runExclusive('memory-persistence', async () => {
+        persistenceCallCount += 1;
+        if (persistenceCallCount === 1) {
+          signalFirstPersistenceLock();
+          await persistenceLockReleased;
+        }
+        return await task();
+      }));
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | Request | URL) => {
+      const url = String(input);
+      const postId = url.endsWith('/post-2') ? 'post-2' : 'post-1';
+      const accountId = postId === 'post-2' ? 'acct-2' : 'acct-1';
+      const displayName = postId === 'post-2' ? 'Bob' : 'Alice';
+      return new Response(JSON.stringify({
+        id: postId,
+        content: `<p>Hello from ${displayName}</p>`,
+        account: {
+          id: accountId,
+          display_name: displayName,
+          username: displayName.toLowerCase(),
+          acct: `${displayName.toLowerCase()}@example.com`,
+          url: `https://social.example/@${displayName.toLowerCase()}`,
+        },
+        created_at: '2025-01-01T00:00:00.000Z',
+        url: `https://social.example/@${displayName.toLowerCase()}/${postId}`,
+        visibility: 'public',
+        in_reply_to_id: null,
+        reblogs_count: 0,
+        favourites_count: 0,
+        replies_count: 0,
+        media_attachments: [],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+
+    const generateTextFn = vi.fn(async (options: { tools?: Record<string, unknown>; prompt?: string; output?: unknown }) => {
+      if (options.output != null) {
+        const userId = options.prompt?.match(/User ID: ([^\n]+)/)?.[1] ?? 'unknown';
+        startedEvaluations.push(userId);
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: `${userId} fact`,
+          diaryEntry: '',
+        });
+      }
+      capturedTools = options.tools ?? {};
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        sns: {
+          provider: 'mastodon',
+          instanceUrl: 'https://social.example',
+          accessToken: 'token',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      skillStore: new SkillStoreStub([{
+        name: 'sns',
+        description: 'SNS skill',
+        instructions: 'Use SNS tools.',
+        systemOnly: false,
+        allowedTools: ['sns_get_post'],
+      }]),
+      userStore,
+      snsActivityStore: {
+        recordPost: async () => {},
+        recordLike: async () => {},
+        recordRepost: async () => {},
+        hasLiked: async () => false,
+        hasReposted: async () => false,
+        hasReplied: async () => false,
+        hasQuoted: async () => false,
+        getRecentActivities: async () => [],
+        getLastNotificationId: async () => null,
+        setLastNotificationId: async () => {},
+        close: async () => {},
+      },
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    try {
+      await agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'system' });
+
+      const loadSkill = capturedTools.loadSkill as { execute?: (...args: unknown[]) => Promise<unknown> };
+      expect(loadSkill?.execute).toBeTypeOf('function');
+      await loadSkill.execute?.({ name: 'sns' }, { toolCallId: 'tool-load-sns', messages: [] });
+
+      const snsGetPost = capturedTools.sns_get_post as { execute?: (...args: unknown[]) => Promise<unknown> };
+      expect(snsGetPost?.execute).toBeTypeOf('function');
+
+      await snsGetPost.execute?.({ post_id: 'post-1' }, { toolCallId: 'tool-1', messages: [] });
+      await firstPersistenceLockEntered;
+
+      await snsGetPost.execute?.({ post_id: 'post-2' }, { toolCallId: 'tool-2', messages: [] });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(startedEvaluations).toEqual(expect.arrayContaining([
+        'sns:mastodon:acct-1',
+        'sns:mastodon:acct-2',
+      ]));
+
+      releasePersistenceLock();
+      await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('passes the parsed selector into the configured model factory', async () => {
