@@ -32,6 +32,8 @@ describe('loadConfig', () => {
     expect(config.tokenBudget).toBe(80_000);
     expect(config.port).toBe(3_000);
     expect(config.heartbeatIntervalMinutes).toBe(120);
+    expect(config.memoryMaintenanceIntervalMinutes).toBeUndefined();
+    expect(config.memoryMaintenanceRecentDiaryDays).toBeUndefined();
     expect(config.snsLoopMinIntervalMinutes).toBe(60);
     expect(config.snsLoopMaxIntervalMinutes).toBe(180);
     expect(config.braveApiKey).toBeUndefined();
@@ -47,6 +49,8 @@ describe('loadConfig', () => {
       REPORT_CHANNEL_ID: 'report-1',
       ADMIN_USER_IDS: 'admin-1, admin-2',
       HEARTBEAT_INTERVAL_MINUTES: '15',
+      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '45',
+      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '120',
       SNS_LOOP_MIN_INTERVAL_MINUTES: '30',
       SNS_LOOP_MAX_INTERVAL_MINUTES: '90',
     });
@@ -56,6 +60,8 @@ describe('loadConfig', () => {
     expect(config.reportChannelId).toBe('report-1');
     expect(config.adminUserIds).toEqual(['admin-1', 'admin-2']);
     expect(config.heartbeatIntervalMinutes).toBe(15);
+    expect(config.memoryMaintenanceIntervalMinutes).toBe(45);
+    expect(config.memoryMaintenanceRecentDiaryDays).toBe(120);
     expect(config.snsLoopMinIntervalMinutes).toBe(30);
     expect(config.snsLoopMaxIntervalMinutes).toBe(90);
   });
@@ -70,6 +76,24 @@ describe('loadConfig', () => {
     expect(config.reportChannelId).toBeUndefined();
     expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
     expect(config.allowedChannelIds).toEqual(['channel-1', 'channel-2']);
+  });
+
+  it('treats an empty MEMORY_MAINTENANCE_INTERVAL_MINUTES as undefined', () => {
+    const config = loadConfig({
+      ...validEnv,
+      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '',
+    });
+
+    expect(config.memoryMaintenanceIntervalMinutes).toBeUndefined();
+  });
+
+  it('treats an empty MEMORY_MAINTENANCE_RECENT_DIARY_DAYS as undefined', () => {
+    const config = loadConfig({
+      ...validEnv,
+      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '',
+    });
+
+    expect(config.memoryMaintenanceRecentDiaryDays).toBeUndefined();
   });
 
   it('keeps report-only channels out of the postMessage allowlist', () => {

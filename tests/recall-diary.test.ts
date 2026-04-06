@@ -11,6 +11,8 @@ function createMemoryStoreStub(
     async writeCoreMemory() {},
     async readDiary(date: string) { return diaries[date] ?? null; },
     async writeDiary() {},
+    async replaceDiary() {},
+    async deleteDiary() { return false; },
     async getRecentDiaries() { return []; },
     async listDiaryDates() { return Object.keys(diaries); },
     async close() {},

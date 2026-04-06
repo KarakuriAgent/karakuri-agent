@@ -66,6 +66,9 @@ karakuri-agent/
 │   ├── memory/
 │   │   ├── composite-store.ts  # IMemoryStore + CompositeMemoryStore
 │   │   ├── diary-store.ts      # SqliteDiaryStore (SQLite diary)
+│   │   ├── maintenance-runner.ts # 定期メモリ保守ループ
+│   │   ├── maintenance.ts      # LLM ベースのメモリ/日記整理
+│   │   ├── persistence-mutex.ts # メモリ永続化の直列化
 │   │   ├── store.ts            # FileMemoryStore (core memory only)
 │   │   └── types.ts
 │   ├── skill/
@@ -171,9 +174,12 @@ karakuri-agent/
 - `src/memory/store.ts` (FileMemoryStore: core memory file store)
 - `src/memory/diary-store.ts` (SqliteDiaryStore: diary SQLite store)
 - `src/memory/composite-store.ts` (CompositeMemoryStore)
+- `src/memory/maintenance.ts` (LLM による core memory / diary の整理)
+- `src/memory/maintenance-runner.ts`（定期実行 + report channel 通知）
+- `src/memory/persistence-mutex.ts`（maintenance 全体と post-response / SNS 評価の apply 段階の競合回避）
 - `data/memory/core/memory.md`（空 or 初期内容）
 - `data/diary.db`
-- **unit test**: core read/write/append/concurrent write, diary append/range/date listing
+- **unit test**: core append/overwrite/concurrent write, diary append/replace/delete/range/date listing, maintenance pipeline / runner
 
 ### Phase 3: Session 層
 
@@ -183,7 +189,7 @@ karakuri-agent/
 
 ### Phase 4: Agent 層
 
-- `src/user/store.ts` / `src/user/post-response-evaluator.ts`（SQLite user store + 応答後の永続化評価）
+- `src/user/store.ts` / `src/user/post-response-evaluator.ts`（SQLite user store + 応答後の永続化評価。LLM 判定と apply を分離）
 - `src/agent/tools/recall-diary.ts`
 - `src/agent/tools/web-fetch.ts`
 - `src/agent/tools/web-search.ts`
@@ -205,6 +211,7 @@ karakuri-agent/
 - Discord でメッセージ送信 → 応答確認（メンション不要）
 - 再起動後の follow-up 継続確認（永続 state）
 - メモリ保存・読み込み確認（memory.md, diary.db）
+- `MEMORY_MAINTENANCE_INTERVAL_MINUTES` 有効時に定期整理と report channel 通知を確認
 - ユーザー情報保存確認（users.db, user profile prompt, userLookup）
 - ボット再起動後のメモリ永続化確認
 - 長い会話でセッション要約が動作するか確認（turn 単位で壊れないか）
@@ -215,7 +222,7 @@ karakuri-agent/
 1. **Chat SDK は beta**: exact version 固定 + lockfile コミット必須。破壊的変更に備える
 2. **Discord Gateway 接続**: Chat SDK の Discord アダプターが長時間稼働で安定するか Phase 0 で検証。問題時は discord.js 直接使用にフォールバック
 3. **AI SDK v6 API**: `stopWhen: stepCountIs(n)`, `ModelMessage` 型を使用（ai-sdk.dev/docs で確認済み）
-4. **永続化競合**: memory.md は mutex + atomic write、diary は SQLite WAL で整合性を保つ
+4. **永続化競合**: memory.md は mutex + atomic write、diary は SQLite WAL、さらに maintenance 全体と post-response evaluator / SNS 観測ユーザー評価の apply 段階は shared persistence mutex で整合性を保つ。evaluator の core memory snapshot read + LLM 判定は lock 外で進め、system turn が background evaluator の LLM 待ちで詰まらないようにする
 5. **Prompt injection**: memory/diary/user profile 内容はタグで区切り、instruction 部分と明確分離する
 6. **コンテキスト予算**: メッセージ件数ではなくトークン予算ベースで要約トリガー管理
 7. **Timezone**: diary 日付は `config.timezone`（デフォルト `Asia/Tokyo`）基準

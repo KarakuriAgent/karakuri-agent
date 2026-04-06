@@ -62,7 +62,7 @@ export interface BuildSystemPromptOptions {
   includeSkillActivity?: boolean | undefined;
 }
 
-const CLOSING_TAG_PATTERN = /<\/(memory|user-profile|diary|skill-context|skill-dynamic-context|summary|existing-summary|conversation)>/gi;
+const CLOSING_TAG_PATTERN = /<\/(memory|user-profile|diary|skill-context|skill-dynamic-context|summary|existing-summary|conversation|core-memory|recent-diaries|all-diary-dates)>/gi;
 
 export function sanitizeTagContent(content: string): string {
   return content.replace(CLOSING_TAG_PATTERN, (match) => match.replace('</', '< /'));

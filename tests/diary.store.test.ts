@@ -82,6 +82,8 @@ describe('SqliteDiaryStore', () => {
 
     await expect(store.readDiary('not-a-date')).rejects.toThrow('expected format YYYY-MM-DD');
     await expect(store.writeDiary('2025/01/10', 'note')).rejects.toThrow('expected format YYYY-MM-DD');
+    await expect(store.replaceDiary('2025/01/10', 'note')).rejects.toThrow('expected format YYYY-MM-DD');
+    await expect(store.deleteDiary('2025/01/10')).rejects.toThrow('expected format YYYY-MM-DD');
   });
 
   it('skips writing an empty string', async () => {
@@ -122,6 +124,35 @@ describe('SqliteDiaryStore', () => {
     await store.writeDiary('2025-01-10', 'Second note');
 
     await expect(store.readDiary('2025-01-10')).resolves.toBe('First note\n\nSecond note');
+  });
+
+  it('replaces all diary entries for the same date', async () => {
+    const { store } = await createStore();
+
+    await store.writeDiary('2025-01-10', 'First note');
+    await store.writeDiary('2025-01-10', 'Second note');
+    await store.replaceDiary('2025-01-10', 'Replacement note');
+
+    await expect(store.readDiary('2025-01-10')).resolves.toBe('Replacement note');
+  });
+
+  it('deletes all diary entries when replaceDiary receives empty content', async () => {
+    const { store } = await createStore();
+
+    await store.writeDiary('2025-01-10', 'First note');
+    await store.replaceDiary('2025-01-10', '   ');
+
+    await expect(store.readDiary('2025-01-10')).resolves.toBeNull();
+  });
+
+  it('deletes diary entries and reports whether anything changed', async () => {
+    const { store } = await createStore();
+
+    await store.writeDiary('2025-01-10', 'First note');
+
+    await expect(store.deleteDiary('2025-01-10')).resolves.toBe(true);
+    await expect(store.readDiary('2025-01-10')).resolves.toBeNull();
+    await expect(store.deleteDiary('2025-01-10')).resolves.toBe(false);
   });
 
   it('skips empty content and trims stored entries', async () => {

@@ -43,6 +43,8 @@ const configSchema = z.object({
   tokenBudget: z.coerce.number().int().positive().default(80_000),
   port: z.coerce.number().int().min(1).max(65_535).default(3_000),
   heartbeatIntervalMinutes: z.coerce.number().positive().default(120),
+  memoryMaintenanceIntervalMinutes: z.coerce.number().positive().optional(),
+  memoryMaintenanceRecentDiaryDays: z.coerce.number().int().positive().optional(),
   snsLoopMinIntervalMinutes: z.coerce.number().positive().default(60),
   snsLoopMaxIntervalMinutes: z.coerce.number().positive().default(180),
   allowedChannelIds: z.string().optional(),
@@ -93,6 +95,8 @@ export interface Config {
   tokenBudget: number;
   port: number;
   heartbeatIntervalMinutes?: number | undefined;
+  memoryMaintenanceIntervalMinutes?: number | undefined;
+  memoryMaintenanceRecentDiaryDays?: number | undefined;
   snsLoopMinIntervalMinutes: number;
   snsLoopMaxIntervalMinutes: number;
   postMessageChannelIds?: string[] | undefined;
@@ -142,6 +146,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tokenBudget: env.TOKEN_BUDGET ?? env.AGENT_TOKEN_BUDGET,
     port: env.PORT,
     heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES,
+    memoryMaintenanceIntervalMinutes: normalizeOptionalString(env.MEMORY_MAINTENANCE_INTERVAL_MINUTES),
+    memoryMaintenanceRecentDiaryDays: normalizeOptionalString(env.MEMORY_MAINTENANCE_RECENT_DIARY_DAYS),
     snsLoopMinIntervalMinutes: env.SNS_LOOP_MIN_INTERVAL_MINUTES,
     snsLoopMaxIntervalMinutes: env.SNS_LOOP_MAX_INTERVAL_MINUTES,
     allowedChannelIds: env.ALLOWED_CHANNEL_IDS,
@@ -271,6 +277,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       hasSns: config.sns != null,
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
+      memoryMaintenanceIntervalMinutes: config.memoryMaintenanceIntervalMinutes,
+      memoryMaintenanceRecentDiaryDays: config.memoryMaintenanceRecentDiaryDays,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,
       hasAdminUsers: (config.adminUserIds?.length ?? 0) > 0,
       hasKarakuriWorldBots: (config.karakuriWorldBotIds?.length ?? 0) > 0,

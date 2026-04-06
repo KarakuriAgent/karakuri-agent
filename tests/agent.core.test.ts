@@ -2030,28 +2030,29 @@ describe('KarakuriAgent', () => {
     expect(drained).toBe(true);
   });
 
-  it('allows different users to evaluate in parallel while serializing the same user', async () => {
+  it('serializes post-response evaluations per user so later runs for the same user see committed core memory', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
     const userStore = new UserStoreStub();
-    const starts: string[] = [];
-    let releaseUserOneEvaluation!: () => void;
-    const userOneGate = new Promise<void>((resolve) => {
-      releaseUserOneEvaluation = resolve;
+    const evaluationSnapshots: string[] = [];
+    let releaseFirstEvaluation!: () => void;
+    const firstEvaluationGate = new Promise<void>((resolve) => {
+      releaseFirstEvaluation = resolve;
     });
 
     const generateTextFn = vi.fn(async (options: { prompt?: string; output?: unknown }) => {
       if (options.output != null) {
         const userId = options.prompt?.match(/User ID: ([^\n]+)/)?.[1] ?? 'unknown';
-        starts.push(userId);
-        if (userId === 'user-1' && starts.filter((id) => id === 'user-1').length === 1) {
-          await userOneGate;
+        const currentCoreMemory = options.prompt?.match(/Current core memory:\n([\s\S]*?)\n\nLatest user message:/)?.[1] ?? 'missing';
+        evaluationSnapshots.push(`${userId}:${currentCoreMemory}`);
+        if (evaluationSnapshots.length === 1) {
+          await firstEvaluationGate;
         }
         return makeStructuredEvaluationResult({
           profileAction: 'none',
           profile: '',
           displayName: '',
-          coreMemoryAppend: '',
+          coreMemoryAppend: userId === 'user-1' ? 'user-1 fact' : '',
           diaryEntry: '',
         });
       }
@@ -2069,22 +2070,23 @@ describe('KarakuriAgent', () => {
 
     await Promise.all([
       agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' }),
-      agent.handleMessage('session-2', 'hello', 'Bob', { userId: 'user-2' }),
-      agent.handleMessage('session-3', 'again', 'Alice', { userId: 'user-1' }),
+      agent.handleMessage('session-2', 'again', 'Alice', { userId: 'user-1' }),
     ]);
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(starts).toEqual(expect.arrayContaining(['user-1', 'user-2']));
-    expect(starts.filter((id) => id === 'user-1')).toHaveLength(1);
-    expect(starts).toHaveLength(2);
+    expect(evaluationSnapshots).toEqual(['user-1:(empty)']);
 
-    releaseUserOneEvaluation();
+    releaseFirstEvaluation();
     await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
-    expect(starts).toHaveLength(3);
+    expect(evaluationSnapshots).toEqual([
+      'user-1:(empty)',
+      'user-1:user-1 fact',
+    ]);
+    expect(memoryStore.coreWrites).toEqual(['user-1 fact', 'user-1 fact']);
   });
 
-  it('does not block different users from starting evaluator model calls while persistence is locked', async () => {
+  it('starts post-response generation before waiting on the persistence lock', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
     const userStore = new UserStoreStub();
@@ -2143,7 +2145,7 @@ describe('KarakuriAgent', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(startedEvaluations).toEqual(expect.arrayContaining(['user-1', 'user-2']));
+    expect(startedEvaluations).toEqual(['user-1', 'user-2']);
 
     releasePersistenceLock();
     await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
@@ -2277,7 +2279,7 @@ describe('KarakuriAgent', () => {
     vi.unstubAllGlobals();
   });
 
-  it('does not block SNS user evaluator model calls for other users while persistence is locked', async () => {
+  it('starts SNS user evaluation generation before waiting on the persistence lock', async () => {
     const memoryStore = new MemoryStoreStub('core memory');
     const sessionManager = new SessionManagerStub();
     const userStore = new UserStoreStub();
@@ -2304,7 +2306,7 @@ describe('KarakuriAgent', () => {
         return await task();
       }));
 
-    vi.stubGlobal('fetch', vi.fn(async (input: string | Request | URL) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: Parameters<typeof fetch>[0]) => {
       const url = String(input);
       const postId = url.endsWith('/post-2') ? 'post-2' : 'post-1';
       const accountId = postId === 'post-2' ? 'acct-2' : 'acct-1';

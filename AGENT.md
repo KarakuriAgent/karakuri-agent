@@ -4,7 +4,7 @@
 
 ## プロジェクト概要
 
-Discord を主導線にした TypeScript 製の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換 LLM で応答を生成し、ファイルベースのコアメモリ / セッション管理、SQLite による日記・ユーザー・SNS 活動の永続化、Heartbeat / Cron による system turn 実行、Mastodon / X 連携、Karakuri World 専用モードを備える。
+Discord を主導線にした TypeScript 製の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換 LLM で応答を生成し、ファイルベースのコアメモリ / セッション管理、SQLite による日記・ユーザー・SNS 活動の永続化、Heartbeat / Cron / メモリメンテナンスによる system turn 実行、Mastodon / X 連携、Karakuri World 専用モードを備える。
 
 ## コマンド
 
@@ -56,7 +56,7 @@ src/agent/prompt.ts           — システムプロンプト構築、AGENT.md /
 src/agent/prompt-context.ts   — trusted / untrusted 文脈の分離などプロンプト用コンテキスト構築
 src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_*, karakuri_world_*）
 src/session/                  — JSON ファイルベースのセッション保存。ハッシュ化ファイル名 + メモリキャッシュを使用
-src/memory/                   — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore
+src/memory/                   — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore + maintenance runner
 src/skill/                    — `data/skills/` と `data/system-skills/` を監視する frontmatter 付き SKILL.md ストア
 src/scheduler/                — HEARTBEAT.md 読み込み、CRON.md frontmatter 解釈、Heartbeat/Cron 実行、scheduler store
 src/sns/                      — Mastodon / X provider、活動ログの SQLite ストア、SNS skill dynamic context、SNS 専用ループ
@@ -79,7 +79,8 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **Skill-gated ツール**: 一部ツールはスキル経由でのみ解放される。SNS 系ツールは `loadSkill("sns")`、または runtime が auto-load したスキルを通じて公開される。
 - **Admin-gated ツール**: `postMessage` と `manageCron` は管理者権限が必要。特に `manageCron` は scheduler store が存在しても admin 以外には公開されない。
 - **トークンバジェット管理**: セッションはトークン見積りで管理し、しきい値超過時は `KarakuriAgent` が要約して最近の turn を保持する。
-- **System turn の直列化**: heartbeat と cron はグローバル mutex で system turn を直列実行し、共有セッションの破損や競合を防ぐ。
+- **System turn の直列化**: heartbeat・cron・memory maintenance はグローバル mutex で system turn を直列実行し、共有セッションの破損や競合を防ぐ。
+- **メモリ永続化の直列化**: post-response evaluator と SNS 観測ユーザー評価は、core memory snapshot read と LLM 評価を lock 外で行い、append/write の apply 段階だけ共有 persistence mutex を通す。memory maintenance は同じ mutex を read → LLM → overwrite / replace / delete 全体で保持し、maintenance overwrite と background append の更新ロストを防ぎつつ、system turn が evaluator の LLM 待ちで長時間ブロックされないようにする。同一 user の後続 evaluator は agent 側 mutex で直列化される。
 - **スレッド単位排他**: Discord 側のユーザー会話処理は thread ごとに mutex で直列化する。
 - **ファイルベース state**: Chat SDK の subscription / cache / lock 状態は `data/state/chat-state.json` に保存される。
 - **SNS の重複防止と専用ループ**: SNS 活動は SQLite に記録し、like / repost / reply / quote の重複防止を行う。SNS 自動実行は heartbeat から分離した専用ループで行う。
@@ -90,6 +91,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 
 - Heartbeat は `HEARTBEAT.md` が存在するだけでは動かない。`postMessageChannelIds`（`ALLOWED_CHANNEL_IDS` 由来）が 1 件以上あるときに有効化される。
 - `REPORT_CHANNEL_ID` 単独では heartbeat は有効にならない。
+- `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を設定すると、メモリメンテナンス専用ループが有効になり、report には要約メタ情報のみを送る。
 - Cron ジョブ実行自体は admin 権限不要。admin 権限が必要なのは `manageCron` ツール経由の操作。
 - `CRON.md` の frontmatter では少なくとも以下を扱う:
   - `schedule`
