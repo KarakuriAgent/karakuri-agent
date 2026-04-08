@@ -18,6 +18,7 @@ const EXPECTED_TOOL_NAMES = [
   'karakuri_world_get_world_agents',
   'karakuri_world_move',
   'karakuri_world_action',
+  'karakuri_world_use_item',
   'karakuri_world_wait',
   'karakuri_world_conversation_start',
   'karakuri_world_conversation_accept',
@@ -46,6 +47,13 @@ describe('karakuri-world tools', () => {
     });
     expect(() => karakuriWorldInputSchema.parse({ operation: 'get_map', extra: true })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration: '1000ms' })).toThrow();
+    expect(karakuriWorldInputSchema.parse({ operation: 'use_item', item_id: 'potion' })).toEqual({
+      operation: 'use_item',
+      item_id: 'potion',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'use_item' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'use_item', item_id: '' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'use_item', item_id: 'x', extra: 1 })).toThrow();
 
     // waitDurationSchema 境界値
     expect(karakuriWorldInputSchema.parse({ operation: 'wait', duration: 1 })).toEqual({ operation: 'wait', duration: 1 });
@@ -400,6 +408,107 @@ describe('karakuri-world tools', () => {
         body: JSON.stringify({ message: 'また後で。' }),
       }),
     );
+  });
+
+  it('posts action requests and returns a notification-accepted response', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          message: '正常に受け付けました。結果が通知されるまで待機してください。',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    const result = await tools.karakuri_world_action!.execute!(
+      { action_id: 'rest', comment: '休憩します。' },
+      DEFAULT_OPTIONS,
+    );
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://example.com/api/agents/action',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ action_id: 'rest' }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      message: '正常に受け付けました。結果が通知されるまで待機してください。',
+    });
+  });
+
+  it('posts use-item requests and returns a notification-accepted response', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          message: '正常に受け付けました。結果が通知されるまで待機してください。',
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    const result = await tools.karakuri_world_use_item!.execute!(
+      { item_id: 'omikuji', comment: 'おみくじを引きます。' },
+      DEFAULT_OPTIONS,
+    );
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://example.com/api/agents/use-item',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ item_id: 'omikuji' }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      message: '正常に受け付けました。結果が通知されるまで待機してください。',
+    });
+  });
+
+  it('rejects the old action response format after schema migration', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          action_id: 'rest',
+          action_name: 'Rest',
+          completes_at: 1234567890,
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(
+      tools.karakuri_world_action!.execute!(
+        { action_id: 'rest', comment: '休憩します。' },
+        DEFAULT_OPTIONS,
+      ),
+    ).rejects.toThrow(KarakuriWorldResponseError);
   });
 
   it('returns a busy response instead of throwing for state_conflict errors', async () => {
