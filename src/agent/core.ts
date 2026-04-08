@@ -498,10 +498,7 @@ export class KarakuriAgent implements IAgent {
   }): void {
     const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
       try {
-        const [ensuredUser, currentCoreMemory] = await Promise.all([
-          this.userStore?.ensureUser(userId, userName) ?? Promise.resolve(null),
-          this.memoryStore.readCoreMemory(),
-        ]);
+        const ensuredUser = await (this.userStore?.ensureUser(userId, userName) ?? Promise.resolve(null));
         const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
         const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
 
@@ -515,9 +512,9 @@ export class KarakuriAgent implements IAgent {
           userMessage: `SNS post observed from ${userName}:\n${postText.trim()}`,
           assistantResponse: 'Recorded SNS user context from the observed post.',
           currentProfile: ensuredUser?.profile,
-          currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
+          logger,
           ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
         });
       } catch (error) {
@@ -546,10 +543,7 @@ export class KarakuriAgent implements IAgent {
   }): void {
     const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
       try {
-        const [currentUser, currentCoreMemory] = await Promise.all([
-          skipUserStore ? Promise.resolve(null) : (this.userStore?.getUser(userId) ?? Promise.resolve(null)),
-          this.memoryStore.readCoreMemory(),
-        ]);
+        const currentUser = skipUserStore ? null : await (this.userStore?.getUser(userId) ?? Promise.resolve(null));
         const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
         const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
         const userStoreIfKnown = !skipUserStore && currentUser != null ? this.userStore : undefined;
@@ -564,9 +558,9 @@ export class KarakuriAgent implements IAgent {
           userMessage,
           assistantResponse,
           currentProfile: currentUser?.profile,
-          currentCoreMemory,
           timezone: this.config.timezone,
           generateTextFn: this.generateTextFn,
+          logger,
           ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
         });
       } catch (error) {

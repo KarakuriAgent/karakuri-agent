@@ -1,13 +1,18 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
+import type { ProviderOptions } from '@ai-sdk/provider-utils';
+
 import { KarakuriAgent } from './agent/core.js';
 import { FilePromptContextStore } from './agent/prompt-context.js';
 import { createBot, type BotRuntime } from './bot.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
+import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from './llm/model-selector.js';
+import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import { CompositeMemoryStore } from './memory/composite-store.js';
 import { SqliteDiaryStore } from './memory/diary-store.js';
+import { MemoryMaintenanceRunner } from './memory/maintenance-runner.js';
 import { FileMemoryStore } from './memory/store.js';
 import { FileSessionManager } from './session/manager.js';
 import { createSnsProvider } from './sns/index.js';
@@ -19,10 +24,41 @@ import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
 import { SqliteUserStore } from './user/store.js';
 import { createLogger } from './utils/logger.js';
+import { reportSafely } from './utils/report.js';
 
 const logger = createLogger('Server');
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+interface MemoryMaintenanceModelConfig {
+  modelSelector: Config['llmModelSelector'];
+  modelFactoryOptions: OpenAiProviderOptions;
+  providerOptions: ProviderOptions;
+}
+
+export function createMemoryMaintenanceModelConfig(config: Pick<
+  Config,
+  'llmApiKey'
+  | 'llmBaseUrl'
+  | 'llmModelSelector'
+  | 'postResponseLlmApiKey'
+  | 'postResponseLlmBaseUrl'
+  | 'postResponseLlmModelSelector'
+>): MemoryMaintenanceModelConfig {
+  const maintenanceModelSelector = config.postResponseLlmModelSelector ?? config.llmModelSelector;
+
+  return {
+    modelSelector: maintenanceModelSelector,
+    modelFactoryOptions: {
+      apiKey: config.postResponseLlmApiKey ?? config.llmApiKey,
+      ...((config.postResponseLlmBaseUrl ?? config.llmBaseUrl) != null
+        ? { baseURL: config.postResponseLlmBaseUrl ?? config.llmBaseUrl }
+        : {}),
+      fetch: createNoThinkingFetch(),
+    },
+    providerOptions: noThinkingProviderOptions(maintenanceModelSelector.api),
+  };
+}
 
 async function main(): Promise<void> {
   logger.info('Starting karakuri-agent...');
@@ -33,6 +69,8 @@ async function main(): Promise<void> {
     provider: config.llmModelSelector.provider,
     api: config.llmModelSelector.api,
     port: config.port,
+    memoryMaintenanceIntervalMinutes: config.memoryMaintenanceIntervalMinutes,
+    memoryMaintenanceRecentDiaryDays: config.memoryMaintenanceRecentDiaryDays,
   });
   const coreMemoryStore = new FileMemoryStore({ dataDir: config.dataDir });
   const diaryStore = new SqliteDiaryStore({ dataDir: config.dataDir, timezone: config.timezone });
@@ -47,7 +85,13 @@ async function main(): Promise<void> {
       })
     : undefined;
   const snsReportError = messageSink != null && config.reportChannelId != null
-    ? (message: string) => { void messageSink.postMessage(config.reportChannelId!, message).catch((err) => { logger.error('Failed to report SNS context error', err); }); }
+    ? (message: string) => {
+        void reportSafely(messageSink, config.reportChannelId, message, {
+          error: (_message, err) => {
+            logger.error('Failed to report SNS context error', err);
+          },
+        });
+      }
     : undefined;
   const snsProvider = config.sns != null ? createSnsProvider({ ...config.sns, dataDir: config.dataDir }) : undefined;
   const snsContextRegistry = config.sns != null && snsActivityStore != null && snsProvider != null
@@ -94,6 +138,24 @@ async function main(): Promise<void> {
           && (config.postMessageChannelIds ?? []).includes(config.reportChannelId),
       })
     : undefined;
+  const memoryMaintenanceRunner = config.memoryMaintenanceIntervalMinutes != null
+    ? (() => {
+        const maintenanceModelConfig = createMemoryMaintenanceModelConfig(config);
+        const modelFactory = createConfiguredOpenAiModelFactory(maintenanceModelConfig.modelFactoryOptions);
+        return new MemoryMaintenanceRunner({
+          model: modelFactory(maintenanceModelConfig.modelSelector),
+          memoryStore,
+          intervalMinutes: config.memoryMaintenanceIntervalMinutes,
+          ...(config.memoryMaintenanceRecentDiaryDays != null
+            ? { recentDiaryDays: config.memoryMaintenanceRecentDiaryDays }
+            : {}),
+          timezone: config.timezone,
+          providerOptions: maintenanceModelConfig.providerOptions,
+          ...(messageSink != null ? { messageSink } : {}),
+          ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
+        });
+      })()
+    : undefined;
   const scheduler = await createScheduler({
     agent,
     config,
@@ -103,6 +165,7 @@ async function main(): Promise<void> {
   const bot = createBot(config, agent, { messageSink });
 
   snsLoopRunner?.start();
+  memoryMaintenanceRunner?.start();
   await bot.initialize();
   logger.debug('Bot initialized');
 
@@ -131,6 +194,7 @@ async function main(): Promise<void> {
         closeScheduler: () => Promise.all([
           scheduler.close(),
           snsLoopRunner?.close() ?? Promise.resolve(),
+          memoryMaintenanceRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
         drainEvaluations: () => agent.drainPendingEvaluations(),

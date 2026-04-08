@@ -29,16 +29,17 @@ interface DiaryDateRow {
   date: string;
 }
 
-
 export class SqliteDiaryStore implements IDiaryStore {
   private readonly db: Database.Database;
   private readonly timezone: string;
   private readonly readDiaryStatement: Database.Statement<[string], DiaryContentRow>;
   private readonly writeDiaryStatement: Database.Statement<[string, string, string]>;
+  private readonly deleteDiaryStatement: Database.Statement<[string]>;
   private readonly getRecentDiariesStatement: Database.Statement<[string, string], DiaryEntryRow>;
   private readonly listDiaryDatesStatement: Database.Statement<[], DiaryDateRow>;
   private readonly hasLegacyImportStatement: Database.Statement<[string], { imported: 1 }>;
   private readonly markLegacyImportStatement: Database.Statement<[string, string]>;
+  private readonly replaceDiaryTransaction: (date: string, content: string, createdAt: string) => void;
 
   constructor({ dataDir, timezone = 'Asia/Tokyo' }: SqliteDiaryStoreOptions) {
     const dbPath = join(dataDir, 'diary.db');
@@ -77,6 +78,7 @@ export class SqliteDiaryStore implements IDiaryStore {
         INSERT INTO diary_entries (date, content, created_at)
         VALUES (?, ?, ?)
       `);
+      this.deleteDiaryStatement = this.db.prepare('DELETE FROM diary_entries WHERE date = ?');
       this.getRecentDiariesStatement = this.db.prepare<[string, string], DiaryEntryRow>(`
         SELECT date, content
         FROM diary_entries
@@ -97,6 +99,10 @@ export class SqliteDiaryStore implements IDiaryStore {
         INSERT OR IGNORE INTO legacy_diary_imports (date, imported_at)
         VALUES (?, ?)
       `);
+      this.replaceDiaryTransaction = this.db.transaction((date: string, content: string, createdAt: string) => {
+        this.deleteDiaryStatement.run(date);
+        this.writeDiaryStatement.run(date, content, createdAt);
+      });
       this.importLegacyDiaryFiles(join(dataDir, 'memory', 'diary'));
     } catch (error) {
       this.db.close();
@@ -124,6 +130,26 @@ export class SqliteDiaryStore implements IDiaryStore {
     this.writeDiaryStatement.run(date, normalizedContent, new Date().toISOString());
     logger.debug('Diary written', { date, contentLength: normalizedContent.length });
     return Promise.resolve();
+  }
+
+  async replaceDiary(date: string, content: string): Promise<void> {
+    assertIsoDate(date);
+    const normalizedContent = content.trim();
+    if (normalizedContent.length === 0) {
+      await this.deleteDiary(date);
+      return;
+    }
+
+    this.replaceDiaryTransaction(date, normalizedContent, new Date().toISOString());
+    logger.debug('Diary replaced', { date, contentLength: normalizedContent.length });
+    return Promise.resolve();
+  }
+
+  async deleteDiary(date: string): Promise<boolean> {
+    assertIsoDate(date);
+    const result = this.deleteDiaryStatement.run(date);
+    logger.debug('Diary deleted', { date, deleted: result.changes > 0 });
+    return Promise.resolve(result.changes > 0);
   }
 
   async getRecentDiaries(days: number): Promise<DiaryEntry[]> {

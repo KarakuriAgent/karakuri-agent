@@ -15,6 +15,8 @@ function createDiaryStore(): IDiaryStore {
   return {
     readDiary: vi.fn().mockResolvedValue('diary entry'),
     writeDiary: vi.fn().mockResolvedValue(undefined),
+    replaceDiary: vi.fn().mockResolvedValue(undefined),
+    deleteDiary: vi.fn().mockResolvedValue(true),
     getRecentDiaries: vi.fn().mockResolvedValue([{ date: '2025-01-10', content: 'entry' }]),
     listDiaryDates: vi.fn().mockResolvedValue(['2025-01-10']),
     close: vi.fn().mockResolvedValue(undefined),
@@ -29,9 +31,11 @@ describe('CompositeMemoryStore', () => {
 
     await expect(store.readCoreMemory()).resolves.toBe('core memory');
     await store.writeCoreMemory('new memory', 'append');
+    await store.writeCoreMemory('replacement', 'overwrite');
 
     expect(coreStore.readCoreMemory).toHaveBeenCalledTimes(1);
-    expect(coreStore.writeCoreMemory).toHaveBeenCalledWith('new memory', 'append');
+    expect(coreStore.writeCoreMemory).toHaveBeenNthCalledWith(1, 'new memory', 'append');
+    expect(coreStore.writeCoreMemory).toHaveBeenNthCalledWith(2, 'replacement', 'overwrite');
   });
 
   it('delegates diary operations to the diary store', async () => {
@@ -41,11 +45,15 @@ describe('CompositeMemoryStore', () => {
 
     await expect(store.readDiary('2025-01-10')).resolves.toBe('diary entry');
     await store.writeDiary('2025-01-10', 'more diary');
+    await store.replaceDiary('2025-01-10', 'replacement diary');
+    await expect(store.deleteDiary('2025-01-10')).resolves.toBe(true);
     await expect(store.getRecentDiaries(3)).resolves.toEqual([{ date: '2025-01-10', content: 'entry' }]);
     await expect(store.listDiaryDates()).resolves.toEqual(['2025-01-10']);
 
     expect(diaryStore.readDiary).toHaveBeenCalledWith('2025-01-10');
     expect(diaryStore.writeDiary).toHaveBeenCalledWith('2025-01-10', 'more diary');
+    expect(diaryStore.replaceDiary).toHaveBeenCalledWith('2025-01-10', 'replacement diary');
+    expect(diaryStore.deleteDiary).toHaveBeenCalledWith('2025-01-10');
     expect(diaryStore.getRecentDiaries).toHaveBeenCalledWith(3);
     expect(diaryStore.listDiaryDates).toHaveBeenCalledTimes(1);
   });

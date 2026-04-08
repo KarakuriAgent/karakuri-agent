@@ -13,7 +13,7 @@ export class CompositeMemoryStore implements IMemoryStore {
     return this.coreMemoryStore.readCoreMemory();
   }
 
-  writeCoreMemory(content: string, mode: 'append'): Promise<void> {
+  writeCoreMemory(content: string, mode: 'append' | 'overwrite'): Promise<void> {
     return this.coreMemoryStore.writeCoreMemory(content, mode);
   }
 
@@ -23,6 +23,14 @@ export class CompositeMemoryStore implements IMemoryStore {
 
   writeDiary(date: string, content: string): Promise<void> {
     return this.diaryStore.writeDiary(date, content);
+  }
+
+  replaceDiary(date: string, content: string): Promise<void> {
+    return this.diaryStore.replaceDiary(date, content);
+  }
+
+  deleteDiary(date: string): Promise<boolean> {
+    return this.diaryStore.deleteDiary(date);
   }
 
   getRecentDiaries(days: number): Promise<DiaryEntry[]> {

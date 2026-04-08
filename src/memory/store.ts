@@ -50,22 +50,28 @@ export class FileMemoryStore implements ICoreMemoryStore {
     return content;
   }
 
-  async writeCoreMemory(content: string, mode: 'append'): Promise<void> {
-    if (mode !== 'append') {
-      throw new Error(`Unsupported core memory write mode: ${mode}`);
-    }
+  async writeCoreMemory(content: string, mode: 'append' | 'overwrite'): Promise<void> {
+    if (mode === 'append') {
+      const normalizedContent = content.trim();
+      if (normalizedContent.length === 0) {
+        return;
+      }
 
-    const normalizedContent = content.trim();
-    if (normalizedContent.length === 0) {
+      await this.mutex.runExclusive(this.coreMemoryPath, async () => {
+        const current = await this.readCoreMemory();
+        const next = appendContent(current, normalizedContent);
+        await writeFileAtomically(this.coreMemoryPath, next);
+        this.coreMemoryCache = next;
+        logger.debug('Core memory appended', { contentLength: normalizedContent.length });
+      });
       return;
     }
 
+    const next = normalizeOverwriteContent(content);
     await this.mutex.runExclusive(this.coreMemoryPath, async () => {
-      const current = await this.readCoreMemory();
-      const next = appendContent(current, normalizedContent);
       await writeFileAtomically(this.coreMemoryPath, next);
       this.coreMemoryCache = next;
-      logger.debug('Core memory appended', { contentLength: normalizedContent.length });
+      logger.debug('Core memory overwritten', { contentLength: next.length });
     });
   }
 
@@ -99,4 +105,9 @@ function appendContent(existing: string, entry: string): string {
 
   const separator = existing.endsWith('\n') ? '\n' : '\n\n';
   return `${existing}${separator}${entry}\n`;
+}
+
+function normalizeOverwriteContent(content: string): string {
+  const normalizedContent = content.trim();
+  return normalizedContent.length === 0 ? '' : `${normalizedContent}\n`;
 }

@@ -1,9 +1,10 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { handleRequest } from '../src/index.js';
+import { createMemoryMaintenanceModelConfig, handleRequest } from '../src/index.js';
+import { parseModelSelector } from '../src/llm/model-selector.js';
 
 function listen(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -32,10 +33,41 @@ describe('handleRequest', () => {
   let server: Server | undefined;
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     if (server != null) {
       await closeServer(server);
       server = undefined;
     }
+  });
+
+  it('always configures no-thinking maintenance requests', async () => {
+    const baseFetch = vi.fn(async () => new Response('{}'));
+    vi.stubGlobal('fetch', baseFetch);
+
+    const config = createMemoryMaintenanceModelConfig({
+      llmApiKey: 'main-key',
+      llmBaseUrl: 'https://main.example/v1',
+      llmModelSelector: parseModelSelector('openai/chat/gpt-4o'),
+      postResponseLlmApiKey: 'post-key',
+      postResponseLlmBaseUrl: 'https://post.example/v1',
+      postResponseLlmModelSelector: parseModelSelector('openai/gpt-4.1'),
+    });
+
+    await config.modelFactoryOptions.fetch?.('https://example.com/v1/responses', {
+      method: 'POST',
+      body: JSON.stringify({ input: 'ping' }),
+    });
+
+    expect(config.modelSelector).toEqual(parseModelSelector('openai/gpt-4.1'));
+    expect(config.modelFactoryOptions.apiKey).toBe('post-key');
+    expect(config.modelFactoryOptions.baseURL).toBe('https://post.example/v1');
+    expect(config.providerOptions).toEqual({ openai: { reasoningEffort: 'low' } });
+    expect(baseFetch).toHaveBeenCalledWith(
+      'https://example.com/v1/responses',
+      expect.objectContaining({
+        body: JSON.stringify({ input: 'ping', enable_thinking: false }),
+      }),
+    );
   });
 
   it('returns health for both GET and HEAD probes', async () => {

@@ -49,6 +49,38 @@ describe('FileMemoryStore', () => {
     }
   });
 
+  it('overwrites the full core memory content', async () => {
+    const { store } = await createStore();
+
+    await store.writeCoreMemory('before', 'append');
+    await store.writeCoreMemory('after', 'overwrite');
+
+    await expect(store.readCoreMemory()).resolves.toBe('after\n');
+  });
+
+  it('clears core memory on empty overwrite', async () => {
+    const { store } = await createStore();
+
+    await store.writeCoreMemory('before', 'append');
+    await store.writeCoreMemory('', 'overwrite');
+
+    await expect(store.readCoreMemory()).resolves.toBe('');
+  });
+
+  it('serializes concurrent overwrite and append safely', async () => {
+    const { store } = await createStore();
+
+    await store.writeCoreMemory('initial', 'append');
+    await Promise.all([
+      store.writeCoreMemory('replacement', 'overwrite'),
+      store.writeCoreMemory('extra', 'append'),
+    ]);
+
+    const content = await store.readCoreMemory();
+    expect(['replacement\n', 'replacement\n\nextra\n']).toContain(content);
+    expect(content).not.toContain('initial');
+  });
+
   it('reloads core memory after external edits', async () => {
     const { dataDir, store } = await createStore();
     const corePath = join(dataDir, 'memory', 'core', 'memory.md');

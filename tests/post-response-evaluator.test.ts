@@ -1,5 +1,13 @@
 import type { LanguageModel, ModelMessage } from 'ai';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const mockState = vi.hoisted(() => ({
+  runExclusiveMemoryPersistence: vi.fn(async <T>(task: () => Promise<T>) => await task()),
+}));
+
+vi.mock('../src/memory/persistence-mutex.js', () => ({
+  runExclusiveMemoryPersistence: mockState.runExclusiveMemoryPersistence,
+}));
 
 import {
   evaluatePostResponse,
@@ -10,15 +18,21 @@ import type { IMemoryStore } from '../src/memory/types.js';
 import type { IUserStore, UserRecord } from '../src/user/types.js';
 
 class MemoryStoreStub implements IMemoryStore {
+  coreMemory = '';
   coreWrites: string[] = [];
   diaryWrites: Array<{ date: string; content: string }> = [];
 
   async readCoreMemory(): Promise<string> {
-    return '';
+    return this.coreMemory;
   }
 
-  async writeCoreMemory(content: string): Promise<void> {
+  async writeCoreMemory(content: string, mode: 'append' | 'overwrite'): Promise<void> {
     this.coreWrites.push(content);
+    if (mode === 'overwrite') {
+      this.coreMemory = content;
+      return;
+    }
+    this.coreMemory += content;
   }
 
   async readDiary(): Promise<string | null> {
@@ -27,6 +41,12 @@ class MemoryStoreStub implements IMemoryStore {
 
   async writeDiary(date: string, content: string): Promise<void> {
     this.diaryWrites.push({ date, content });
+  }
+
+  async replaceDiary(): Promise<void> {}
+
+  async deleteDiary(): Promise<boolean> {
+    return false;
   }
 
   async getRecentDiaries() {
@@ -82,6 +102,11 @@ function makeStructuredResult(output: Record<string, string>) {
 }
 
 describe('evaluatePostResponse', () => {
+  afterEach(() => {
+    mockState.runExclusiveMemoryPersistence.mockReset();
+    mockState.runExclusiveMemoryPersistence.mockImplementation(async <T>(task: () => Promise<T>) => await task());
+  });
+
   it('applies profile, display name, core memory, and diary updates', async () => {
     const memoryStore = new MemoryStoreStub();
     const userStore = new UserStoreStub();
@@ -102,7 +127,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'remember this',
       assistantResponse: 'ok',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       now: () => new Date('2025-03-21T12:00:00.000Z'),
       generateTextFn,
@@ -129,7 +153,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'clear',
       assistantResponse: 'ok',
       currentProfile: 'old profile',
-      currentCoreMemory: '',
       timezone: 'UTC',
       generateTextFn: vi.fn(async () => makeStructuredResult({
         profileAction: 'clear',
@@ -154,7 +177,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'remember this',
       assistantResponse: 'ok',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       generateTextFn: vi.fn(async () => makeStructuredResult({
         profileAction: 'update',
@@ -168,10 +190,10 @@ describe('evaluatePostResponse', () => {
     expect(memoryStore.coreWrites).toEqual(['Durable fact']);
   });
 
-  it('swallows LLM failures and logs a warning', async () => {
+  it('swallows LLM failures and logs an error', async () => {
     const memoryStore = new MemoryStoreStub();
     const userStore = new UserStoreStub();
-    const warn = vi.fn();
+    const errorFn = vi.fn();
 
     await expect(evaluatePostResponse({
       model: {} as LanguageModel,
@@ -182,7 +204,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'remember this',
       assistantResponse: 'ok',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       generateTextFn: vi.fn(async () => {
         throw new Error('boom');
@@ -190,12 +211,12 @@ describe('evaluatePostResponse', () => {
       logger: {
         debug: vi.fn(),
         info: vi.fn(),
-        warn,
-        error: vi.fn(),
+        warn: vi.fn(),
+        error: errorFn,
       },
     })).resolves.toBeUndefined();
 
-    expect(warn).toHaveBeenCalled();
+    expect(errorFn).toHaveBeenCalled();
     expect(userStore.profileUpdates).toEqual([]);
     expect(memoryStore.coreWrites).toEqual([]);
   });
@@ -215,7 +236,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'hi',
       assistantResponse: 'hello',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       generateTextFn: vi.fn(async (options: { prompt?: string }) => {
         capturedPrompt = options.prompt ?? '';
@@ -246,7 +266,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'hi',
       assistantResponse: 'hello',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       generateTextFn: vi.fn(async (options: { prompt?: string }) => {
         capturedPrompt = options.prompt ?? '';
@@ -278,7 +297,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'hi',
       assistantResponse: 'hello',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       generateTextFn: vi.fn(async () => ({
         text: '',
@@ -303,6 +321,75 @@ describe('evaluatePostResponse', () => {
     expect(memoryStore.coreWrites).toEqual([]);
   });
 
+  it('starts generation before waiting on the persistence lock', async () => {
+    const memoryStore = new MemoryStoreStub();
+    let releasePersistenceLock!: () => void;
+    const persistenceLockReleased = new Promise<void>((resolve) => {
+      releasePersistenceLock = resolve;
+    });
+    let persistenceCallCount = 0;
+    let signalFirstPersistenceAttempt!: () => void;
+    const firstPersistenceAttempted = new Promise<void>((resolve) => {
+      signalFirstPersistenceAttempt = resolve;
+    });
+
+    mockState.runExclusiveMemoryPersistence.mockImplementation(async <T>(task: () => Promise<T>) => {
+      persistenceCallCount += 1;
+      if (persistenceCallCount === 1) {
+        signalFirstPersistenceAttempt();
+        await persistenceLockReleased;
+      }
+      return await task();
+    });
+
+    const startedEvaluations: string[] = [];
+
+    const generateTextFn = vi.fn(async (options: { prompt?: string }) => {
+      startedEvaluations.push(options.prompt?.match(/User ID: ([^\n]+)/)?.[1] ?? 'unknown');
+      return makeStructuredResult({
+        profileAction: 'none',
+        profile: '',
+        displayName: '',
+        coreMemoryAppend: 'durable fact',
+        diaryEntry: '',
+      });
+    }) as unknown as typeof import('ai').generateText;
+
+    const firstEvaluation = evaluatePostResponse({
+      model: {} as LanguageModel,
+      memoryStore,
+      userId: 'user-1',
+      userName: 'Alice',
+      userMessage: 'remember this',
+      assistantResponse: 'ok',
+      currentProfile: null,
+      timezone: 'UTC',
+      generateTextFn,
+    });
+    const secondEvaluation = evaluatePostResponse({
+      model: {} as LanguageModel,
+      memoryStore,
+      userId: 'user-2',
+      userName: 'Bob',
+      userMessage: 'remember this too',
+      assistantResponse: 'ok',
+      currentProfile: null,
+      timezone: 'UTC',
+      generateTextFn,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    await firstPersistenceAttempted;
+    await Promise.resolve();
+
+    expect(startedEvaluations).toEqual(['user-1', 'user-2']);
+
+    releasePersistenceLock();
+    await Promise.all([firstEvaluation, secondEvaluation]);
+    expect(memoryStore.coreWrites).toEqual(['durable fact', 'durable fact']);
+  });
+
   it('passes providerOptions through to generateText when provided', async () => {
     const memoryStore = new MemoryStoreStub();
     let capturedProviderOptions: unknown;
@@ -315,7 +402,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'hi',
       assistantResponse: 'hello',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       providerOptions: { openai: { reasoningEffort: 'low' } },
       generateTextFn: vi.fn(async (options: { providerOptions?: unknown }) => {
@@ -345,7 +431,6 @@ describe('evaluatePostResponse', () => {
       userMessage: 'hi',
       assistantResponse: 'hello',
       currentProfile: null,
-      currentCoreMemory: '',
       timezone: 'UTC',
       generateTextFn: vi.fn(async (options: Record<string, unknown>) => {
         generateTextCall = options;
