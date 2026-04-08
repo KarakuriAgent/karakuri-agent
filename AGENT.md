@@ -91,7 +91,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 
 - Heartbeat は `HEARTBEAT.md` が存在するだけでは動かない。`postMessageChannelIds`（`ALLOWED_CHANNEL_IDS` 由来）が 1 件以上あるときに有効化される。
 - `REPORT_CHANNEL_ID` 単独では heartbeat は有効にならない。
-- `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を設定すると、メモリメンテナンス専用ループが有効になり、report には要約メタ情報のみを送る。
+- `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を設定すると、メモリメンテナンス専用ループが有効になり、report には要約サマリーを送る。
 - Cron ジョブ実行自体は admin 権限不要。admin 権限が必要なのは `manageCron` ツール経由の操作。
 - `CRON.md` の frontmatter では少なくとも以下を扱う:
   - `schedule`
