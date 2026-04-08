@@ -61,10 +61,10 @@ CREATE INDEX IF NOT EXISTS idx_diary_entries_date ON diary_entries(date);
 
 ### `memory/maintenance.ts` / `memory/maintenance-runner.ts`
 
-- LLM の structured output (`coreMemoryAction`, `coreMemoryContent`, `diaryOps[]`, `summary`) で maintenance plan を生成する
+- LLM の tool calling (`coreMemoryAction`, `coreMemoryContent`, `diaryOps[]`, `summary`) で maintenance plan を生成する
 - `runExclusiveSystemTurn()` + shared persistence mutex 内で read → LLM → apply を一括実行し、maintenance 中の更新競合を避ける
 - post-response evaluator と SNS 観測ユーザー評価は、core memory snapshot read と LLM 判定を lock 外で実行しつつ append/write の apply 段階だけ同じ persistence mutex を通す。これにより maintenance overwrite と background append/write の競合で更新が失われないようにしながら、system turn が evaluator の LLM 待ちで詰まる回帰を避ける。同一 user の後続 evaluator は agent 側 mutex で直列化される
-- runner は maintenance result の `summary` だけを Discord report に使う。summary は送信前に single-line 化され、memory / diary 本文の引用を含まないよう validation される
+- runner は maintenance result の `summary` だけを Discord report に使う。summary は送信前に single-line 化される
 - diary の全日付一覧は常に maintenance prompt に含めるが、長すぎる場合は exact date と summary を混ぜた bounded `<all-diary-dates>` 表示に切り替える。この場合に操作可能なのは prompt 内で **明示表示された YYYY-MM-DD** のみ
 - 本文は既定で直近 30 日分だけを読む。`MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` は本文読み込み範囲だけを広げる
 
@@ -117,8 +117,8 @@ CREATE INDEX IF NOT EXISTS idx_diary_entries_date ON diary_entries(date);
 | diary recent window | 直近 N 日・未来日付除外が正しく機能すること |
 | maintenance diary window override | maintenance runner が設定済み diary window を `runMemoryMaintenance()` へ渡すこと |
 | diary dates | 保存済み日付が昇順で一覧取得できること |
-| maintenance pipeline | structured output に応じて overwrite / rewrite / delete が適用されること |
-| maintenance runner | 固定 interval・system turn lock・summary single-line 化済み metadata-only report が機能すること |
+| maintenance pipeline | tool calling の結果に応じて overwrite / rewrite / delete が適用されること |
+| maintenance runner | 固定 interval・system turn lock・summary single-line 化済み report が機能すること |
 | legacy diary import | 旧 `memory/diary/*.md` が一度だけ SQLite へ移行されること |
 | composite delegation | core/diary の各メソッドが正しい store に委譲されること |
 | composite close | 片方の close が失敗しても両方を close すること |

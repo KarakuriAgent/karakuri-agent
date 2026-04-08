@@ -185,7 +185,7 @@ function categorizeMaintenanceError(error: unknown): string {
   if (message.includes('no structured output')) {
     return 'no-output';
   }
-  if (message.includes('metadata-only') || message.includes('unknown dates') || message.includes('unloaded dates')) {
+  if (message.includes('unknown dates') || message.includes('unloaded dates') || message.includes('invalid tool call') || message.includes('unexpected tool')) {
     return 'assertion';
   }
   if (message.includes('Diary operation failed at index')) {
