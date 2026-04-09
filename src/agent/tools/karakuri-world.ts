@@ -62,6 +62,13 @@ const actionOperationSchema = z
   })
   .strict();
 
+const useItemOperationSchema = z
+  .object({
+    operation: z.literal('use_item'),
+    item_id: z.string().min(1).describe('使用するアイテムID'),
+  })
+  .strict();
+
 const waitOperationSchema = z
   .object({
     operation: z.literal('wait'),
@@ -118,6 +125,7 @@ const getWorldAgentsOperationSchema = z.object({ operation: z.literal('get_world
 export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   moveOperationSchema,
   actionOperationSchema,
+  useItemOperationSchema,
   waitOperationSchema,
   conversationStartOperationSchema,
   conversationAcceptOperationSchema,
@@ -131,6 +139,7 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
 
 const moveToolInputSchema = moveOperationSchema.omit({ operation: true });
 const actionToolInputSchema = actionOperationSchema.omit({ operation: true });
+const useItemToolInputSchema = useItemOperationSchema.omit({ operation: true });
 const waitToolInputSchema = waitOperationSchema.omit({ operation: true });
 const conversationStartToolInputSchema = conversationStartOperationSchema.omit({ operation: true });
 const conversationAcceptToolInputSchema = conversationAcceptOperationSchema.omit({ operation: true });
@@ -514,6 +523,15 @@ async function executeKarakuriWorldOperation(
           },
           responseSchema: notificationAckResponseSchema,
         });
+      case 'use_item':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'POST',
+          path: 'api/agents/use-item',
+          body: { item_id: input.item_id },
+          responseSchema: notificationAckResponseSchema,
+        });
       case 'wait':
         return requestJson({
           ...context,
@@ -604,6 +622,10 @@ async function executeKarakuriWorldOperation(
           path: 'api/agents/world-agents',
           responseSchema: notificationAckResponseSchema,
         });
+      default: {
+        const _exhaustive: never = input;
+        throw new Error(`Unhandled karakuri-world operation: ${(_exhaustive as { operation: string }).operation}`);
+      }
     }
   })();
 
@@ -716,6 +738,11 @@ export function createKarakuriWorldTools({
       description: 'アクションを実行する。`action_id` を渡す。可変時間アクションの場合は `duration_minutes`（1〜10080）も指定する。結果は通知で届く。',
       inputSchema: withComment(actionToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('action', input, context),
+    }),
+    karakuri_world_use_item: tool({
+      description: '所持アイテムを使用する。`item_id` を渡す。結果は通知で届く。',
+      inputSchema: withComment(useItemToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('use_item', input, context),
     }),
     karakuri_world_wait: tool({
       description: 'その場で待機する。`duration` を渡す（10分単位、1〜6）。',

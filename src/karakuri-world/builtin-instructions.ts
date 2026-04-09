@@ -18,6 +18,7 @@ export function buildKarakuriWorldModeInstructions(): string {
     '- `karakuri_world_get_world_agents`: inspect other agents and their state (詳細は通知で届く)',
     '- `karakuri_world_move`: move to a known destination via `target_node_id`',
     '- `karakuri_world_action`: perform a known action via `action_id`. When the notification shows `duration_minutes: 分数を指定`, also pass `duration_minutes` (1-10080) with your chosen duration in minutes (結果は通知で届く)',
+    '- `karakuri_world_use_item`: use an item from inventory via `item_id` (結果は通知で届く)',
     '- `karakuri_world_wait`: wait for change via `duration` (10-minute units, 1-6)',
     '- `karakuri_world_conversation_start`: begin talking with `target_agent_id` and `message`',
     '- `karakuri_world_conversation_accept`: accept and reply with `message`',
