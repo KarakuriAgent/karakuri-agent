@@ -49,6 +49,16 @@ const actionOperationSchema = z
   .object({
     operation: z.literal('action'),
     action_id: z.string().min(1).describe('実行するアクションID'),
+    duration_minutes: z
+      .preprocess((value) => {
+        if (typeof value !== 'string') return value;
+        const trimmed = value.trim();
+        if (!integerTextPattern.test(trimmed)) return value;
+        const parsed = Number(trimmed);
+        return Number.isSafeInteger(parsed) ? parsed : value;
+      }, z.number().int().min(1).max(10080))
+      .optional()
+      .describe('可変時間アクションの所要時間（分）。通知に表示される範囲内で指定する。'),
   })
   .strict();
 
@@ -507,7 +517,10 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'POST',
           path: 'api/agents/action',
-          body: { action_id: input.action_id },
+          body: {
+            action_id: input.action_id,
+            ...(input.duration_minutes !== undefined && { duration_minutes: input.duration_minutes }),
+          },
           responseSchema: notificationAckResponseSchema,
         });
       case 'use_item':
@@ -722,7 +735,7 @@ export function createKarakuriWorldTools({
       execute: async (input) => executeKarakuriWorldToolStrippingComment('move', input, context),
     }),
     karakuri_world_action: tool({
-      description: 'アクションを実行する。`action_id` を渡す。結果は通知で届く。',
+      description: 'アクションを実行する。`action_id` を渡す。可変時間アクションの場合は通知に表示された範囲内で `duration_minutes` も指定する。結果は通知で届く。',
       inputSchema: withComment(actionToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('action', input, context),
     }),

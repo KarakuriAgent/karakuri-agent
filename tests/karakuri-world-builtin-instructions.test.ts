@@ -25,5 +25,7 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('"target_node_id": "4-1"');
     expect(instructions).not.toContain('get_available_actions');
     expect(instructions).not.toContain('duration_ms');
+    expect(instructions).toContain('duration_minutes');
+    expect(instructions).toContain('"action_id"');
   });
 });
