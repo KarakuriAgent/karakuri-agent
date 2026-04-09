@@ -58,7 +58,7 @@ const actionOperationSchema = z
         return Number.isSafeInteger(parsed) ? parsed : value;
       }, z.number().int().min(1).max(10080))
       .optional()
-      .describe('可変時間アクションの所要時間（分）。通知に「duration_minutes: 分数を指定」と表示されたアクションで必須。'),
+      .describe('可変時間アクションの所要時間（分）。通知に表示される範囲内で指定する。'),
   })
   .strict();
 
@@ -735,7 +735,7 @@ export function createKarakuriWorldTools({
       execute: async (input) => executeKarakuriWorldToolStrippingComment('move', input, context),
     }),
     karakuri_world_action: tool({
-      description: 'アクションを実行する。`action_id` を渡す。可変時間アクションの場合は `duration_minutes`（1〜10080）も指定する。結果は通知で届く。',
+      description: 'アクションを実行する。`action_id` を渡す。可変時間アクションの場合は通知に表示された範囲内で `duration_minutes` も指定する。結果は通知で届く。',
       inputSchema: withComment(actionToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('action', input, context),
     }),
