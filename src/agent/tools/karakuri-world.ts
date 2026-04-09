@@ -49,6 +49,16 @@ const actionOperationSchema = z
   .object({
     operation: z.literal('action'),
     action_id: z.string().min(1).describe('実行するアクションID'),
+    duration_minutes: z
+      .preprocess((value) => {
+        if (typeof value !== 'string') return value;
+        const trimmed = value.trim();
+        if (!integerTextPattern.test(trimmed)) return value;
+        const parsed = Number(trimmed);
+        return Number.isSafeInteger(parsed) ? parsed : value;
+      }, z.number().int().min(1).max(10080))
+      .optional()
+      .describe('可変時間アクションの所要時間（分）。通知に「duration_minutes: 分数を指定」と表示されたアクションで必須。'),
   })
   .strict();
 
@@ -140,14 +150,6 @@ const moveResponseSchema = z
     from_node_id: nodeIdSchema,
     to_node_id: nodeIdSchema,
     arrives_at: z.number().int(),
-  })
-  .strict();
-
-const actionResponseSchema = z
-  .object({
-    action_id: z.string().min(1),
-    action_name: z.string().min(1),
-    completes_at: z.number().int(),
   })
   .strict();
 
@@ -506,8 +508,11 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'POST',
           path: 'api/agents/action',
-          body: { action_id: input.action_id },
-          responseSchema: actionResponseSchema,
+          body: {
+            action_id: input.action_id,
+            ...(input.duration_minutes !== undefined && { duration_minutes: input.duration_minutes }),
+          },
+          responseSchema: notificationAckResponseSchema,
         });
       case 'wait':
         return requestJson({
@@ -708,7 +713,7 @@ export function createKarakuriWorldTools({
       execute: async (input) => executeKarakuriWorldToolStrippingComment('move', input, context),
     }),
     karakuri_world_action: tool({
-      description: 'アクションを実行する。`action_id` を渡す。',
+      description: 'アクションを実行する。`action_id` を渡す。可変時間アクションの場合は `duration_minutes`（1〜10080）も指定する。結果は通知で届く。',
       inputSchema: withComment(actionToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('action', input, context),
     }),

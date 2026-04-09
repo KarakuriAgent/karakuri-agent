@@ -324,6 +324,135 @@ describe('karakuri-world tools', () => {
   });
 
 
+  it('accepts action with optional duration_minutes and coerces string values', () => {
+    // Without duration_minutes (fixed-duration action)
+    expect(karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'rest' })).toEqual({
+      operation: 'action',
+      action_id: 'rest',
+    });
+
+    // With duration_minutes (variable-duration action)
+    expect(karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'sleep', duration_minutes: 120 })).toEqual({
+      operation: 'action',
+      action_id: 'sleep',
+      duration_minutes: 120,
+    });
+
+    // String coercion (LLM may send numbers as strings)
+    expect(karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'sleep', duration_minutes: '120' })).toEqual({
+      operation: 'action',
+      action_id: 'sleep',
+      duration_minutes: 120,
+    });
+
+    // Boundary: min=1
+    expect(karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'sleep', duration_minutes: 1 })).toEqual({
+      operation: 'action',
+      action_id: 'sleep',
+      duration_minutes: 1,
+    });
+
+    // Boundary: max=10080
+    expect(karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'sleep', duration_minutes: 10080 })).toEqual({
+      operation: 'action',
+      action_id: 'sleep',
+      duration_minutes: 10080,
+    });
+
+    // Invalid: 0
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'sleep', duration_minutes: 0 })).toThrow();
+
+    // Invalid: 10081
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'sleep', duration_minutes: 10081 })).toThrow();
+
+    // Invalid: non-integer
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'action', action_id: 'sleep', duration_minutes: 1.5 })).toThrow();
+  });
+
+  it('posts action requests with duration_minutes for variable-duration actions', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({ ok: true, message: 'Action accepted.' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    const result = await tools.karakuri_world_action!.execute!(
+      { action_id: 'sleep', duration_minutes: 120, comment: '2時間ほど休みます。' },
+      DEFAULT_OPTIONS,
+    );
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://example.com/api/agents/action',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ action_id: 'sleep', duration_minutes: 120 }),
+        headers: expect.objectContaining({
+          Authorization: 'Bearer secret',
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+    expect(result).toEqual({ ok: true, message: 'Action accepted.' });
+  });
+
+  it('posts action requests without duration_minutes for fixed-duration actions', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({ ok: true, message: 'Action accepted.' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    const result = await tools.karakuri_world_action!.execute!(
+      { action_id: 'rest', comment: '休憩します。' },
+      DEFAULT_OPTIONS,
+    );
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://example.com/api/agents/action',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ action_id: 'rest' }),
+      }),
+    );
+    expect(result).toEqual({ ok: true, message: 'Action accepted.' });
+  });
+
+  it('rejects the old action response format after schema migration', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          action_id: 'rest',
+          action_name: '休憩',
+          completes_at: 1700000000,
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(
+      tools.karakuri_world_action!.execute!(
+        { action_id: 'rest', comment: '休憩します。' },
+        DEFAULT_OPTIONS,
+      ),
+    ).rejects.toThrow(KarakuriWorldResponseError);
+  });
+
   it('rejects legacy karakuri-world schemas that the server no longer accepts', () => {
     expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration_ms: 1000 })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_accept', conversation_id: 'conv-1' })).toThrow();
