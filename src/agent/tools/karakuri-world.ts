@@ -101,6 +101,7 @@ const conversationSpeakOperationSchema = z
   .object({
     operation: z.literal('conversation_speak'),
     message: z.string().min(1).describe('発言内容'),
+    next_speaker_agent_id: z.string().min(1).describe('次に発言すべきエージェントID'),
   })
   .strict();
 
@@ -108,6 +109,28 @@ const endConversationOperationSchema = z
   .object({
     operation: z.literal('end_conversation'),
     message: z.string().min(1).describe('お別れのメッセージ'),
+    next_speaker_agent_id: z.string().min(1).describe('次に発言すべきエージェントID'),
+  })
+  .strict();
+
+const conversationJoinOperationSchema = z
+  .object({
+    operation: z.literal('conversation_join'),
+    conversation_id: z.string().min(1).describe('参加する会話のID'),
+    message: z.string().min(1).describe('参加時の発言'),
+  })
+  .strict();
+
+const conversationStayOperationSchema = z
+  .object({
+    operation: z.literal('conversation_stay'),
+  })
+  .strict();
+
+const conversationLeaveOperationSchema = z
+  .object({
+    operation: z.literal('conversation_leave'),
+    message: z.string().min(1).optional().describe('離脱時のメッセージ'),
   })
   .strict();
 
@@ -130,6 +153,9 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   conversationStartOperationSchema,
   conversationAcceptOperationSchema,
   conversationRejectOperationSchema,
+  conversationJoinOperationSchema,
+  conversationStayOperationSchema,
+  conversationLeaveOperationSchema,
   conversationSpeakOperationSchema,
   endConversationOperationSchema,
   serverEventSelectOperationSchema,
@@ -144,6 +170,9 @@ const waitToolInputSchema = waitOperationSchema.omit({ operation: true });
 const conversationStartToolInputSchema = conversationStartOperationSchema.omit({ operation: true });
 const conversationAcceptToolInputSchema = conversationAcceptOperationSchema.omit({ operation: true });
 const conversationRejectToolInputSchema = conversationRejectOperationSchema.omit({ operation: true });
+const conversationJoinToolInputSchema = conversationJoinOperationSchema.omit({ operation: true });
+const conversationStayToolInputSchema = conversationStayOperationSchema.omit({ operation: true });
+const conversationLeaveToolInputSchema = conversationLeaveOperationSchema.omit({ operation: true });
 const conversationSpeakToolInputSchema = conversationSpeakOperationSchema.omit({ operation: true });
 const endConversationToolInputSchema = endConversationOperationSchema.omit({ operation: true });
 const serverEventSelectToolInputSchema = serverEventSelectOperationSchema.omit({ operation: true });
@@ -179,6 +208,10 @@ const conversationSpeakResponseSchema = z
     turn: z.number().int(),
   })
   .strict();
+
+// end_conversation は 2 人会話終了時に { turn } を返すが、
+// 3 人以上のグループから自分だけ退出する場合は { status: 'ok' } を返す可能性がある。
+const endConversationResponseSchema = z.union([conversationSpeakResponseSchema, okResponseSchema]);
 
 export type KarakuriWorldInput = z.infer<typeof karakuriWorldInputSchema>;
 
@@ -571,6 +604,38 @@ async function executeKarakuriWorldOperation(
           body: {},
           responseSchema: okResponseSchema,
         });
+      case 'conversation_join':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'POST',
+          path: 'api/agents/conversation/join',
+          body: {
+            conversation_id: input.conversation_id,
+            message: input.message,
+          },
+          responseSchema: okResponseSchema,
+        });
+      case 'conversation_stay':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'POST',
+          path: 'api/agents/conversation/stay',
+          body: {},
+          responseSchema: okResponseSchema,
+        });
+      case 'conversation_leave':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'POST',
+          path: 'api/agents/conversation/leave',
+          body: {
+            ...(input.message !== undefined && { message: input.message }),
+          },
+          responseSchema: okResponseSchema,
+        });
       case 'conversation_speak':
         return requestJson({
           ...context,
@@ -579,11 +644,11 @@ async function executeKarakuriWorldOperation(
           path: 'api/agents/conversation/speak',
           body: {
             message: input.message,
+            next_speaker_agent_id: input.next_speaker_agent_id,
           },
           responseSchema: conversationSpeakResponseSchema,
         });
       case 'end_conversation':
-        // サーバー側 PR #20 で end もターン番号を返す設計のため conversationSpeakResponseSchema を共有
         return requestJson({
           ...context,
           operation: input.operation,
@@ -591,8 +656,9 @@ async function executeKarakuriWorldOperation(
           path: 'api/agents/conversation/end',
           body: {
             message: input.message,
+            next_speaker_agent_id: input.next_speaker_agent_id,
           },
-          responseSchema: conversationSpeakResponseSchema,
+          responseSchema: endConversationResponseSchema,
         });
       case 'server_event_select':
         return requestJson({
@@ -764,13 +830,28 @@ export function createKarakuriWorldTools({
       inputSchema: withComment(conversationRejectToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_reject', input, context),
     }),
+    karakuri_world_conversation_join: tool({
+      description: '近くで進行中の会話に途中参加する。`conversation_id` と参加時の `message` を渡す。',
+      inputSchema: withComment(conversationJoinToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_join', input, context),
+    }),
+    karakuri_world_conversation_stay: tool({
+      description: 'inactive_check 通知に対して会話に残ることを表明する。引数不要。',
+      inputSchema: withComment(conversationStayToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_stay', input, context),
+    }),
+    karakuri_world_conversation_leave: tool({
+      description: 'inactive_check 通知に対して会話から離脱する。任意でお別れの `message` を渡せる。',
+      inputSchema: withComment(conversationLeaveToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_leave', input, context),
+    }),
     karakuri_world_conversation_speak: tool({
-      description: '会話中に発言する。`message` を渡す。',
+      description: '会話中に発言する。`message` と `next_speaker_agent_id` を渡す。',
       inputSchema: withComment(conversationSpeakToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_speak', input, context),
     }),
     karakuri_world_end_conversation: tool({
-      description: '会話を自発的に終了する。お別れの `message` を渡す。',
+      description: '会話を終了または退出する。お別れの `message` と `next_speaker_agent_id` を渡す。2人会話では会話全体を終了する。3人以上では自分だけ退出する。',
       inputSchema: withComment(endConversationToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('end_conversation', input, context),
     }),
