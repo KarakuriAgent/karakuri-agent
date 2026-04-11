@@ -23,6 +23,9 @@ const EXPECTED_TOOL_NAMES = [
   'karakuri_world_conversation_start',
   'karakuri_world_conversation_accept',
   'karakuri_world_conversation_reject',
+  'karakuri_world_conversation_join',
+  'karakuri_world_conversation_stay',
+  'karakuri_world_conversation_leave',
   'karakuri_world_conversation_speak',
   'karakuri_world_end_conversation',
   'karakuri_world_server_event_select',
@@ -418,6 +421,180 @@ describe('karakuri-world tools', () => {
     expect(() => karakuriWorldInputSchema.parse({ operation: 'get_available_actions' })).toThrow();
   });
 
+  it('validates group-conversation schemas strictly', () => {
+    expect(karakuriWorldInputSchema.parse({
+      operation: 'conversation_join',
+      conversation_id: 'conv-1',
+    })).toEqual({
+      operation: 'conversation_join',
+      conversation_id: 'conv-1',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_join' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'conversation_join',
+      conversation_id: '',
+    })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'conversation_join',
+      conversation_id: 'conv-1',
+      message: '混ぜてください。',
+    })).toThrow();
+
+    expect(karakuriWorldInputSchema.parse({ operation: 'conversation_stay' })).toEqual({
+      operation: 'conversation_stay',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_stay', extra: true })).toThrow();
+
+    expect(karakuriWorldInputSchema.parse({ operation: 'conversation_leave' })).toEqual({
+      operation: 'conversation_leave',
+    });
+    expect(karakuriWorldInputSchema.parse({
+      operation: 'conversation_leave',
+      message: 'ここで失礼します。',
+    })).toEqual({
+      operation: 'conversation_leave',
+      message: 'ここで失礼します。',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_leave', message: '' })).toThrow();
+
+    expect(karakuriWorldInputSchema.parse({
+      operation: 'conversation_speak',
+      message: 'こんにちは。',
+      next_speaker_agent_id: 'agent-2',
+    })).toEqual({
+      operation: 'conversation_speak',
+      message: 'こんにちは。',
+      next_speaker_agent_id: 'agent-2',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_speak', message: 'こんにちは。' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'conversation_speak',
+      message: 'こんにちは。',
+      next_speaker_agent_id: '',
+    })).toThrow();
+
+    expect(karakuriWorldInputSchema.parse({
+      operation: 'end_conversation',
+      message: 'また後で。',
+      next_speaker_agent_id: 'agent-2',
+    })).toEqual({
+      operation: 'end_conversation',
+      message: 'また後で。',
+      next_speaker_agent_id: 'agent-2',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'end_conversation', message: 'また後で。' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'end_conversation',
+      message: 'また後で。',
+      next_speaker_agent_id: '',
+    })).toThrow();
+  });
+
+  it('posts conversation join, stay, and leave requests while stripping comment', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify({ status: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(tools.karakuri_world_conversation_join!.execute!(
+      {
+        conversation_id: 'conv-1',
+        comment: '輪に入ります。',
+      },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({ status: 'ok' });
+    await expect(tools.karakuri_world_conversation_stay!.execute!(
+      { comment: 'まだ会話に残ります。' },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({ status: 'ok' });
+    await expect(tools.karakuri_world_conversation_leave!.execute!(
+      {
+        message: 'そろそろ失礼します。',
+        comment: 'inactive check に離脱で応答します。',
+      },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({ status: 'ok' });
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      'https://example.com/api/agents/conversation/join',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ conversation_id: 'conv-1' }),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      'https://example.com/api/agents/conversation/stay',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      'https://example.com/api/agents/conversation/leave',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ message: 'そろそろ失礼します。' }),
+      }),
+    );
+    for (const [, requestInit] of fetch.mock.calls) {
+      expect(requestInit?.body).not.toContain('comment');
+    }
+  });
+
+  it('accepts the group-leave status response for end_conversation', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify({ status: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(tools.karakuri_world_end_conversation!.execute!(
+      { message: 'お先に失礼します。', next_speaker_agent_id: 'agent-3', comment: 'グループから退出します。' },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({ status: 'ok' });
+  });
+
+  it('posts conversation_leave with an empty body when message is omitted', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify({ status: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(tools.karakuri_world_conversation_leave!.execute!(
+      { comment: 'お別れの挨拶なしで抜けます。' },
+      DEFAULT_OPTIONS,
+    )).resolves.toEqual({ status: 'ok' });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'https://example.com/api/agents/conversation/leave',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({}),
+      }),
+    );
+  });
+
   it('posts conversation accept, reject, speak, and end requests with updated payloads', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const url = String(input);
@@ -448,9 +625,15 @@ describe('karakuri-world tools', () => {
       .resolves.toEqual({ status: 'ok' });
     await expect(tools.karakuri_world_conversation_reject!.execute!({}, DEFAULT_OPTIONS))
       .resolves.toEqual({ status: 'ok' });
-    await expect(tools.karakuri_world_conversation_speak!.execute!({ message: 'こんにちは。' }, DEFAULT_OPTIONS))
+    await expect(tools.karakuri_world_conversation_speak!.execute!(
+      { message: 'こんにちは。', next_speaker_agent_id: 'agent-2' },
+      DEFAULT_OPTIONS,
+    ))
       .resolves.toEqual({ turn: 7 });
-    await expect(tools.karakuri_world_end_conversation!.execute!({ message: 'また後で。' }, DEFAULT_OPTIONS))
+    await expect(tools.karakuri_world_end_conversation!.execute!(
+      { message: 'また後で。', next_speaker_agent_id: 'agent-2' },
+      DEFAULT_OPTIONS,
+    ))
       .resolves.toEqual({ turn: 7 });
 
     expect(fetch).toHaveBeenNthCalledWith(
@@ -474,7 +657,7 @@ describe('karakuri-world tools', () => {
       'https://example.com/api/agents/conversation/speak',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ message: 'こんにちは。' }),
+        body: JSON.stringify({ message: 'こんにちは。', next_speaker_agent_id: 'agent-2' }),
       }),
     );
     expect(fetch).toHaveBeenNthCalledWith(
@@ -482,7 +665,7 @@ describe('karakuri-world tools', () => {
       'https://example.com/api/agents/conversation/end',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ message: 'また後で。' }),
+        body: JSON.stringify({ message: 'また後で。', next_speaker_agent_id: 'agent-2' }),
       }),
     );
   });
@@ -635,7 +818,7 @@ describe('karakuri-world tools', () => {
     });
 
     const result = await tools.karakuri_world_conversation_speak!.execute!(
-      { message: 'hello' },
+      { message: 'hello', next_speaker_agent_id: 'agent-2' },
       DEFAULT_OPTIONS,
     );
 

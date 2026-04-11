@@ -21,8 +21,17 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('`comment` field');
     expect(instructions).toContain('`karakuri_world_get_map`');
     expect(instructions).toContain('`karakuri_world_move`');
+    expect(instructions).toContain('`karakuri_world_conversation_join`');
+    expect(instructions).toContain('`karakuri_world_conversation_stay`');
+    expect(instructions).toContain('`karakuri_world_conversation_leave`');
     expect(instructions).toContain('`karakuri_world_end_conversation`');
+    expect(instructions).toContain('next_speaker_agent_id');
+    expect(normalized).toContain('inactive_check');
+    expect(instructions).toContain('2-person conversations');
+    expect(instructions).toContain('3 or more participants');
+    expect(instructions).toContain('Do NOT pass `next_speaker_agent_id` to `karakuri_world_conversation_leave`');
     expect(instructions).toContain('"target_node_id": "4-1"');
+    expect(instructions).toContain('"next_speaker_agent_id": "agent-xyz"');
     expect(instructions).not.toContain('get_available_actions');
     expect(instructions).not.toContain('duration_ms');
     expect(instructions).toContain('duration_minutes');
