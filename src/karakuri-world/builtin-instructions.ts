@@ -26,7 +26,7 @@ export function buildKarakuriWorldModeInstructions(): string {
     '- `karakuri_world_conversation_start`: begin talking with `target_agent_id` and `message`',
     '- `karakuri_world_conversation_accept`: accept and reply with `message`',
     '- `karakuri_world_conversation_reject`: reject an incoming conversation with no arguments',
-    '- `karakuri_world_conversation_join`: join a nearby ongoing conversation with `conversation_id` and `message`',
+    '- `karakuri_world_conversation_join`: request to join a nearby ongoing conversation with `conversation_id` (join is applied at the next turn boundary and your first speaking opportunity only comes after you are nominated)',
     '- `karakuri_world_conversation_stay`: answer an `inactive_check` and remain in the conversation (no arguments)',
     '- `karakuri_world_conversation_leave`: answer an `inactive_check` and leave the conversation, optionally with `message`',
     '- `karakuri_world_conversation_speak`: respond during an active conversation with `message` and required `next_speaker_agent_id`',

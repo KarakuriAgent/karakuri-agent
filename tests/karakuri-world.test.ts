@@ -425,23 +425,19 @@ describe('karakuri-world tools', () => {
     expect(karakuriWorldInputSchema.parse({
       operation: 'conversation_join',
       conversation_id: 'conv-1',
-      message: '混ぜてください。',
     })).toEqual({
       operation: 'conversation_join',
       conversation_id: 'conv-1',
-      message: '混ぜてください。',
     });
-    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_join', conversation_id: 'conv-1' })).toThrow();
-    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_join', message: '混ぜてください。' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_join' })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'conversation_join',
       conversation_id: '',
-      message: '混ぜてください。',
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'conversation_join',
       conversation_id: 'conv-1',
-      message: '',
+      message: '混ぜてください。',
     })).toThrow();
 
     expect(karakuriWorldInputSchema.parse({ operation: 'conversation_stay' })).toEqual({
@@ -509,7 +505,6 @@ describe('karakuri-world tools', () => {
     await expect(tools.karakuri_world_conversation_join!.execute!(
       {
         conversation_id: 'conv-1',
-        message: '途中参加します。',
         comment: '輪に入ります。',
       },
       DEFAULT_OPTIONS,
@@ -531,7 +526,7 @@ describe('karakuri-world tools', () => {
       'https://example.com/api/agents/conversation/join',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ conversation_id: 'conv-1', message: '途中参加します。' }),
+        body: JSON.stringify({ conversation_id: 'conv-1' }),
       }),
     );
     expect(fetch).toHaveBeenNthCalledWith(

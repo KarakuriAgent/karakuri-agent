@@ -117,7 +117,6 @@ const conversationJoinOperationSchema = z
   .object({
     operation: z.literal('conversation_join'),
     conversation_id: z.string().min(1).describe('参加する会話のID'),
-    message: z.string().min(1).describe('参加時の発言'),
   })
   .strict();
 
@@ -612,7 +611,6 @@ async function executeKarakuriWorldOperation(
           path: 'api/agents/conversation/join',
           body: {
             conversation_id: input.conversation_id,
-            message: input.message,
           },
           responseSchema: okResponseSchema,
         });
@@ -831,7 +829,7 @@ export function createKarakuriWorldTools({
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_reject', input, context),
     }),
     karakuri_world_conversation_join: tool({
-      description: '近くで進行中の会話に途中参加する。`conversation_id` と参加時の `message` を渡す。',
+      description: '近くで進行中の会話に参加表明する。`conversation_id` を渡す。参加は次のターン境界で反映され、それまで発言機会は無い。',
       inputSchema: withComment(conversationJoinToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_join', input, context),
     }),
