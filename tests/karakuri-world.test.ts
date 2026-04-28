@@ -68,15 +68,16 @@ describe('karakuri-world tools', () => {
     expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration: 7 })).toThrow();
   });
 
-  it('validates transfer schemas strictly', () => {
+  it('validates transfer schemas strictly (item XOR money exclusivity)', () => {
+    // 正常: item only / money only / 数値文字列の preprocess
     expect(karakuriWorldInputSchema.parse({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 2 }],
+      item: { item_id: 'apple', quantity: 2 },
     })).toEqual({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 2 }],
+      item: { item_id: 'apple', quantity: 2 },
     });
     expect(karakuriWorldInputSchema.parse({
       operation: 'transfer',
@@ -90,22 +91,11 @@ describe('karakuri-world tools', () => {
     expect(karakuriWorldInputSchema.parse({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 2 }],
-      money: 100,
+      item: { item_id: 'apple', quantity: '3' },
     })).toEqual({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 2 }],
-      money: 100,
-    });
-    expect(karakuriWorldInputSchema.parse({
-      operation: 'transfer',
-      target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: '3' }],
-    })).toEqual({
-      operation: 'transfer',
-      target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 3 }],
+      item: { item_id: 'apple', quantity: 3 },
     });
     expect(karakuriWorldInputSchema.parse({
       operation: 'transfer',
@@ -116,33 +106,40 @@ describe('karakuri-world tools', () => {
       target_agent_id: 'agent-bob',
       money: 100,
     });
-    expect(karakuriWorldInputSchema.parse({
-      operation: 'transfer',
-      target_agent_id: 'agent-bob',
-      items: [],
-      money: 1,
-    })).toEqual({
-      operation: 'transfer',
-      target_agent_id: 'agent-bob',
-      items: [],
-      money: 1,
-    });
 
+    // 排他: 両方指定 / 両方なしは拒否
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 2 }],
+      item: { item_id: 'apple', quantity: 1 },
+      money: 100,
+    })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'transfer',
+      target_agent_id: 'agent-bob',
+    })).toThrow();
+
+    // 余剰フィールド / 数量・金額の境界
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'transfer',
+      target_agent_id: 'agent-bob',
+      item: { item_id: 'apple', quantity: 2 },
       extra: true,
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 0 }],
+      item: { item_id: 'apple', quantity: 0 },
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: -1 }],
+      item: { item_id: 'apple', quantity: -1 },
+    })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'transfer',
+      target_agent_id: 'agent-bob',
+      money: 0,
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'transfer',
@@ -157,22 +154,18 @@ describe('karakuri-world tools', () => {
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
-    })).toThrow();
-    expect(() => karakuriWorldInputSchema.parse({
-      operation: 'transfer',
-      target_agent_id: 'agent-bob',
-      items: [],
-      money: 0,
-    })).toThrow();
-    expect(() => karakuriWorldInputSchema.parse({
-      operation: 'transfer',
-      target_agent_id: 'agent-bob',
-      items: [{ item_id: 'apple', quantity: 10_001 }],
+      item: { item_id: 'apple', quantity: 10_001 },
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'transfer',
       target_agent_id: 'agent-bob',
       money: 10_000_001,
+    })).toThrow();
+    // items (旧形) は厳密に拒否される
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'transfer',
+      target_agent_id: 'agent-bob',
+      items: [{ item_id: 'apple', quantity: 1 }],
     })).toThrow();
   });
 
@@ -307,8 +300,7 @@ describe('karakuri-world tools', () => {
     await expect(tools.karakuri_world_transfer!.execute!(
       {
         target_agent_id: 'agent-bob',
-        items: [{ item_id: 'apple', quantity: 2 }],
-        money: 50,
+        item: { item_id: 'apple', quantity: 2 },
         comment: '渡します。',
       },
       DEFAULT_OPTIONS,
@@ -344,8 +336,7 @@ describe('karakuri-world tools', () => {
         method: 'POST',
         body: JSON.stringify({
           target_agent_id: 'agent-bob',
-          items: [{ item_id: 'apple', quantity: 2 }],
-          money: 50,
+          item: { item_id: 'apple', quantity: 2 },
         }),
         headers: expect.objectContaining({
           Accept: 'application/json',
@@ -791,7 +782,7 @@ describe('karakuri-world tools', () => {
       operation: 'end_conversation',
       message: 'またね',
       next_speaker_agent_id: 'agent-2',
-      transfer: { items: [{ item_id: 'x', quantity: 1 }] },
+      transfer: { item: { item_id: 'x', quantity: 1 } },
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({ operation: 'get_perception' })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({ operation: 'get_available_actions' })).toThrow();
@@ -872,14 +863,14 @@ describe('karakuri-world tools', () => {
       message: 'どうぞ。',
       next_speaker_agent_id: 'agent-2',
       transfer: {
-        items: [{ item_id: 'apple', quantity: 1 }],
+        item: { item_id: 'apple', quantity: 1 },
       },
     })).toEqual({
       operation: 'conversation_speak',
       message: 'どうぞ。',
       next_speaker_agent_id: 'agent-2',
       transfer: {
-        items: [{ item_id: 'apple', quantity: 1 }],
+        item: { item_id: 'apple', quantity: 1 },
       },
     });
     expect(karakuriWorldInputSchema.parse({
@@ -907,7 +898,7 @@ describe('karakuri-world tools', () => {
       message: 'だめです。',
       next_speaker_agent_id: 'agent-2',
       transfer: {
-        items: [{ item_id: 'apple', quantity: 1 }],
+        item: { item_id: 'apple', quantity: 1 },
       },
       transfer_response: 'reject',
     })).toThrow();
@@ -931,7 +922,7 @@ describe('karakuri-world tools', () => {
       {
         message: 'どうぞ。',
         next_speaker_agent_id: 'agent-2',
-        transfer: { items: [{ item_id: 'apple', quantity: 1 }] },
+        transfer: { item: { item_id: 'apple', quantity: 1 } },
         comment: '渡します。',
       },
       DEFAULT_OPTIONS,
@@ -953,7 +944,7 @@ describe('karakuri-world tools', () => {
         body: JSON.stringify({
           message: 'どうぞ。',
           next_speaker_agent_id: 'agent-2',
-          transfer: { items: [{ item_id: 'apple', quantity: 1 }] },
+          transfer: { item: { item_id: 'apple', quantity: 1 } },
         }),
       }),
     );
@@ -1036,7 +1027,7 @@ describe('karakuri-world tools', () => {
       operation: 'end_conversation',
       message: 'またね。',
       next_speaker_agent_id: 'agent-2',
-      transfer: { items: [{ item_id: 'apple', quantity: 1 }] },
+      transfer: { item: { item_id: 'apple', quantity: 1 } },
     })).toThrow();
 
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
@@ -1085,13 +1076,13 @@ describe('karakuri-world tools', () => {
     expect(speakInputSchema.safeParse({
       message: 'だめです。',
       next_speaker_agent_id: 'agent-2',
-      transfer: { items: [{ item_id: 'apple', quantity: 1 }] },
+      transfer: { item: { item_id: 'apple', quantity: 1 } },
       transfer_response: 'reject',
       comment: '矛盾入力。',
     }).success).toBe(false);
   });
 
-  it('rejects empty transfer on the transfer tool inputSchema', () => {
+  it('enforces item XOR money exclusivity on the transfer tool inputSchema', () => {
     const tools = createKarakuriWorldTools({
       apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
@@ -1101,21 +1092,41 @@ describe('karakuri-world tools', () => {
       safeParse: (value: unknown) => { success: boolean };
     };
 
+    // 両方なし
     expect(transferInputSchema.safeParse({
       target_agent_id: 'agent-bob',
       comment: '空譲渡。',
     }).success).toBe(false);
+    // 両方指定
     expect(transferInputSchema.safeParse({
       target_agent_id: 'agent-bob',
-      items: [],
+      item: { item_id: 'apple', quantity: 1 },
+      money: 50,
+      comment: '両方指定。',
+    }).success).toBe(false);
+    // 旧形 (items 配列) は拒否
+    expect(transferInputSchema.safeParse({
+      target_agent_id: 'agent-bob',
+      items: [{ item_id: 'apple', quantity: 1 }],
+      comment: '旧形。',
+    }).success).toBe(false);
+    // money: 0 は positiveInt 違反
+    expect(transferInputSchema.safeParse({
+      target_agent_id: 'agent-bob',
       money: 0,
-      comment: '空譲渡。',
+      comment: 'ゼロ譲渡。',
     }).success).toBe(false);
+    // 正常 (item のみ)
     expect(transferInputSchema.safeParse({
       target_agent_id: 'agent-bob',
-      items: [],
+      item: { item_id: 'apple', quantity: 1 },
+      comment: 'りんご 1 個。',
+    }).success).toBe(true);
+    // 正常 (money のみ)
+    expect(transferInputSchema.safeParse({
+      target_agent_id: 'agent-bob',
       money: 1,
-      comment: 'お金だけ渡す。',
+      comment: 'お金だけ。',
     }).success).toBe(true);
   });
 
@@ -1132,7 +1143,7 @@ describe('karakuri-world tools', () => {
     expect(endInputSchema.safeParse({
       message: 'またね。',
       next_speaker_agent_id: 'agent-2',
-      transfer: { items: [{ item_id: 'apple', quantity: 1 }] },
+      transfer: { item: { item_id: 'apple', quantity: 1 } },
       comment: 'end で transfer は禁止。',
     }).success).toBe(false);
     expect(endInputSchema.safeParse({
@@ -1143,7 +1154,7 @@ describe('karakuri-world tools', () => {
     }).success).toBe(true);
   });
 
-  it('omits empty items array from transfer request body', async () => {
+  it('sends money-only transfer body without item field', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(JSON.stringify({
         ok: true,
@@ -1163,7 +1174,6 @@ describe('karakuri-world tools', () => {
     await tools.karakuri_world_transfer!.execute!(
       {
         target_agent_id: 'agent-bob',
-        items: [],
         money: 50,
         comment: 'お金だけ渡す。',
       },
@@ -1175,10 +1185,11 @@ describe('karakuri-world tools', () => {
       target_agent_id: 'agent-bob',
       money: 50,
     });
+    expect(sentBody).not.toHaveProperty('item');
     expect(sentBody).not.toHaveProperty('items');
   });
 
-  it('omits empty items from conversation_speak transfer attachment', async () => {
+  it('sends money-only transfer attachment in conversation_speak body', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(JSON.stringify({ turn: 11 }), {
         status: 200,
@@ -1194,7 +1205,7 @@ describe('karakuri-world tools', () => {
       {
         message: 'お金だけ渡すね。',
         next_speaker_agent_id: 'agent-2',
-        transfer: { items: [], money: 30 },
+        transfer: { money: 30 },
         comment: '会話中にお金だけ渡す。',
       },
       DEFAULT_OPTIONS,

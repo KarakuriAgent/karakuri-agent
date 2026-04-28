@@ -27,8 +27,8 @@ const transferQuantitySchema = z
   .preprocess(preprocessSafeInteger, z.number().int().min(1).max(10_000))
   .describe('譲渡するアイテム数量');
 const transferMoneySchema = z
-  .preprocess(preprocessSafeInteger, z.number().int().min(0).max(10_000_000))
-  .describe('譲渡する所持金');
+  .preprocess(preprocessSafeInteger, z.number().int().min(1).max(10_000_000))
+  .describe('譲渡する所持金（1 以上の正の整数）');
 const commentSchema = z
   .string()
   .trim()
@@ -76,37 +76,26 @@ const transferItemSchema = z.object({
   quantity: transferQuantitySchema,
 }).strict();
 
-function validateNonEmptyTransfer(
-  data: { items?: Array<{ quantity: number }> | undefined; money?: number | undefined },
+// サーバー側 transferAttachmentSchema は { item } XOR { money } の排他 union。
+// ここでは LLM 入力 / discriminatedUnion メンバーとの整合のため、両方 optional の
+// strict object + superRefine で「ちょうど一方」を強制する。
+function validateExclusiveItemOrMoney(
+  data: { item?: unknown; money?: unknown },
   ctx: z.RefinementCtx,
 ): void {
-  const itemsTotal = (data.items ?? []).reduce((sum, item) => sum + item.quantity, 0);
-  const moneyTotal = data.money ?? 0;
-  if (itemsTotal === 0 && moneyTotal === 0) {
+  const hasItem = data.item != null;
+  const hasMoney = data.money != null;
+  if (hasItem && hasMoney) {
     ctx.addIssue({
       code: 'custom',
-      message: 'items または money の合計が 0 より大きい必要があります。',
+      message: 'item と money は同時に指定できません。どちらか 1 つだけを渡してください。',
+    });
+  } else if (!hasItem && !hasMoney) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'item または money のいずれかを必ず指定してください。',
     });
   }
-}
-
-type NormalizedTransferAttachment = {
-  items?: Array<z.infer<typeof transferItemSchema>>;
-  money?: number;
-};
-
-function normalizeTransferAttachment(
-  attachment: z.infer<typeof transferAttachmentSchema>,
-): NormalizedTransferAttachment {
-  // 空配列の items はサーバー側の解釈差を避けるため body から除外する。
-  const result: NormalizedTransferAttachment = {};
-  if (attachment.items !== undefined && attachment.items.length > 0) {
-    result.items = attachment.items;
-  }
-  if (attachment.money !== undefined) {
-    result.money = attachment.money;
-  }
-  return result;
 }
 
 function validateExclusiveTransferAndResponse(
@@ -122,14 +111,14 @@ function validateExclusiveTransferAndResponse(
 }
 
 const transferAttachmentSchema = z.object({
-  items: z.array(transferItemSchema).optional(),
+  item: transferItemSchema.optional(),
   money: transferMoneySchema.optional(),
-}).strict().superRefine(validateNonEmptyTransfer);
+}).strict().superRefine(validateExclusiveItemOrMoney);
 
 const transferOperationObjectSchema = z.object({
   operation: z.literal('transfer'),
   target_agent_id: z.string().min(1),
-  items: z.array(transferItemSchema).optional(),
+  item: transferItemSchema.optional(),
   money: transferMoneySchema.optional(),
 }).strict();
 
@@ -242,7 +231,7 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   getWorldAgentsOperationSchema,
 ]).superRefine((input, ctx) => {
   if (input.operation === 'transfer') {
-    validateNonEmptyTransfer(input, ctx);
+    validateExclusiveItemOrMoney(input, ctx);
   }
 
   if (input.operation === 'conversation_speak') {
@@ -695,8 +684,7 @@ async function executeKarakuriWorldOperation(
           path: 'api/agents/transfer',
           body: {
             target_agent_id: input.target_agent_id,
-            // 空配列の items はサーバー側の解釈差を避けるため body から除外する。
-            ...(input.items !== undefined && input.items.length > 0 && { items: input.items }),
+            ...(input.item !== undefined && { item: input.item }),
             ...(input.money !== undefined && { money: input.money }),
           },
           responseSchema: transferActionResponseSchema,
@@ -798,7 +786,7 @@ async function executeKarakuriWorldOperation(
           body: {
             message: input.message,
             next_speaker_agent_id: input.next_speaker_agent_id,
-            ...(input.transfer !== undefined && { transfer: normalizeTransferAttachment(input.transfer) }),
+            ...(input.transfer !== undefined && { transfer: input.transfer }),
             ...(input.transfer_response !== undefined && { transfer_response: input.transfer_response }),
           },
           responseSchema: conversationSpeakResponseSchema,
@@ -967,9 +955,9 @@ export function createKarakuriWorldTools({
       execute: async (input) => executeKarakuriWorldToolStrippingComment('use_item', input, context),
     }),
     karakuri_world_transfer: tool({
-      description: '隣接または同一ノードの idle エージェントへアイテム / 所持金を譲渡する。`target_agent_id` と `items`/`money` のいずれかを渡す。受信側は accept/reject 通知に応答する。',
+      description: '隣接または同一ノードの idle / in_action エージェントへアイテム 1 種類または所持金のいずれか 1 つを譲渡する。`target_agent_id` と `item`（{item_id, quantity}）または `money`（正の整数）のどちらか一方だけを渡す（同時指定不可）。受信側は accept/reject 通知に応答する。',
       inputSchema: withComment(transferToolInputSchema).superRefine((data, ctx) => {
-        validateNonEmptyTransfer({ items: data.items, money: data.money }, ctx);
+        validateExclusiveItemOrMoney({ item: data.item, money: data.money }, ctx);
       }),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer', input, context),
     }),
