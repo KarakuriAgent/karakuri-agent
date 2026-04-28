@@ -6,21 +6,29 @@ import { createLogger } from '../../utils/logger.js';
 
 const nodeIdSchema = z.string().regex(/^\d+-\d+$/);
 const integerTextPattern = /^\d+$/;
+function preprocessSafeInteger(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!integerTextPattern.test(trimmed)) {
+    return value;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isSafeInteger(parsed) ? parsed : value;
+}
+
 const waitDurationSchema = z
-  .preprocess((value) => {
-    if (typeof value !== 'string') {
-      return value;
-    }
-
-    const trimmed = value.trim();
-    if (!integerTextPattern.test(trimmed)) {
-      return value;
-    }
-
-    const parsed = Number(trimmed);
-    return Number.isSafeInteger(parsed) ? parsed : value;
-  }, z.number().int().min(1).max(6))
+  .preprocess(preprocessSafeInteger, z.number().int().min(1).max(6))
   .describe('待機時間（10分単位、1=10分〜6=60分）');
+const transferQuantitySchema = z
+  .preprocess(preprocessSafeInteger, z.number().int().min(1).max(10_000))
+  .describe('譲渡するアイテム数量');
+const transferMoneySchema = z
+  .preprocess(preprocessSafeInteger, z.number().int().min(0).max(10_000_000))
+  .describe('譲渡する所持金');
 const commentSchema = z
   .string()
   .trim()
@@ -50,13 +58,7 @@ const actionOperationSchema = z
     operation: z.literal('action'),
     action_id: z.string().min(1).describe('実行するアクションID'),
     duration_minutes: z
-      .preprocess((value) => {
-        if (typeof value !== 'string') return value;
-        const trimmed = value.trim();
-        if (!integerTextPattern.test(trimmed)) return value;
-        const parsed = Number(trimmed);
-        return Number.isSafeInteger(parsed) ? parsed : value;
-      }, z.number().int().min(1).max(10080))
+      .preprocess(preprocessSafeInteger, z.number().int().min(1).max(10080))
       .optional()
       .describe('可変時間アクションの所要時間（分）。通知に表示される範囲内で指定する。'),
   })
@@ -68,6 +70,78 @@ const useItemOperationSchema = z
     item_id: z.string().min(1).describe('使用するアイテムID'),
   })
   .strict();
+
+const transferItemSchema = z.object({
+  item_id: z.string().min(1),
+  quantity: transferQuantitySchema,
+}).strict();
+
+function validateNonEmptyTransfer(
+  data: { items?: Array<{ quantity: number }> | undefined; money?: number | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  const itemsTotal = (data.items ?? []).reduce((sum, item) => sum + item.quantity, 0);
+  const moneyTotal = data.money ?? 0;
+  if (itemsTotal === 0 && moneyTotal === 0) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'items または money の合計が 0 より大きい必要があります。',
+    });
+  }
+}
+
+type NormalizedTransferAttachment = {
+  items?: Array<z.infer<typeof transferItemSchema>>;
+  money?: number;
+};
+
+function normalizeTransferAttachment(
+  attachment: z.infer<typeof transferAttachmentSchema>,
+): NormalizedTransferAttachment {
+  // 空配列の items はサーバー側の解釈差を避けるため body から除外する。
+  const result: NormalizedTransferAttachment = {};
+  if (attachment.items !== undefined && attachment.items.length > 0) {
+    result.items = attachment.items;
+  }
+  if (attachment.money !== undefined) {
+    result.money = attachment.money;
+  }
+  return result;
+}
+
+function validateExclusiveTransferAndResponse(
+  data: { transfer?: unknown; transfer_response?: unknown },
+  ctx: z.RefinementCtx,
+): void {
+  if (data.transfer != null && data.transfer_response != null) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'transfer と transfer_response は同時に指定できません。',
+    });
+  }
+}
+
+const transferAttachmentSchema = z.object({
+  items: z.array(transferItemSchema).optional(),
+  money: transferMoneySchema.optional(),
+}).strict().superRefine(validateNonEmptyTransfer);
+
+const transferOperationObjectSchema = z.object({
+  operation: z.literal('transfer'),
+  target_agent_id: z.string().min(1),
+  items: z.array(transferItemSchema).optional(),
+  money: transferMoneySchema.optional(),
+}).strict();
+
+const acceptTransferOperationSchema = z.object({
+  operation: z.literal('accept_transfer'),
+  transfer_id: z.string().min(1),
+}).strict();
+
+const rejectTransferOperationSchema = z.object({
+  operation: z.literal('reject_transfer'),
+  transfer_id: z.string().min(1),
+}).strict();
 
 const waitOperationSchema = z
   .object({
@@ -97,11 +171,13 @@ const conversationRejectOperationSchema = z
   })
   .strict();
 
-const conversationSpeakOperationSchema = z
+const conversationSpeakOperationObjectSchema = z
   .object({
     operation: z.literal('conversation_speak'),
     message: z.string().min(1).describe('発言内容'),
     next_speaker_agent_id: z.string().min(1).describe('次に発言すべきエージェントID'),
+    transfer: transferAttachmentSchema.optional(),
+    transfer_response: z.enum(['accept', 'reject']).optional(),
   })
   .strict();
 
@@ -110,6 +186,7 @@ const endConversationOperationSchema = z
     operation: z.literal('end_conversation'),
     message: z.string().min(1).describe('お別れのメッセージ'),
     next_speaker_agent_id: z.string().min(1).describe('次に発言すべきエージェントID'),
+    transfer_response: z.enum(['accept', 'reject']).optional(),
   })
   .strict();
 
@@ -148,6 +225,9 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   moveOperationSchema,
   actionOperationSchema,
   useItemOperationSchema,
+  transferOperationObjectSchema,
+  acceptTransferOperationSchema,
+  rejectTransferOperationSchema,
   waitOperationSchema,
   conversationStartOperationSchema,
   conversationAcceptOperationSchema,
@@ -155,16 +235,27 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   conversationJoinOperationSchema,
   conversationStayOperationSchema,
   conversationLeaveOperationSchema,
-  conversationSpeakOperationSchema,
+  conversationSpeakOperationObjectSchema,
   endConversationOperationSchema,
   serverEventSelectOperationSchema,
   getMapOperationSchema,
   getWorldAgentsOperationSchema,
-]);
+]).superRefine((input, ctx) => {
+  if (input.operation === 'transfer') {
+    validateNonEmptyTransfer(input, ctx);
+  }
+
+  if (input.operation === 'conversation_speak') {
+    validateExclusiveTransferAndResponse(input, ctx);
+  }
+});
 
 const moveToolInputSchema = moveOperationSchema.omit({ operation: true });
 const actionToolInputSchema = actionOperationSchema.omit({ operation: true });
 const useItemToolInputSchema = useItemOperationSchema.omit({ operation: true });
+const transferToolInputSchema = transferOperationObjectSchema.omit({ operation: true });
+const acceptTransferToolInputSchema = acceptTransferOperationSchema.omit({ operation: true });
+const rejectTransferToolInputSchema = rejectTransferOperationSchema.omit({ operation: true });
 const waitToolInputSchema = waitOperationSchema.omit({ operation: true });
 const conversationStartToolInputSchema = conversationStartOperationSchema.omit({ operation: true });
 const conversationAcceptToolInputSchema = conversationAcceptOperationSchema.omit({ operation: true });
@@ -172,7 +263,7 @@ const conversationRejectToolInputSchema = conversationRejectOperationSchema.omit
 const conversationJoinToolInputSchema = conversationJoinOperationSchema.omit({ operation: true });
 const conversationStayToolInputSchema = conversationStayOperationSchema.omit({ operation: true });
 const conversationLeaveToolInputSchema = conversationLeaveOperationSchema.omit({ operation: true });
-const conversationSpeakToolInputSchema = conversationSpeakOperationSchema.omit({ operation: true });
+const conversationSpeakToolInputSchema = conversationSpeakOperationObjectSchema.omit({ operation: true });
 const endConversationToolInputSchema = endConversationOperationSchema.omit({ operation: true });
 const serverEventSelectToolInputSchema = serverEventSelectOperationSchema.omit({ operation: true });
 const getMapToolInputSchema = getMapOperationSchema.omit({ operation: true });
@@ -202,11 +293,43 @@ const conversationStartResponseSchema = z
   })
   .strict();
 
-const conversationSpeakResponseSchema = z
-  .object({
-    turn: z.number().int(),
-  })
-  .strict();
+// サーバー側 (karakuri-world) が将来 enum 値を追加してもクライアントを壊さないため、
+// 既知 literal の union に汎用 string fallback を足して受ける。LLM への提示用 JSON schema は
+// literal 列挙が残るので既知値の hint は維持される。
+const transferStatusSchema = z.union([
+  z.enum(['pending', 'completed', 'rejected', 'failed']),
+  z.string().min(1),
+]);
+const transferFailureReasonSchema = z.union([
+  z.enum([
+    'persist_failed',
+    'role_conflict',
+    'overflow_inventory_full',
+    'overflow_money',
+    'validation_failed',
+  ]),
+  z.string().min(1),
+]);
+
+// transfer 系レスポンスは新機能で今後フィールド追加が見込まれるため `.strict()` を付けない。
+// `ok: z.literal(true)` で API 失敗 (`{ ok: false, error }`) との取り違えはガードされる。
+const transferActionResponseSchema = z.object({
+  ok: z.literal(true),
+  message: z.string().min(1),
+  transfer_status: transferStatusSchema,
+  transfer_id: z.string().min(1).optional(),
+  failure_reason: transferFailureReasonSchema.optional(),
+});
+
+// `.strict()` を意図的に付けない: サーバーが将来 transfer_remaining_balance 等の
+// フィールドを追加してもクライアントを壊さないため。後方互換性も維持
+// (turn のみのレスポンスも引き続き valid)。
+const conversationSpeakResponseSchema = z.object({
+  turn: z.number().int(),
+  transfer_status: transferStatusSchema.optional(),
+  transfer_id: z.string().min(1).optional(),
+  failure_reason: transferFailureReasonSchema.optional(),
+});
 
 // end_conversation は 2 人会話終了時に { turn } を返すが、
 // 3 人以上のグループから自分だけ退出する場合は { status: 'ok' } を返す可能性がある。
@@ -564,6 +687,38 @@ async function executeKarakuriWorldOperation(
           body: { item_id: input.item_id },
           responseSchema: notificationAckResponseSchema,
         });
+      case 'transfer':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'POST',
+          path: 'api/agents/transfer',
+          body: {
+            target_agent_id: input.target_agent_id,
+            // 空配列の items はサーバー側の解釈差を避けるため body から除外する。
+            ...(input.items !== undefined && input.items.length > 0 && { items: input.items }),
+            ...(input.money !== undefined && { money: input.money }),
+          },
+          responseSchema: transferActionResponseSchema,
+        });
+      case 'accept_transfer':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'POST',
+          path: 'api/agents/transfer/accept',
+          body: { transfer_id: input.transfer_id },
+          responseSchema: transferActionResponseSchema,
+        });
+      case 'reject_transfer':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'POST',
+          path: 'api/agents/transfer/reject',
+          body: { transfer_id: input.transfer_id },
+          responseSchema: transferActionResponseSchema,
+        });
       case 'wait':
         return requestJson({
           ...context,
@@ -643,6 +798,8 @@ async function executeKarakuriWorldOperation(
           body: {
             message: input.message,
             next_speaker_agent_id: input.next_speaker_agent_id,
+            ...(input.transfer !== undefined && { transfer: normalizeTransferAttachment(input.transfer) }),
+            ...(input.transfer_response !== undefined && { transfer_response: input.transfer_response }),
           },
           responseSchema: conversationSpeakResponseSchema,
         });
@@ -655,6 +812,7 @@ async function executeKarakuriWorldOperation(
           body: {
             message: input.message,
             next_speaker_agent_id: input.next_speaker_agent_id,
+            ...(input.transfer_response !== undefined && { transfer_response: input.transfer_response }),
           },
           responseSchema: endConversationResponseSchema,
         });
@@ -808,6 +966,23 @@ export function createKarakuriWorldTools({
       inputSchema: withComment(useItemToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('use_item', input, context),
     }),
+    karakuri_world_transfer: tool({
+      description: '隣接または同一ノードの idle エージェントへアイテム / 所持金を譲渡する。`target_agent_id` と `items`/`money` のいずれかを渡す。受信側は accept/reject 通知に応答する。',
+      inputSchema: withComment(transferToolInputSchema).superRefine((data, ctx) => {
+        validateNonEmptyTransfer({ items: data.items, money: data.money }, ctx);
+      }),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer', input, context),
+    }),
+    karakuri_world_accept_transfer: tool({
+      description: '受信中の standalone 譲渡オファーを受諾する。`transfer_id` を渡す。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
+      inputSchema: withComment(acceptTransferToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('accept_transfer', input, context),
+    }),
+    karakuri_world_reject_transfer: tool({
+      description: '受信中の standalone 譲渡オファーを拒否する。`transfer_id` を渡す。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
+      inputSchema: withComment(rejectTransferToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('reject_transfer', input, context),
+    }),
     karakuri_world_wait: tool({
       description: 'その場で待機する。`duration` を渡す（10分単位、1〜6）。',
       inputSchema: withComment(waitToolInputSchema),
@@ -844,12 +1019,19 @@ export function createKarakuriWorldTools({
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_leave', input, context),
     }),
     karakuri_world_conversation_speak: tool({
-      description: '会話中に発言する。`message` と `next_speaker_agent_id` を渡す。',
-      inputSchema: withComment(conversationSpeakToolInputSchema),
+      description: '会話中に発言する。`message` と `next_speaker_agent_id` を渡す。必要に応じて `transfer` または `transfer_response` を任意で添えられるが、同時指定はできない。',
+      inputSchema: withComment(conversationSpeakToolInputSchema).superRefine((data, ctx) => {
+        if (data.transfer && data.transfer_response) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'transfer と transfer_response は同時に指定できません。',
+          });
+        }
+      }),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_speak', input, context),
     }),
     karakuri_world_end_conversation: tool({
-      description: '会話を終了または退出する。お別れの `message` と `next_speaker_agent_id` を渡す。2人会話では会話全体を終了する。3人以上では自分だけ退出する。',
+      description: '会話を終了または退出する。お別れの `message` と `next_speaker_agent_id` を渡す。必要に応じて `transfer_response` のみ任意で添えられる。2人会話では会話全体を終了する。3人以上では自分だけ退出する。',
       inputSchema: withComment(endConversationToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('end_conversation', input, context),
     }),

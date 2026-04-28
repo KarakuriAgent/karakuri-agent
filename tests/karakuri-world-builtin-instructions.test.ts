@@ -24,8 +24,18 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('`karakuri_world_conversation_join`');
     expect(instructions).toContain('`karakuri_world_conversation_stay`');
     expect(instructions).toContain('`karakuri_world_conversation_leave`');
+    expect(instructions).toContain('`karakuri_world_transfer`');
+    expect(instructions).toContain('`karakuri_world_accept_transfer`');
+    expect(instructions).toContain('`karakuri_world_reject_transfer`');
     expect(instructions).toContain('`karakuri_world_end_conversation`');
     expect(instructions).toContain('next_speaker_agent_id');
+    expect(instructions).toContain('transfer_response');
+    expect(instructions).toContain('in_transfer');
+    expect(instructions).toMatch(/STANDALONE|standalone/);
+    expect(instructions).toMatch(/IN-CONVERSATION|in_conversation/);
+    expect(instructions).toContain('auto-rejected');
+    expect(instructions).toContain('transfer_status: "failed"');
+    expect(instructions).toContain('failure_reason');
     expect(normalized).toContain('inactive_check');
     expect(instructions).toContain('2-person conversations');
     expect(instructions).toContain('3 or more participants');
