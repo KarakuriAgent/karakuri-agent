@@ -122,14 +122,14 @@ const transferOperationObjectSchema = z.object({
   money: transferMoneySchema.optional(),
 }).strict();
 
+// accept_transfer / reject_transfer は引数なし。サーバー側が受信エージェントの
+// pending_transfer_id から自動解決する。pending が無ければ state_conflict (409) になる。
 const acceptTransferOperationSchema = z.object({
   operation: z.literal('accept_transfer'),
-  transfer_id: z.string().min(1),
 }).strict();
 
 const rejectTransferOperationSchema = z.object({
   operation: z.literal('reject_transfer'),
-  transfer_id: z.string().min(1),
 }).strict();
 
 const waitOperationSchema = z
@@ -695,7 +695,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'POST',
           path: 'api/agents/transfer/accept',
-          body: { transfer_id: input.transfer_id },
+          body: {},
           responseSchema: transferActionResponseSchema,
         });
       case 'reject_transfer':
@@ -704,7 +704,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'POST',
           path: 'api/agents/transfer/reject',
-          body: { transfer_id: input.transfer_id },
+          body: {},
           responseSchema: transferActionResponseSchema,
         });
       case 'wait':
@@ -962,12 +962,12 @@ export function createKarakuriWorldTools({
       execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer', input, context),
     }),
     karakuri_world_accept_transfer: tool({
-      description: '受信中の standalone 譲渡オファーを受諾する。`transfer_id` を渡す。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
+      description: '受信中の standalone 譲渡オファーを受諾する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
       inputSchema: withComment(acceptTransferToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('accept_transfer', input, context),
     }),
     karakuri_world_reject_transfer: tool({
-      description: '受信中の standalone 譲渡オファーを拒否する。`transfer_id` を渡す。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
+      description: '受信中の standalone 譲渡オファーを拒否する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
       inputSchema: withComment(rejectTransferToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('reject_transfer', input, context),
     }),

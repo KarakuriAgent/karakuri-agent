@@ -169,45 +169,35 @@ describe('karakuri-world tools', () => {
     })).toThrow();
   });
 
-  it('validates accept_transfer / reject_transfer schemas strictly', () => {
+  it('validates accept_transfer / reject_transfer schemas strictly (no arguments)', () => {
+    // accept_transfer / reject_transfer は引数なし。サーバー側が pending_transfer_id から自動解決する
     expect(karakuriWorldInputSchema.parse({
       operation: 'accept_transfer',
-      transfer_id: 't-1',
     })).toEqual({
       operation: 'accept_transfer',
-      transfer_id: 't-1',
     });
     expect(karakuriWorldInputSchema.parse({
       operation: 'reject_transfer',
-      transfer_id: 't-1',
     })).toEqual({
       operation: 'reject_transfer',
-      transfer_id: 't-1',
     });
 
-    expect(() => karakuriWorldInputSchema.parse({
-      operation: 'accept_transfer',
-      transfer_id: '',
-    })).toThrow();
+    // 旧 API 引数 transfer_id は strict object で拒否される (リグレッションガード)
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'accept_transfer',
       transfer_id: 't-1',
-      extra: true,
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'accept_transfer',
-    })).toThrow();
-    expect(() => karakuriWorldInputSchema.parse({
-      operation: 'reject_transfer',
-      transfer_id: '',
-    })).toThrow();
-    expect(() => karakuriWorldInputSchema.parse({
-      operation: 'reject_transfer',
-      transfer_id: 't-1',
       extra: true,
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
       operation: 'reject_transfer',
+      transfer_id: 't-1',
+    })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({
+      operation: 'reject_transfer',
+      extra: true,
     })).toThrow();
   });
 
@@ -311,7 +301,7 @@ describe('karakuri-world tools', () => {
       transfer_id: 't-0',
     });
     await expect(tools.karakuri_world_accept_transfer!.execute!(
-      { transfer_id: 't-1', comment: '受け取ります。' },
+      { comment: '受け取ります。' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
       ok: true,
@@ -320,7 +310,7 @@ describe('karakuri-world tools', () => {
       transfer_id: 't-1',
     });
     await expect(tools.karakuri_world_reject_transfer!.execute!(
-      { transfer_id: 't-2', comment: '今は受け取れません。' },
+      { comment: '今は受け取れません。' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
       ok: true,
@@ -350,7 +340,7 @@ describe('karakuri-world tools', () => {
       'https://example.com/api/agents/transfer/accept',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ transfer_id: 't-1' }),
+        body: JSON.stringify({}),
         headers: expect.objectContaining({
           Authorization: 'Bearer secret',
         }),
@@ -361,7 +351,7 @@ describe('karakuri-world tools', () => {
       'https://example.com/api/agents/transfer/reject',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ transfer_id: 't-2' }),
+        body: JSON.stringify({}),
         headers: expect.objectContaining({
           Authorization: 'Bearer secret',
         }),
@@ -1239,7 +1229,7 @@ describe('karakuri-world tools', () => {
     });
 
     await expect(tools.karakuri_world_accept_transfer!.execute!(
-      { transfer_id: 't-expired', comment: '受諾試みる。' },
+      { comment: '受諾試みる。' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
       ok: true,
@@ -1304,11 +1294,11 @@ describe('karakuri-world tools', () => {
       DEFAULT_OPTIONS,
     )).resolves.toMatchObject({ status: 'not_logged_in' });
     await expect(tools.karakuri_world_accept_transfer!.execute!(
-      { transfer_id: 't-1', comment: 'ログイン前。' },
+      { comment: 'ログイン前。' },
       DEFAULT_OPTIONS,
     )).resolves.toMatchObject({ status: 'not_logged_in' });
     await expect(tools.karakuri_world_reject_transfer!.execute!(
-      { transfer_id: 't-1', comment: 'ログイン前。' },
+      { comment: 'ログイン前。' },
       DEFAULT_OPTIONS,
     )).resolves.toMatchObject({ status: 'not_logged_in' });
   });
