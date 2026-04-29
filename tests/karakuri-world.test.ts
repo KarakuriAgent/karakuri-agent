@@ -460,6 +460,54 @@ describe('karakuri-world tools', () => {
     });
   });
 
+  it('rejects transfer response with transfer_status="failed" but missing failure_reason', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify({
+        ok: true,
+        message: 'failed',
+        transfer_status: 'failed',
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(tools.karakuri_world_transfer!.execute!(
+      { target_agent_id: 'agent-bob', money: 1, comment: 'failed のみ。' },
+      DEFAULT_OPTIONS,
+    )).rejects.toThrow(KarakuriWorldResponseError);
+  });
+
+  it('rejects conversation_speak response with transfer_status="failed" but missing failure_reason', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify({
+        turn: 12,
+        transfer_status: 'failed',
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(tools.karakuri_world_conversation_speak!.execute!(
+      {
+        message: 'これあげる。',
+        next_speaker_agent_id: 'agent-2',
+        transfer: { money: 10 },
+        comment: 'failed のみ受信。',
+      },
+      DEFAULT_OPTIONS,
+    )).rejects.toThrow(KarakuriWorldResponseError);
+  });
+
   it('requires comment in direct karakuri-world tool schemas', () => {
     const tools = createKarakuriWorldTools({
       apiBaseUrl: 'https://example.com',
@@ -1051,6 +1099,63 @@ describe('karakuri-world tools', () => {
         }),
       }),
     );
+  });
+
+  it('rejects invalid transfer_response enum values on conversation_speak / end_conversation', () => {
+    const invalidValues: unknown[] = ['maybe', '', 'ACCEPT', 'Accept', 'reject ', 1, true, null];
+
+    for (const value of invalidValues) {
+      expect(karakuriWorldInputSchema.safeParse({
+        operation: 'conversation_speak',
+        message: 'うん。',
+        next_speaker_agent_id: 'agent-2',
+        transfer_response: value,
+      }).success).toBe(false);
+      expect(karakuriWorldInputSchema.safeParse({
+        operation: 'end_conversation',
+        message: 'またね。',
+        next_speaker_agent_id: 'agent-2',
+        transfer_response: value,
+      }).success).toBe(false);
+    }
+
+    // 既知 enum 値は通る
+    expect(karakuriWorldInputSchema.safeParse({
+      operation: 'conversation_speak',
+      message: 'うん。',
+      next_speaker_agent_id: 'agent-2',
+      transfer_response: 'accept',
+    }).success).toBe(true);
+    expect(karakuriWorldInputSchema.safeParse({
+      operation: 'conversation_speak',
+      message: 'やめとく。',
+      next_speaker_agent_id: 'agent-2',
+      transfer_response: 'reject',
+    }).success).toBe(true);
+  });
+
+  it('rejects empty item_id in transfer item attachment', () => {
+    // standalone transfer
+    expect(karakuriWorldInputSchema.safeParse({
+      operation: 'transfer',
+      target_agent_id: 'agent-bob',
+      item: { item_id: '', quantity: 1 },
+    }).success).toBe(false);
+
+    // conversation_speak.transfer
+    expect(karakuriWorldInputSchema.safeParse({
+      operation: 'conversation_speak',
+      message: 'これあげる。',
+      next_speaker_agent_id: 'agent-2',
+      transfer: { item: { item_id: '', quantity: 1 } },
+    }).success).toBe(false);
+
+    // 念のため正常系も確認
+    expect(karakuriWorldInputSchema.safeParse({
+      operation: 'transfer',
+      target_agent_id: 'agent-bob',
+      item: { item_id: 'apple', quantity: 1 },
+    }).success).toBe(true);
   });
 
   it('rejects transfer + transfer_response on the conversation_speak tool inputSchema', () => {

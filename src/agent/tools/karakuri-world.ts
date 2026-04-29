@@ -99,7 +99,7 @@ function validateExclusiveItemOrMoney(
 }
 
 function validateExclusiveTransferAndResponse(
-  data: { transfer?: unknown; transfer_response?: unknown },
+  data: Record<string, unknown>,
   ctx: z.RefinementCtx,
 ): void {
   if (data.transfer != null && data.transfer_response != null) {
@@ -110,17 +110,21 @@ function validateExclusiveTransferAndResponse(
   }
 }
 
-const transferAttachmentSchema = z.object({
+const transferAttachmentBaseSchema = z.object({
   item: transferItemSchema.optional(),
   money: transferMoneySchema.optional(),
-}).strict().superRefine(validateExclusiveItemOrMoney);
+});
 
-const transferOperationObjectSchema = z.object({
-  operation: z.literal('transfer'),
-  target_agent_id: z.string().min(1),
-  item: transferItemSchema.optional(),
-  money: transferMoneySchema.optional(),
-}).strict();
+const transferAttachmentSchema = transferAttachmentBaseSchema
+  .strict()
+  .superRefine(validateExclusiveItemOrMoney);
+
+const transferOperationObjectSchema = transferAttachmentBaseSchema
+  .extend({
+    operation: z.literal('transfer'),
+    target_agent_id: z.string().min(1),
+  })
+  .strict();
 
 // accept_transfer / reject_transfer は引数なし。サーバー側が受信エージェントの
 // pending_transfer_id から自動解決する。pending が無ければ state_conflict (409) になる。
@@ -285,40 +289,75 @@ const conversationStartResponseSchema = z
 // サーバー側 (karakuri-world) が将来 enum 値を追加してもクライアントを壊さないため、
 // 既知 literal の union に汎用 string fallback を足して受ける。LLM への提示用 JSON schema は
 // literal 列挙が残るので既知値の hint は維持される。
-const transferStatusSchema = z.union([
-  z.enum(['pending', 'completed', 'rejected', 'failed']),
-  z.string().min(1),
-]);
-const transferFailureReasonSchema = z.union([
-  z.enum([
-    'persist_failed',
-    'role_conflict',
-    'overflow_inventory_full',
-    'overflow_money',
-    'validation_failed',
-  ]),
-  z.string().min(1),
-]);
+// 既知値以外を受けた場合は warn ログを残し、サーバー側の typo / enum ドリフトを検出可能にする。
+const KNOWN_TRANSFER_STATUSES = ['pending', 'completed', 'rejected', 'failed'] as const;
+const KNOWN_TRANSFER_FAILURE_REASONS = [
+  'persist_failed',
+  'role_conflict',
+  'overflow_inventory_full',
+  'overflow_money',
+  'validation_failed',
+] as const;
 
-// transfer 系レスポンスは新機能で今後フィールド追加が見込まれるため `.strict()` を付けない。
+function warnIfUnknown<T extends string>(
+  field: 'transfer_status' | 'failure_reason',
+  knownValues: readonly T[],
+  value: string,
+): void {
+  if (!knownValues.includes(value as T)) {
+    logger.warn('Unknown enum value received from karakuri-world API', { field, value });
+  }
+}
+
+const transferStatusSchema = z
+  .union([z.enum(KNOWN_TRANSFER_STATUSES), z.string().min(1)])
+  .transform((value) => {
+    warnIfUnknown('transfer_status', KNOWN_TRANSFER_STATUSES, value);
+    return value;
+  });
+const transferFailureReasonSchema = z
+  .union([z.enum(KNOWN_TRANSFER_FAILURE_REASONS), z.string().min(1)])
+  .transform((value) => {
+    warnIfUnknown('failure_reason', KNOWN_TRANSFER_FAILURE_REASONS, value);
+    return value;
+  });
+
+// transfer 系レスポンスは forward-compat のため `.strict()` を付けない。
+// サーバーがフィールドを追加してもクライアントは壊さない。
 // `ok: z.literal(true)` で API 失敗 (`{ ok: false, error }`) との取り違えはガードされる。
-const transferActionResponseSchema = z.object({
-  ok: z.literal(true),
-  message: z.string().min(1),
-  transfer_status: transferStatusSchema,
-  transfer_id: z.string().min(1).optional(),
-  failure_reason: transferFailureReasonSchema.optional(),
-});
+// transfer_status === 'failed' のときは failure_reason 必須 (LLM が再試行戦略を立てる材料)。
+function requireFailureReasonOnFailed(
+  data: { transfer_status?: string | undefined; failure_reason?: string | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  if (data.transfer_status === 'failed' && data.failure_reason == null) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['failure_reason'],
+      message: 'transfer_status="failed" のときは failure_reason が必須です。',
+    });
+  }
+}
 
-// `.strict()` を意図的に付けない: サーバーが将来 transfer_remaining_balance 等の
-// フィールドを追加してもクライアントを壊さないため。後方互換性も維持
-// (turn のみのレスポンスも引き続き valid)。
-const conversationSpeakResponseSchema = z.object({
-  turn: z.number().int(),
-  transfer_status: transferStatusSchema.optional(),
-  transfer_id: z.string().min(1).optional(),
-  failure_reason: transferFailureReasonSchema.optional(),
-});
+const transferActionResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    message: z.string().min(1),
+    transfer_status: transferStatusSchema,
+    transfer_id: z.string().min(1).optional(),
+    failure_reason: transferFailureReasonSchema.optional(),
+  })
+  .superRefine(requireFailureReasonOnFailed);
+
+// turn のみの後方互換レスポンスも引き続き valid。
+const conversationSpeakResponseSchema = z
+  .object({
+    turn: z.number().int(),
+    transfer_status: transferStatusSchema.optional(),
+    transfer_id: z.string().min(1).optional(),
+    failure_reason: transferFailureReasonSchema.optional(),
+  })
+  .superRefine(requireFailureReasonOnFailed);
 
 // end_conversation は 2 人会話終了時に { turn } を返すが、
 // 3 人以上のグループから自分だけ退出する場合は { status: 'ok' } を返す可能性がある。
@@ -327,8 +366,6 @@ const endConversationResponseSchema = z.union([conversationSpeakResponseSchema, 
 export type KarakuriWorldInput = z.infer<typeof karakuriWorldInputSchema>;
 
 type KarakuriWorldOperation = KarakuriWorldInput['operation'];
-type KarakuriWorldToolInput<TOperation extends KarakuriWorldOperation> =
-  Omit<Extract<KarakuriWorldInput, { operation: TOperation }>, 'operation'>;
 
 export interface CreateKarakuriWorldToolsOptions extends ApiCredentials {
   fetch?: typeof fetch;
@@ -363,6 +400,9 @@ const TRANSIENT_FETCH_ERROR_CODES = new Set([
 ]);
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_RETRIES = 1;
+// 再送で解決し得る一時状態のみを busy として informational に丸める。
+// transfer 系 409 (transfer_role_conflict / transfer_already_settled / transfer_refund_failed) は
+// 確定的失敗のため敢えて含めず throw させる。LLM がエラーを認識して別の操作に切り替えるべき。
 const BUSY_ERROR_CODES = new Set(['state_conflict', 'not_your_turn']);
 const BUSY_INSTRUCTION = '今は同じ操作をすぐ再送しないでください。受信済みの会話依頼があればそれに対応し、それ以外は次の通知や状態変化を待ってください。';
 const logger = createLogger('KarakuriWorldApi');
@@ -843,16 +883,6 @@ async function executeKarakuriWorldOperation(
   return result;
 }
 
-function createOperationInput<TOperation extends KarakuriWorldOperation>(
-  operation: TOperation,
-  input: KarakuriWorldToolInput<TOperation>,
-): KarakuriWorldInput {
-  return karakuriWorldInputSchema.parse({
-    operation,
-    ...input,
-  });
-}
-
 function isBusyError(error: unknown): error is KarakuriWorldApiError {
   return (
     error instanceof KarakuriWorldApiError
@@ -870,14 +900,23 @@ function isNotLoggedInError(error: unknown): error is KarakuriWorldApiError {
   );
 }
 
-async function executeKarakuriWorldTool<TOperation extends KarakuriWorldOperation>(
-  operation: TOperation,
-  input: KarakuriWorldToolInput<TOperation>,
+async function executeKarakuriWorldTool(
+  operation: KarakuriWorldOperation,
+  input: Record<string, unknown>,
   context: RequestContext,
 ): Promise<unknown> {
   try {
-    return await executeKarakuriWorldOperation(createOperationInput(operation, input), context);
+    const parsed = karakuriWorldInputSchema.parse({ operation, ...input });
+    return await executeKarakuriWorldOperation(parsed, context);
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      logger.error('Tool input validation failed', {
+        operation,
+        issues: error.issues,
+      });
+      throw error;
+    }
+
     if (isBusyError(error)) {
       logger.info('Agent is busy, returning informational response', {
         operation,
@@ -914,7 +953,7 @@ async function executeKarakuriWorldToolStrippingComment(
   context: RequestContext,
 ): Promise<unknown> {
   const { comment: _comment, ...requestInput } = input;
-  return executeKarakuriWorldTool(operation as never, requestInput as never, context);
+  return executeKarakuriWorldTool(operation, requestInput, context);
 }
 
 export function createKarakuriWorldTools({
@@ -1008,14 +1047,8 @@ export function createKarakuriWorldTools({
     }),
     karakuri_world_conversation_speak: tool({
       description: '会話中に発言する。`message` と `next_speaker_agent_id` を渡す。必要に応じて `transfer` または `transfer_response` を任意で添えられるが、同時指定はできない。',
-      inputSchema: withComment(conversationSpeakToolInputSchema).superRefine((data, ctx) => {
-        if (data.transfer && data.transfer_response) {
-          ctx.addIssue({
-            code: 'custom',
-            message: 'transfer と transfer_response は同時に指定できません。',
-          });
-        }
-      }),
+      inputSchema: withComment(conversationSpeakToolInputSchema)
+        .superRefine(validateExclusiveTransferAndResponse),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_speak', input, context),
     }),
     karakuri_world_end_conversation: tool({
