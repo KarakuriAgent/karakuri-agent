@@ -459,6 +459,9 @@ function createSchedulerStore(): ISchedulerStore {
 const EXPECTED_KW_TOOL_NAMES = [
   'karakuri_world_get_map',
   'karakuri_world_get_world_agents',
+  'karakuri_world_get_status',
+  'karakuri_world_get_nearby_agents',
+  'karakuri_world_get_active_conversations',
   'karakuri_world_move',
   'karakuri_world_action',
   'karakuri_world_use_item',

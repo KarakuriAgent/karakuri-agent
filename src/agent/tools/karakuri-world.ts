@@ -213,6 +213,9 @@ const serverEventSelectOperationSchema = z
 
 const getMapOperationSchema = z.object({ operation: z.literal('get_map') }).strict();
 const getWorldAgentsOperationSchema = z.object({ operation: z.literal('get_world_agents') }).strict();
+const getStatusOperationSchema = z.object({ operation: z.literal('get_status') }).strict();
+const getNearbyAgentsOperationSchema = z.object({ operation: z.literal('get_nearby_agents') }).strict();
+const getActiveConversationsOperationSchema = z.object({ operation: z.literal('get_active_conversations') }).strict();
 
 export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   moveOperationSchema,
@@ -233,6 +236,9 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   serverEventSelectOperationSchema,
   getMapOperationSchema,
   getWorldAgentsOperationSchema,
+  getStatusOperationSchema,
+  getNearbyAgentsOperationSchema,
+  getActiveConversationsOperationSchema,
 ]).superRefine((input, ctx) => {
   if (input.operation === 'transfer') {
     validateExclusiveItemOrMoney(input, ctx);
@@ -261,6 +267,9 @@ const endConversationToolInputSchema = endConversationOperationSchema.omit({ ope
 const serverEventSelectToolInputSchema = serverEventSelectOperationSchema.omit({ operation: true });
 const getMapToolInputSchema = getMapOperationSchema.omit({ operation: true });
 const getWorldAgentsToolInputSchema = getWorldAgentsOperationSchema.omit({ operation: true });
+const getStatusToolInputSchema = getStatusOperationSchema.omit({ operation: true });
+const getNearbyAgentsToolInputSchema = getNearbyAgentsOperationSchema.omit({ operation: true });
+const getActiveConversationsToolInputSchema = getActiveConversationsOperationSchema.omit({ operation: true });
 
 function withComment<TSchema extends z.AnyZodObject>(schema: TSchema) {
   return schema.extend({ comment: commentSchema });
@@ -872,6 +881,30 @@ async function executeKarakuriWorldOperation(
           path: 'api/agents/world-agents',
           responseSchema: notificationAckResponseSchema,
         });
+      case 'get_status':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'GET',
+          path: 'api/agents/status',
+          responseSchema: notificationAckResponseSchema,
+        });
+      case 'get_nearby_agents':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'GET',
+          path: 'api/agents/nearby-agents',
+          responseSchema: notificationAckResponseSchema,
+        });
+      case 'get_active_conversations':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'GET',
+          path: 'api/agents/active-conversations',
+          responseSchema: notificationAckResponseSchema,
+        });
       default: {
         const _exhaustive: never = input;
         throw new Error(`Unhandled karakuri-world operation: ${(_exhaustive as { operation: string }).operation}`);
@@ -977,6 +1010,21 @@ export function createKarakuriWorldTools({
       description: 'ログイン中エージェントの一覧と状態の取得を依頼する。詳細は通知で届く。',
       inputSchema: withComment(getWorldAgentsToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_world_agents', input, context),
+    }),
+    karakuri_world_get_status: tool({
+      description: '自分の所持金 / 所持品 / 現在地の取得を依頼する。詳細は通知で届く。',
+      inputSchema: withComment(getStatusToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_status', input, context),
+    }),
+    karakuri_world_get_nearby_agents: tool({
+      description: '隣接エージェント（会話候補 / 譲渡候補）の取得を依頼する。詳細は通知で届く。',
+      inputSchema: withComment(getNearbyAgentsToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_nearby_agents', input, context),
+    }),
+    karakuri_world_get_active_conversations: tool({
+      description: '参加可能な進行中会話の取得を依頼する。詳細は通知で届く。',
+      inputSchema: withComment(getActiveConversationsToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_active_conversations', input, context),
     }),
     karakuri_world_move: tool({
       description: '目的地ノードへ移動する。`target_node_id` を渡す。',

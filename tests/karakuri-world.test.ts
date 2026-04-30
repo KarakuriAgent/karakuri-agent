@@ -16,6 +16,9 @@ const DEFAULT_OPTIONS: ToolExecutionOptions = {
 const EXPECTED_TOOL_NAMES = [
   'karakuri_world_get_map',
   'karakuri_world_get_world_agents',
+  'karakuri_world_get_status',
+  'karakuri_world_get_nearby_agents',
+  'karakuri_world_get_active_conversations',
   'karakuri_world_move',
   'karakuri_world_action',
   'karakuri_world_use_item',
@@ -52,6 +55,16 @@ describe('karakuri-world tools', () => {
       duration: 3,
     });
     expect(() => karakuriWorldInputSchema.parse({ operation: 'get_map', extra: true })).toThrow();
+    expect(karakuriWorldInputSchema.parse({ operation: 'get_status' })).toEqual({ operation: 'get_status' });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'get_status', extra: true })).toThrow();
+    expect(karakuriWorldInputSchema.parse({ operation: 'get_nearby_agents' })).toEqual({
+      operation: 'get_nearby_agents',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'get_nearby_agents', extra: true })).toThrow();
+    expect(karakuriWorldInputSchema.parse({ operation: 'get_active_conversations' })).toEqual({
+      operation: 'get_active_conversations',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'get_active_conversations', extra: true })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration: '1000ms' })).toThrow();
     expect(karakuriWorldInputSchema.parse({ operation: 'use_item', item_id: 'potion' })).toEqual({
       operation: 'use_item',
@@ -520,6 +533,15 @@ describe('karakuri-world tools', () => {
     const mapInputSchema = tools.karakuri_world_get_map?.inputSchema as {
       safeParse: (value: unknown) => { success: boolean };
     };
+    const statusInputSchema = tools.karakuri_world_get_status?.inputSchema as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    const nearbyAgentsInputSchema = tools.karakuri_world_get_nearby_agents?.inputSchema as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
+    const activeConversationsInputSchema = tools.karakuri_world_get_active_conversations?.inputSchema as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
 
     expect(moveInputSchema.safeParse({ target_node_id: '1-2' }).success).toBe(false);
     expect(moveInputSchema.safeParse({
@@ -537,6 +559,12 @@ describe('karakuri-world tools', () => {
     expect(mapInputSchema.safeParse({}).success).toBe(false);
     expect(mapInputSchema.safeParse({ comment: 'まず地図を確認します。' }).success).toBe(true);
     expect(mapInputSchema.safeParse({ comment: '' }).success).toBe(false);
+    expect(statusInputSchema.safeParse({}).success).toBe(false);
+    expect(statusInputSchema.safeParse({ comment: '状態を確認します。' }).success).toBe(true);
+    expect(nearbyAgentsInputSchema.safeParse({}).success).toBe(false);
+    expect(nearbyAgentsInputSchema.safeParse({ comment: '近くの相手を確認します。' }).success).toBe(true);
+    expect(activeConversationsInputSchema.safeParse({}).success).toBe(false);
+    expect(activeConversationsInputSchema.safeParse({ comment: '参加可能な会話を確認します。' }).success).toBe(true);
   });
 
   it('uses GET endpoints without sending a request body for read operations', async () => {
@@ -612,6 +640,54 @@ describe('karakuri-world tools', () => {
       ok: true,
       message: 'World agents request accepted. Details will arrive by notification.',
     });
+  });
+
+  it.each([
+    [
+      'karakuri_world_get_status',
+      'https://example.com/api/agents/status',
+      'Status request accepted. Details will arrive by notification.',
+    ],
+    [
+      'karakuri_world_get_nearby_agents',
+      'https://example.com/api/agents/nearby-agents',
+      'Nearby agents request accepted. Details will arrive by notification.',
+    ],
+    [
+      'karakuri_world_get_active_conversations',
+      'https://example.com/api/agents/active-conversations',
+      'Active conversations request accepted. Details will arrive by notification.',
+    ],
+  ] as const)('uses GET for %s and returns a notification ack response', async (toolName, expectedUrl, message) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          message,
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    const resultWithoutComment = await tools[toolName]!.execute!({}, DEFAULT_OPTIONS);
+    const resultWithComment = await tools[toolName]!.execute!({ comment: 'test' }, DEFAULT_OPTIONS);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const call of fetch.mock.calls) {
+      const [requestUrl, requestInit] = call;
+      expect(requestUrl).toBe(expectedUrl);
+      expect(requestInit).toMatchObject({ method: 'GET' });
+      expect(requestInit).not.toHaveProperty('body');
+    }
+    expect(resultWithoutComment).toEqual({ ok: true, message });
+    expect(resultWithComment).toEqual({ ok: true, message });
   });
 
   it('retries once on transient network failures for GET requests', async () => {
