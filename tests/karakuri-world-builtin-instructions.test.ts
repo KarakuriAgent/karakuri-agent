@@ -20,6 +20,9 @@ describe('karakuri-world builtin instructions', () => {
     expect(normalized).toContain('you must call exactly one karakuri-world tool');
     expect(instructions).toContain('`comment` field');
     expect(instructions).toContain('`karakuri_world_get_map`');
+    expect(instructions).toContain('`karakuri_world_get_status`');
+    expect(instructions).toContain('`karakuri_world_get_nearby_agents`');
+    expect(instructions).toContain('`karakuri_world_get_active_conversations`');
     expect(instructions).toContain('`karakuri_world_move`');
     expect(instructions).toContain('`karakuri_world_conversation_join`');
     expect(instructions).toContain('`karakuri_world_conversation_stay`');
@@ -31,6 +34,9 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('next_speaker_agent_id');
     expect(instructions).toContain('transfer_response');
     expect(instructions).toContain('in_transfer');
+    expect(instructions).toContain('所持品');
+    expect(instructions).toContain('近くの会話');
+    expect(instructions).toContain('近くのエージェント');
     expect(instructions).toMatch(/STANDALONE|standalone/);
     expect(instructions).toMatch(/IN-CONVERSATION|in_conversation/);
     expect(instructions).toContain('auto-rejected');
