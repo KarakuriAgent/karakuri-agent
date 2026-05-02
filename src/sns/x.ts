@@ -11,9 +11,11 @@ import type {
   PostParams,
   SearchParams,
   SearchResult,
+  SnsMyMetrics,
   SnsNotification,
   SnsPost,
   SnsProvider,
+  SnsUserProfile,
   ThreadResult,
   TimelineParams,
   UploadMediaParams,
@@ -43,6 +45,7 @@ const TOKEN_STATE_FILE_NAME = 'sns-token-state.json';
 const POST_FIELDS = ['author_id', 'attachments', 'conversation_id', 'created_at', 'entities', 'in_reply_to_user_id', 'public_metrics', 'referenced_tweets'];
 const POST_EXPANSIONS = ['attachments.media_keys', 'author_id', 'referenced_tweets.id', 'referenced_tweets.id.author_id', 'in_reply_to_user_id'];
 const USER_FIELDS = ['id', 'name', 'username'];
+const PROFILE_USER_FIELDS = ['id', 'name', 'username', 'description', 'public_metrics'];
 const MEDIA_FIELDS = ['media_key', 'preview_image_url', 'type', 'url'];
 const TOKEN_REFRESH_MUTEX = new KeyedMutex();
 
@@ -50,6 +53,12 @@ interface XUser {
   id: string;
   name?: string;
   username?: string;
+  description?: string;
+  publicMetrics?: {
+    followersCount?: number;
+    followingCount?: number;
+    tweetCount?: number;
+  };
 }
 
 interface XMedia {
@@ -201,6 +210,26 @@ function readPersistedTokenState(path: string): XTokenState | undefined {
 function getApiStatus(error: unknown): number | undefined {
   if (error instanceof Error && 'status' in error && typeof (error as { status?: unknown }).status === 'number') {
     return (error as { status: number }).status;
+  }
+  return undefined;
+}
+
+function extractRetryAfter(error: unknown): string | undefined {
+  if (!(error instanceof Error)) {
+    return undefined;
+  }
+  const headers = (error as { headers?: unknown }).headers;
+  if (headers != null && typeof (headers as { get?: unknown }).get === 'function') {
+    const value = (headers as Headers).get('retry-after');
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+  if (isRecord(headers)) {
+    const value = headers['retry-after'] ?? headers['Retry-After'];
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
   }
   return undefined;
 }
@@ -362,6 +391,7 @@ export class XProvider implements SnsProvider {
   private accessToken: string;
   private refreshToken: string | undefined;
   private currentUserPromise: Promise<XUser> | undefined;
+  private readonly userIdCache = new Map<string, Promise<string>>();
 
   constructor({
     accessToken,
@@ -496,6 +526,12 @@ export class XProvider implements SnsProvider {
     return this.getPost(postId);
   }
 
+  async unlike(postId: string): Promise<SnsPost> {
+    const currentUser = await this.getCurrentUser();
+    await this.callWithRefresh((client) => client.users.unlikePost(currentUser.id, postId));
+    return this.getPost(postId);
+  }
+
   async repost(postId: string): Promise<SnsPost> {
     const currentUser = await this.getCurrentUser();
     await this.callWithRefresh((client) => client.users.repostPost(currentUser.id, {
@@ -504,13 +540,67 @@ export class XProvider implements SnsProvider {
     return this.getPost(postId);
   }
 
+  async follow(handle: string): Promise<void> {
+    const [currentUser, targetUserId] = await Promise.all([
+      this.getCurrentUser(),
+      this.resolveUserId(handle),
+    ]);
+    await this.callWithRefresh((client) => client.users.followUser(currentUser.id, {
+      body: { targetUserId },
+    }));
+  }
+
+  async unfollow(handle: string): Promise<void> {
+    const [currentUser, targetUserId] = await Promise.all([
+      this.getCurrentUser(),
+      this.resolveUserId(handle),
+    ]);
+    await this.callWithRefresh((client) => client.users.unfollowUser(currentUser.id, targetUserId));
+  }
+
+  async getUserProfile(handle: string): Promise<SnsUserProfile> {
+    const response = await this.callWithRefresh((client) => client.users.getByUsername(handle.replace(/^@/, ''), {
+      userFields: PROFILE_USER_FIELDS,
+    }));
+    const user = assertResponseData((response as XSingleResponse<XUser>).data, 'users.getByUsername');
+    const mapped = mapUser(user);
+    return {
+      ...mapped,
+      ...(user.description != null ? { bio: user.description } : {}),
+      followerCount: user.publicMetrics?.followersCount ?? 0,
+      followingCount: user.publicMetrics?.followingCount ?? 0,
+      postCount: user.publicMetrics?.tweetCount ?? 0,
+      // X は follow relationship を取得する API がコスト的に現実的でないため省略。
+      // SnsUserProfile.followedByMe は undefined の意味で「不明」を表す。
+    };
+  }
+
+  async getMyMetrics(): Promise<SnsMyMetrics> {
+    const response = await this.callWithRefresh((client) => client.users.getMe({
+      userFields: PROFILE_USER_FIELDS,
+    }));
+    const user = assertResponseData((response as XSingleResponse<XUser>).data, 'users.getMe');
+    return {
+      followerCount: user.publicMetrics?.followersCount ?? 0,
+      followingCount: user.publicMetrics?.followingCount ?? 0,
+      postCount: user.publicMetrics?.tweetCount ?? 0,
+    };
+  }
+
+  async markNotificationsRead(notificationIds: string[]): Promise<void> {
+    // X API v2 には未読 dismiss 相当が無い。silent な no-op にすると caller が
+    // 「既読化された」と誤認するため、呼び出し毎に warn を出して欠落を可視化する。
+    logger.warn(`X markNotificationsRead is a no-op (X API v2 has no dismiss); ignored ${notificationIds.length} ids`);
+  }
+
   async getNotifications(params: NotificationParams = {}): Promise<NotificationFetchResult> {
     let currentUser: XUser;
     try {
       currentUser = await this.getCurrentUser();
     } catch (error) {
       if (getApiStatus(error) === 429) {
-        logger.warn('X API rate limit hit while loading current user for notifications');
+        const retryAfter = extractRetryAfter(error);
+        logger.warn(`X API rate limit hit while loading current user for notifications${retryAfter != null ? `; retry-after=${retryAfter}` : ''}`);
         return {
           notifications: [],
           complete: false,
@@ -549,7 +639,8 @@ export class XProvider implements SnsProvider {
         }
       } catch (error) {
         if (getApiStatus(error) === 429) {
-          logger.warn('X API rate limit hit during notification pagination');
+          const retryAfter = extractRetryAfter(error);
+          logger.warn(`X API rate limit hit during notification pagination${retryAfter != null ? `; retry-after=${retryAfter}` : ''}`);
           complete = false;
           break;
         }
@@ -773,6 +864,33 @@ export class XProvider implements SnsProvider {
         throw error;
       });
     return this.currentUserPromise;
+  }
+
+  private resolveUserId(username: string): Promise<string> {
+    const cacheKey = username.trim().replace(/^@/, '').toLowerCase();
+    const cached = this.userIdCache.get(cacheKey);
+    if (cached != null) {
+      this.userIdCache.delete(cacheKey);
+      this.userIdCache.set(cacheKey, cached);
+      return cached;
+    }
+    const promise = this.callWithRefresh((client) => client.users.getByUsername(cacheKey, {
+      userFields: USER_FIELDS,
+    }))
+      .then((response) => assertResponseData((response as XSingleResponse<XUser>).data, 'users.getByUsername').id)
+      .catch((error) => {
+        this.userIdCache.delete(cacheKey);
+        throw error;
+      });
+    this.userIdCache.set(cacheKey, promise);
+    while (this.userIdCache.size > 50) {
+      const oldestKey = this.userIdCache.keys().next().value;
+      if (oldestKey == null) {
+        break;
+      }
+      this.userIdCache.delete(oldestKey);
+    }
+    return promise;
   }
 
   private async callWithRefresh<T>(operation: (client: Client) => Promise<T>): Promise<T> {

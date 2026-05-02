@@ -442,7 +442,7 @@ describe('sns tools', () => {
   });
 
 
-  it('rejects non-public X posts before they are published', async () => {
+  it.each(['unlisted', 'private', 'direct'] as const)('rejects non-public X posts before they are published (%s)', async (visibility) => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const tools = createSnsTools({
       sns: {
@@ -454,9 +454,57 @@ describe('sns tools', () => {
 
     await expect(tools.sns_post!.execute!({
       text: 'Hello later',
-      visibility: 'direct',
+      visibility,
     }, DEFAULT_OPTIONS)).resolves.toEqual({
       error: 'X only supports public visibility',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['unlisted', 'private', 'direct'] as const)('rejects non-public ELYTH posts before they are published (%s)', async (visibility) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const tools = createSnsTools({
+      sns: {
+        provider: 'elyth',
+        apiKey: 'elyth-key',
+        apiBase: 'https://elythworld.com',
+      },
+      fetch,
+    });
+
+    await expect(tools.sns_post!.execute!({
+      text: 'Hello later',
+      visibility,
+    }, DEFAULT_OPTIONS)).resolves.toEqual({
+      error: 'ELYTH only supports public visibility',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported ELYTH media and quote at the tool boundary', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const tools = createSnsTools({
+      sns: {
+        provider: 'elyth',
+        apiKey: 'elyth-key',
+        apiBase: 'https://elythworld.com',
+      },
+      fetch,
+    });
+
+    await expect(tools.sns_post!.execute!({
+      text: 'Hello media',
+      media_ids: ['media-1'],
+      visibility: 'public',
+    }, DEFAULT_OPTIONS)).resolves.toEqual({
+      error: 'ELYTH does not support media uploads',
+    });
+    await expect(tools.sns_post!.execute!({
+      text: 'Hello quote',
+      quote_post_id: 'quoted',
+      visibility: 'public',
+    }, DEFAULT_OPTIONS)).resolves.toEqual({
+      error: 'ELYTH does not support quote posts',
     });
     expect(fetch).not.toHaveBeenCalled();
   });

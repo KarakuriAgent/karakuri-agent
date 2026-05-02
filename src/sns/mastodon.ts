@@ -4,9 +4,11 @@ import type {
   PostParams,
   SearchParams,
   SearchResult,
+  SnsMyMetrics,
   SnsNotification,
   SnsPost,
   SnsProvider,
+  SnsUserProfile,
   ThreadResult,
   TimelineParams,
   UploadMediaParams,
@@ -18,7 +20,9 @@ import {
   type LookupFn,
   ResponseTooLargeError,
 } from '../utils/safe-fetch.js';
+import { createLogger } from '../utils/logger.js';
 
+const logger = createLogger('MastodonProvider');
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_MEDIA_BYTES = 40_000_000;
 const MEDIA_POLL_INTERVAL_MS = 1_000;
@@ -41,6 +45,10 @@ interface MastodonAccount {
   username: string;
   acct: string;
   url: string;
+  note?: string | null;
+  followers_count?: number | null;
+  following_count?: number | null;
+  statuses_count?: number | null;
 }
 
 interface MastodonMediaAttachment {
@@ -83,6 +91,15 @@ interface MastodonSearchResponse {
 interface MastodonContextResponse {
   ancestors: MastodonStatus[];
   descendants: MastodonStatus[];
+}
+
+interface MastodonRelationship {
+  id: string;
+  following?: boolean | null;
+}
+
+interface MastodonInstance {
+  version?: string | null;
 }
 
 class MastodonApiError extends Error {
@@ -279,12 +296,16 @@ function assertRecord(value: unknown, context: string): void {
 }
 
 export class MastodonProvider implements SnsProvider {
+  static readonly #unsupportedDismissWarningInstances = new Set<string>();
+
   private readonly instanceUrl: string;
   private readonly accessToken: string;
   private readonly fetchImpl: typeof fetch;
   private readonly lookupFn: LookupFn | undefined;
   private readonly sleepFn: SleepFn;
   private currentAccountIdPromise: Promise<string> | undefined;
+  private instanceVersionPromise: Promise<string | undefined> | undefined;
+  private readonly accountCache = new Map<string, Promise<MastodonAccount>>();
 
   constructor({
     instanceUrl,
@@ -354,11 +375,88 @@ export class MastodonProvider implements SnsProvider {
     ));
   }
 
+  async unlike(postId: string): Promise<SnsPost> {
+    return mapStatus(await this.requestJson<MastodonStatus>(
+      'POST',
+      `api/v1/statuses/${encodeURIComponent(postId)}/unfavourite`,
+    ));
+  }
+
   async repost(postId: string): Promise<SnsPost> {
     return mapStatus(await this.requestJson<MastodonStatus>(
       'POST',
       `api/v1/statuses/${encodeURIComponent(postId)}/reblog`,
     ));
+  }
+
+  async follow(handle: string): Promise<void> {
+    const accountId = await this.resolveAccountId(handle);
+    await this.requestJson<MastodonRelationship>(
+      'POST',
+      `api/v1/accounts/${encodeURIComponent(accountId)}/follow`,
+    );
+  }
+
+  async unfollow(handle: string): Promise<void> {
+    const accountId = await this.resolveAccountId(handle);
+    await this.requestJson<MastodonRelationship>(
+      'POST',
+      `api/v1/accounts/${encodeURIComponent(accountId)}/unfollow`,
+    );
+  }
+
+  async getUserProfile(handle: string): Promise<SnsUserProfile> {
+    const account = await this.lookupAccountCached(handle);
+    const relationshipQuery = new URLSearchParams();
+    relationshipQuery.append('id[]', account.id);
+    const relationship = await this.requestJson<MastodonRelationship[]>(
+      'GET',
+      'api/v1/accounts/relationships',
+      undefined,
+      relationshipQuery,
+    );
+    assertArray(relationship, 'GET api/v1/accounts/relationships');
+    const relation = relationship.find((candidate) => candidate.id === account.id);
+    const mapped = mapAccount(account);
+    return {
+      ...mapped,
+      ...(account.note != null ? { bio: stripHtml(account.note) } : {}),
+      followerCount: account.followers_count ?? 0,
+      followingCount: account.following_count ?? 0,
+      postCount: account.statuses_count ?? 0,
+      ...(relation?.following != null ? { followedByMe: relation.following } : {}),
+    };
+  }
+
+  async getMyMetrics(): Promise<SnsMyMetrics> {
+    const account = await this.requestJson<MastodonAccount>('GET', 'api/v1/accounts/verify_credentials');
+    return {
+      followerCount: account.followers_count ?? 0,
+      followingCount: account.following_count ?? 0,
+      postCount: account.statuses_count ?? 0,
+    };
+  }
+
+  async markNotificationsRead(notificationIds: string[]): Promise<void> {
+    if (notificationIds.length === 0) {
+      return;
+    }
+    await this.assertNotificationsDismissSupported();
+    const results = await Promise.allSettled(notificationIds.map((id) => this.requestJsonOrEmpty(
+      'POST',
+      `api/v1/notifications/${encodeURIComponent(id)}/dismiss`,
+    )));
+    const failedIds = results
+      .map((result, index) => ({ result, id: notificationIds[index] }))
+      .filter((entry): entry is { result: PromiseRejectedResult; id: string } => entry.id != null && entry.result.status === 'rejected')
+      .map((entry) => entry.id);
+    if (failedIds.length === notificationIds.length) {
+      const firstFailure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      throw firstFailure?.reason ?? new Error('All Mastodon notification dismiss requests failed');
+    }
+    if (failedIds.length > 0) {
+      logger.error('Some Mastodon notification dismiss requests failed', { failedIds });
+    }
   }
 
   async getNotifications(params: NotificationParams = {}): Promise<NotificationFetchResult> {
@@ -373,56 +471,68 @@ export class MastodonProvider implements SnsProvider {
     let nextMaxId = params.maxId;
     let pageRequests = 0;
 
-    while (collected.length < requestedLimit && pageRequests < MAX_NOTIFICATION_PAGE_REQUESTS) {
-      pageRequests += 1;
-      const query = new URLSearchParams();
-      query.set('limit', String(pageLimit));
-      if (params.sinceId != null) {
-        query.set('since_id', params.sinceId);
-      }
-      if (nextMaxId != null) {
-        query.set('max_id', nextMaxId);
-      }
+    try {
+      while (collected.length < requestedLimit && pageRequests < MAX_NOTIFICATION_PAGE_REQUESTS) {
+        pageRequests += 1;
+        const query = new URLSearchParams();
+        query.set('limit', String(pageLimit));
+        if (params.sinceId != null) {
+          query.set('since_id', params.sinceId);
+        }
+        if (nextMaxId != null) {
+          query.set('max_id', nextMaxId);
+        }
 
-      if (requestedTypes == null || !requestedTypes.has('other')) {
-        const mastodonTypes = new Set<string>();
-        for (const type of params.types ?? []) {
-          for (const mappedType of mapNotificationTypeToMastodon(type)) {
-            mastodonTypes.add(mappedType);
+        if (requestedTypes == null || !requestedTypes.has('other')) {
+          const mastodonTypes = new Set<string>();
+          for (const type of params.types ?? []) {
+            for (const mappedType of mapNotificationTypeToMastodon(type)) {
+              mastodonTypes.add(mappedType);
+            }
+          }
+          for (const mastodonType of mastodonTypes) {
+            query.append('types[]', mastodonType);
           }
         }
-        for (const mastodonType of mastodonTypes) {
-          query.append('types[]', mastodonType);
+
+        const notifications = await this.requestJson<MastodonNotification[]>(
+          'GET',
+          'api/v1/notifications',
+          undefined,
+          query,
+        );
+        assertArray(notifications, 'GET api/v1/notifications');
+        if (notifications.length === 0) {
+          break;
+        }
+
+        const currentAccountId = notifications.some((notification) => notification.type === 'mention')
+          ? await this.getCurrentAccountId()
+          : undefined;
+        const mappedNotifications = notifications
+          .map((notification) => mapNotification(notification, currentAccountId))
+          .filter((notification) => requestedTypes == null || requestedTypes.has(notification.type));
+        collected.push(...mappedNotifications);
+
+        if (!needsClientSideFiltering || notifications.length < pageLimit) {
+          break;
+        }
+
+        nextMaxId = notifications.at(-1)?.id;
+        if (nextMaxId == null) {
+          break;
         }
       }
-
-      const notifications = await this.requestJson<MastodonNotification[]>(
-        'GET',
-        'api/v1/notifications',
-        undefined,
-        query,
-      );
-      assertArray(notifications, 'GET api/v1/notifications');
-      if (notifications.length === 0) {
-        break;
+    } catch (error) {
+      if (error instanceof MastodonApiError && error.status === 429) {
+        const retryAfter = this.extractRetryAfter(error.details);
+        logger.warn(`Mastodon notification fetch rate limited${retryAfter != null ? `; retry-after=${retryAfter}` : ''}`);
+        return {
+          notifications: collected.slice(0, requestedLimit),
+          complete: false,
+        };
       }
-
-      const currentAccountId = notifications.some((notification) => notification.type === 'mention')
-        ? await this.getCurrentAccountId()
-        : undefined;
-      const mappedNotifications = notifications
-        .map((notification) => mapNotification(notification, currentAccountId))
-        .filter((notification) => requestedTypes == null || requestedTypes.has(notification.type));
-      collected.push(...mappedNotifications);
-
-      if (!needsClientSideFiltering || notifications.length < pageLimit) {
-        break;
-      }
-
-      nextMaxId = notifications.at(-1)?.id;
-      if (nextMaxId == null) {
-        break;
-      }
+      throw error;
     }
 
     return {
@@ -500,19 +610,17 @@ export class MastodonProvider implements SnsProvider {
   }
 
   async getUserPosts(params: UserPostsParams): Promise<SnsPost[]> {
-    const account = await this.requestJson<MastodonAccount>('GET', 'api/v1/accounts/lookup', undefined, {
-      acct: params.userHandle,
-    });
+    const accountId = await this.resolveAccountId(params.userHandle);
     const statuses = await this.requestJson<MastodonStatus[]>(
       'GET',
-      `api/v1/accounts/${encodeURIComponent(account.id)}/statuses`,
+      `api/v1/accounts/${encodeURIComponent(accountId)}/statuses`,
       undefined,
       {
         ...(params.limit != null ? { limit: String(params.limit) } : {}),
         ...(params.excludeReplies === true ? { exclude_replies: 'true' } : {}),
       },
     );
-    assertArray(statuses, `GET api/v1/accounts/${account.id}/statuses`);
+    assertArray(statuses, `GET api/v1/accounts/${accountId}/statuses`);
     return statuses.map(mapStatus);
   }
 
@@ -536,6 +644,85 @@ export class MastodonProvider implements SnsProvider {
       }
     }
     return url.toString();
+  }
+
+  private async lookupAccount(handle: string): Promise<MastodonAccount> {
+    return this.requestJson<MastodonAccount>('GET', 'api/v1/accounts/lookup', undefined, {
+      acct: handle.replace(/^@/, ''),
+    });
+  }
+
+  private resolveAccountId(handle: string): Promise<string> {
+    return this.lookupAccountCached(handle).then((account) => account.id);
+  }
+
+  private lookupAccountCached(handle: string): Promise<MastodonAccount> {
+    const cacheKey = handle.trim().replace(/^@/, '').toLowerCase();
+    const cached = this.accountCache.get(cacheKey);
+    if (cached != null) {
+      this.accountCache.delete(cacheKey);
+      this.accountCache.set(cacheKey, cached);
+      return cached;
+    }
+    const promise = this.lookupAccount(handle)
+      .catch((error) => {
+        this.accountCache.delete(cacheKey);
+        throw error;
+      });
+    this.accountCache.set(cacheKey, promise);
+    while (this.accountCache.size > 50) {
+      const oldestKey = this.accountCache.keys().next().value;
+      if (oldestKey == null) {
+        break;
+      }
+      this.accountCache.delete(oldestKey);
+    }
+    return promise;
+  }
+
+  private async getInstanceVersion(): Promise<string | undefined> {
+    this.instanceVersionPromise ??= this.fetchInstanceVersion()
+      .catch((error) => {
+        this.instanceVersionPromise = undefined;
+        throw error;
+      });
+    return this.instanceVersionPromise;
+  }
+
+  private async fetchInstanceVersion(): Promise<string | undefined> {
+    try {
+      const instance = await this.requestJson<MastodonInstance>('GET', 'api/v2/instance');
+      return instance.version ?? undefined;
+    } catch (error) {
+      if (!(error instanceof MastodonApiError) || error.status !== 404) {
+        throw error;
+      }
+      const legacyInstance = await this.requestJson<MastodonInstance>('GET', 'api/v1/instance');
+      return legacyInstance.version ?? undefined;
+    }
+  }
+
+  private async assertNotificationsDismissSupported(): Promise<void> {
+    const version = await this.getInstanceVersion();
+    // version 不明 (フィールド欠落 / 解析不能 instance) は fail-open。
+    // 4.0+ instance を 3.x 扱いで弾くより、サーバ側 404 で失敗させた方がエラー文が具体的になる。
+    if (version == null || this.isAtLeastMastodonVersion4(version)) {
+      return;
+    }
+    if (!MastodonProvider.#unsupportedDismissWarningInstances.has(this.instanceUrl)) {
+      MastodonProvider.#unsupportedDismissWarningInstances.add(this.instanceUrl);
+      logger.warn(`Mastodon instance ${this.instanceUrl} is ${version}; notification dismiss requires Mastodon 4.0 or newer`);
+    }
+    throw new MastodonApiError(501, 'notification dismiss requires Mastodon 4.0 or newer', { version });
+  }
+
+  private isAtLeastMastodonVersion4(version: string): boolean {
+    const match = /^(\d+)\.(\d+)/.exec(version);
+    if (match == null) {
+      return true;
+    }
+    const major = Number(match[1]);
+    return Number.isFinite(major) && major >= 4;
   }
 
   private async requestJson<TResponse>(
@@ -570,14 +757,45 @@ export class MastodonProvider implements SnsProvider {
     return responseBody as TResponse;
   }
 
+  private async requestJsonOrEmpty(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: Record<string, unknown>,
+    query?: URLSearchParams | Record<string, string>,
+    extraHeaders?: Record<string, string>,
+  ): Promise<void> {
+    const response = await this.fetchImpl(this.buildUrl(path, query), {
+      method,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${this.accessToken}`,
+        ...(body != null ? { 'Content-Type': 'application/json' } : {}),
+        ...extraHeaders,
+      },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      ...(body != null ? { body: JSON.stringify(body) } : {}),
+    });
+    const responseBody = await readResponseBody(response);
+    if (!response.ok) {
+      throw this.toApiError(response, responseBody);
+    }
+    if (typeof responseBody === 'string') {
+      throw new Error(`Mastodon API returned non-JSON response for ${method} ${path}: ${responseBody.slice(0, 200)}`);
+    }
+  }
+
   private toApiError(response: Response, responseBody: unknown): MastodonApiError {
+    const retryAfter = response.headers.get('retry-after') ?? undefined;
     if (isRecord(responseBody)) {
       const message = typeof responseBody.error === 'string'
         ? responseBody.error
         : typeof responseBody.error_description === 'string'
           ? responseBody.error_description
           : response.statusText || 'Request failed';
-      return new MastodonApiError(response.status, message, responseBody);
+      return new MastodonApiError(response.status, message, {
+        ...responseBody,
+        ...(retryAfter != null ? { retryAfter } : {}),
+      });
     }
 
     return new MastodonApiError(
@@ -585,8 +803,12 @@ export class MastodonProvider implements SnsProvider {
       typeof responseBody === 'string' && responseBody.length > 0
         ? responseBody
         : (response.statusText || 'Request failed'),
-      responseBody,
+      { body: responseBody, ...(retryAfter != null ? { retryAfter } : {}) },
     );
+  }
+
+  private extractRetryAfter(details: unknown): string | undefined {
+    return isRecord(details) && typeof details.retryAfter === 'string' ? details.retryAfter : undefined;
   }
 
   private isTransientMediaPendingResponse(response: Response, responseBody: unknown): boolean {

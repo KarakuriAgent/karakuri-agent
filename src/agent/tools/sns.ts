@@ -152,6 +152,21 @@ function assertSupportedVisibility(provider: SnsCredentials['provider'], visibil
   if (provider === 'x' && visibility !== 'public') {
     throw new Error('X only supports public visibility');
   }
+  if (provider === 'elyth' && visibility !== 'public') {
+    throw new Error('ELYTH only supports public visibility');
+  }
+}
+
+function assertProviderSupportsMedia(provider: SnsCredentials['provider'], mediaIds: string[] | undefined): void {
+  if (provider === 'elyth' && mediaIds != null && mediaIds.length > 0) {
+    throw new Error('ELYTH does not support media uploads');
+  }
+}
+
+function assertProviderSupportsQuote(provider: SnsCredentials['provider'], quotePostId: string | undefined): void {
+  if (provider === 'elyth' && quotePostId != null) {
+    throw new Error('ELYTH does not support quote posts');
+  }
 }
 
 export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
@@ -180,6 +195,8 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
         input.quote_post_id != null ? buildQuoteLockKey(input.quote_post_id) : '',
       ], async () => {
         assertSupportedVisibility(options.sns.provider, input.visibility);
+        assertProviderSupportsMedia(options.sns.provider, input.media_ids);
+        assertProviderSupportsQuote(options.sns.provider, input.quote_post_id);
         if (input.reply_to_id != null) {
           const alreadyReplied = await safeCheck('hasReplied', () => options.activityStore?.hasReplied(input.reply_to_id!) ?? Promise.resolve(false));
           if (alreadyReplied) {

@@ -17,10 +17,13 @@ const mockState = vi.hoisted(() => ({
     getTimeline: vi.fn(),
     search: vi.fn(),
     likePost: vi.fn(),
+    unlikePost: vi.fn(),
     repostPost: vi.fn(),
     getMentions: vi.fn(),
     getByUsername: vi.fn(),
     getPosts: vi.fn(),
+    followUser: vi.fn(),
+    unfollowUser: vi.fn(),
   },
   media: {
     initializeUpload: vi.fn(),
@@ -228,6 +231,51 @@ describe('XProvider', () => {
     await expect(provider.repost('reposted-post')).resolves.toEqual(expect.objectContaining({ id: 'reposted-post' }));
     expect(mockState.users.likePost).toHaveBeenCalledWith('me-1', { body: { tweetId: 'liked-post' } });
     expect(mockState.users.repostPost).toHaveBeenCalledWith('me-1', { body: { tweetId: 'reposted-post' } });
+  });
+
+  it('unlikes, follows, unfollows, and exposes profile metrics', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockState.users.getMe.mockResolvedValue({ data: {
+      ...makeUser('me-1', 'bot', 'Bot'),
+      publicMetrics: { followersCount: 10, followingCount: 3, tweetCount: 42 },
+    } });
+    mockState.users.getByUsername.mockResolvedValue({ data: {
+      ...makeUser('target-1', 'alice', 'Alice'),
+      description: 'bio',
+      publicMetrics: { followersCount: 5, followingCount: 6, tweetCount: 7 },
+    } });
+    mockState.users.unlikePost.mockResolvedValue({ data: { liked: false } });
+    mockState.users.followUser.mockResolvedValue({ data: { following: true } });
+    mockState.users.unfollowUser.mockResolvedValue({ data: { following: false } });
+    mockState.posts.getById.mockResolvedValue(makePostResponse(makePost({ id: 'unliked-post' })));
+
+    const provider = new XProvider({ accessToken: 'token' });
+
+    await expect(provider.unlike('unliked-post')).resolves.toEqual(expect.objectContaining({ id: 'unliked-post' }));
+    await expect(provider.follow('@alice')).resolves.toBeUndefined();
+    await expect(provider.unfollow('alice')).resolves.toBeUndefined();
+    const profile = await provider.getUserProfile('alice');
+    expect(profile).toEqual(expect.objectContaining({
+      id: 'target-1',
+      bio: 'bio',
+      followerCount: 5,
+      followingCount: 6,
+      postCount: 7,
+    }));
+    expect(profile).not.toHaveProperty('followedByMe');
+    await expect(provider.getMyMetrics()).resolves.toEqual({
+      followerCount: 10,
+      followingCount: 3,
+      postCount: 42,
+    });
+    await expect(provider.markNotificationsRead(['n1'])).resolves.toBeUndefined();
+    await expect(provider.markNotificationsRead(['n2', 'n3'])).resolves.toBeUndefined();
+
+    expect(mockState.users.unlikePost).toHaveBeenCalledWith('me-1', 'unliked-post');
+    expect(mockState.users.getByUsername).toHaveBeenCalledTimes(2);
+    expect(mockState.users.followUser).toHaveBeenCalledWith('me-1', { body: { targetUserId: 'target-1' } });
+    expect(mockState.users.unfollowUser).toHaveBeenCalledWith('me-1', 'target-1');
+    expect(warnSpy).toHaveBeenCalledTimes(2);
   });
 
   it('classifies mentions vs replies and returns partial notifications when rate limited mid-pagination', async () => {

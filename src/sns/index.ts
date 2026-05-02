@@ -1,6 +1,7 @@
 import type { SnsCredentials } from '../config.js';
 import type { LookupFn } from '../utils/safe-fetch.js';
 
+import { ElythProvider } from './elyth.js';
 import { MastodonProvider } from './mastodon.js';
 import { XProvider } from './x.js';
 import type { SnsProvider } from './types.js';
@@ -35,5 +36,15 @@ export function createSnsProvider(options: CreateSnsProviderOptions): SnsProvide
         ...(options.lookupFn != null ? { lookupFn: options.lookupFn } : {}),
         ...(options.sleep != null ? { sleep: options.sleep } : {}),
       });
+    case 'elyth':
+      return new ElythProvider({
+        apiKey: options.apiKey,
+        apiBase: options.apiBase,
+        ...(options.fetch != null ? { fetch: options.fetch } : {}),
+      });
+    default: {
+      const _exhaustive: never = options;
+      throw new Error(`Unknown SNS provider: ${(_exhaustive as { provider?: string }).provider ?? 'undefined'}`);
+    }
   }
 }

@@ -392,7 +392,7 @@ describe('loadConfig', () => {
       ...validEnv,
       SNS_PROVIDER: 'mastodon',
       SNS_INSTANCE_URL: 'https://social.example',
-    })).toThrow('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER is configured.');
+    })).toThrow('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER=mastodon.');
   });
 
   it('ignores leftover SNS env vars when SNS_PROVIDER is absent', () => {
@@ -427,6 +427,42 @@ describe('loadConfig', () => {
       clientId: 'client-id',
       refreshToken: 'refresh-token',
     });
+  });
+
+  it('loads ELYTH SNS settings without SNS_ACCESS_TOKEN', () => {
+    const config = loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'elyth',
+      ELYTH_API_KEY: 'elyth-key',
+      ELYTH_API_BASE: 'https://elythworld.com/',
+    });
+
+    expect(config.sns).toEqual({
+      provider: 'elyth',
+      apiKey: 'elyth-key',
+      apiBase: 'https://elythworld.com',
+    });
+  });
+
+  it('requires ELYTH_API_KEY and ELYTH_API_BASE for elyth', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'elyth',
+      ELYTH_API_BASE: 'https://elythworld.com',
+    })).toThrow('Partial SNS configuration: ELYTH_API_KEY/ELYTH_API_BASE must be set when SNS_PROVIDER=elyth.');
+    expect(() => loadConfig({
+      ...validEnv,
+      SNS_PROVIDER: 'elyth',
+      ELYTH_API_KEY: 'elyth-key',
+    })).toThrow('Partial SNS configuration: ELYTH_API_KEY/ELYTH_API_BASE must be set when SNS_PROVIDER=elyth.');
+  });
+
+  it('ignores leftover ELYTH env vars when SNS_PROVIDER is absent', () => {
+    expect(loadConfig({
+      ...validEnv,
+      ELYTH_API_BASE: 'not-a-url',
+      ELYTH_API_KEY: 'elyth-key',
+    }).sns).toBeUndefined();
   });
 
   it('requires SNS_INSTANCE_URL for mastodon', () => {

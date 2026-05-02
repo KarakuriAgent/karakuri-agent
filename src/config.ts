@@ -28,7 +28,7 @@ const configSchema = z.object({
   braveApiKey: z.string().trim().min(1).optional(),
   karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
-  snsProvider: z.enum(['mastodon', 'x']).optional(),
+  snsProvider: z.enum(['mastodon', 'x', 'elyth']).optional(),
   snsInstanceUrl: z.string().trim().min(1).optional(),
   snsAccessToken: z.string().trim().min(1).optional(),
   snsClientId: z.string().trim().min(1).optional(),
@@ -37,6 +37,8 @@ const configSchema = z.object({
   snsApiKey: z.string().trim().min(1).optional(),
   snsApiSecret: z.string().trim().min(1).optional(),
   snsAccessTokenSecret: z.string().trim().min(1).optional(),
+  elythApiKey: z.string().trim().min(1).optional(),
+  elythApiBase: z.string().trim().min(1).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
   maxSteps: z.coerce.number().int().positive().default(10),
@@ -59,8 +61,6 @@ export interface ApiCredentials {
   apiKey: string;
 }
 
-export type SnsProviderType = 'mastodon' | 'x';
-
 export type SnsCredentials =
   | { provider: 'mastodon'; instanceUrl: string; accessToken: string }
   | {
@@ -72,7 +72,10 @@ export type SnsCredentials =
       apiKey?: string | undefined;
       apiSecret?: string | undefined;
       accessTokenSecret?: string | undefined;
-    };
+    }
+  | { provider: 'elyth'; apiKey: string; apiBase: string };
+
+export type SnsProviderType = SnsCredentials['provider'];
 
 export interface Config {
   discordApplicationId: string;
@@ -140,6 +143,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     snsApiKey: normalizeOptionalString(env.SNS_API_KEY),
     snsApiSecret: normalizeOptionalString(env.SNS_API_SECRET),
     snsAccessTokenSecret: normalizeOptionalString(env.SNS_ACCESS_TOKEN_SECRET),
+    elythApiKey: normalizeOptionalString(env.ELYTH_API_KEY),
+    elythApiBase: normalizeOptionalString(env.ELYTH_API_BASE),
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
     maxSteps: env.MAX_STEPS ?? env.AGENT_MAX_STEPS,
@@ -171,6 +176,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const snsApiKey = normalizeOptionalString(parsed.snsApiKey);
     const snsApiSecret = normalizeOptionalString(parsed.snsApiSecret);
     const snsAccessTokenSecret = normalizeOptionalString(parsed.snsAccessTokenSecret);
+    const elythApiKey = normalizeOptionalString(parsed.elythApiKey);
+    const elythApiBaseRaw = normalizeOptionalString(parsed.elythApiBase);
 
     const llmModelSelector = parseModelSelector(parsed.llmModel);
     const postResponseLlmModel = normalizeOptionalString(parsed.postResponseLlmModel);
@@ -209,42 +216,67 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
     let sns: SnsCredentials | undefined;
     if (parsed.snsProvider != null) {
-      if (snsAccessToken == null) {
-        throw new Error('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER is configured.');
-      }
-
-      if (parsed.snsProvider === 'mastodon') {
-        const snsInstanceUrl = normalizeBaseUrl(parsed.snsInstanceUrl, 'SNS_INSTANCE_URL');
-        if (snsInstanceUrl == null) {
-          throw new Error('Partial SNS configuration: SNS_INSTANCE_URL must be set when SNS_PROVIDER=mastodon.');
+      switch (parsed.snsProvider) {
+        case 'mastodon': {
+          if (snsAccessToken == null) {
+            throw new Error('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER=mastodon.');
+          }
+          const snsInstanceUrl = normalizeBaseUrl(parsed.snsInstanceUrl, 'SNS_INSTANCE_URL');
+          if (snsInstanceUrl == null) {
+            throw new Error('Partial SNS configuration: SNS_INSTANCE_URL must be set when SNS_PROVIDER=mastodon.');
+          }
+          sns = {
+            provider: 'mastodon',
+            instanceUrl: snsInstanceUrl,
+            accessToken: snsAccessToken,
+          };
+          break;
         }
-        sns = {
-          provider: 'mastodon',
-          instanceUrl: snsInstanceUrl,
-          accessToken: snsAccessToken,
-        };
-      } else {
-        const oauth1Fields = [snsApiKey, snsApiSecret, snsAccessTokenSecret];
-        const oauth1SetCount = oauth1Fields.filter((v) => v != null).length;
-        if (oauth1SetCount > 0 && oauth1SetCount < 3) {
-          logger.warn(
-            'Partial X OAuth 1.0a configuration: all of SNS_API_KEY, SNS_API_SECRET, and SNS_ACCESS_TOKEN_SECRET must be set together. '
-            + 'Falling back to bearer token mode.',
-          );
+        case 'x': {
+          if (snsAccessToken == null) {
+            throw new Error('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER=x.');
+          }
+          const oauth1Fields = [snsApiKey, snsApiSecret, snsAccessTokenSecret];
+          const oauth1SetCount = oauth1Fields.filter((v) => v != null).length;
+          if (oauth1SetCount > 0 && oauth1SetCount < 3) {
+            logger.warn(
+              'Partial X OAuth 1.0a configuration: all of SNS_API_KEY, SNS_API_SECRET, and SNS_ACCESS_TOKEN_SECRET must be set together. '
+              + 'Falling back to bearer token mode.',
+            );
+          }
+          if (snsClientId != null && snsRefreshToken == null) {
+            logger.warn('SNS_CLIENT_ID is set but SNS_REFRESH_TOKEN is missing; OAuth2 token refresh will not work.');
+          }
+          sns = {
+            provider: 'x',
+            accessToken: snsAccessToken,
+            ...(snsClientId != null ? { clientId: snsClientId } : {}),
+            ...(snsClientSecret != null ? { clientSecret: snsClientSecret } : {}),
+            ...(snsRefreshToken != null ? { refreshToken: snsRefreshToken } : {}),
+            ...(snsApiKey != null ? { apiKey: snsApiKey } : {}),
+            ...(snsApiSecret != null ? { apiSecret: snsApiSecret } : {}),
+            ...(snsAccessTokenSecret != null ? { accessTokenSecret: snsAccessTokenSecret } : {}),
+          };
+          break;
         }
-        if (snsClientId != null && snsRefreshToken == null) {
-          logger.warn('SNS_CLIENT_ID is set but SNS_REFRESH_TOKEN is missing; OAuth2 token refresh will not work.');
+        case 'elyth': {
+          const elythApiBase = normalizeBaseUrl(elythApiBaseRaw, 'ELYTH_API_BASE');
+          if (elythApiKey == null || elythApiBase == null) {
+            throw new Error(
+              'Partial SNS configuration: ELYTH_API_KEY/ELYTH_API_BASE must be set when SNS_PROVIDER=elyth.',
+            );
+          }
+          sns = {
+            provider: 'elyth',
+            apiKey: elythApiKey,
+            apiBase: elythApiBase,
+          };
+          break;
         }
-        sns = {
-          provider: 'x',
-          accessToken: snsAccessToken,
-          ...(snsClientId != null ? { clientId: snsClientId } : {}),
-          ...(snsClientSecret != null ? { clientSecret: snsClientSecret } : {}),
-          ...(snsRefreshToken != null ? { refreshToken: snsRefreshToken } : {}),
-          ...(snsApiKey != null ? { apiKey: snsApiKey } : {}),
-          ...(snsApiSecret != null ? { apiSecret: snsApiSecret } : {}),
-          ...(snsAccessTokenSecret != null ? { accessTokenSecret: snsAccessTokenSecret } : {}),
-        };
+        default: {
+          const _exhaustive: never = parsed.snsProvider;
+          throw new Error(`Unknown SNS provider: ${String(_exhaustive)}`);
+        }
       }
     }
     const config = {
