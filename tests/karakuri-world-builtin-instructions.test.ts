@@ -23,6 +23,7 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('`karakuri_world_get_status`');
     expect(instructions).toContain('`karakuri_world_get_nearby_agents`');
     expect(instructions).toContain('`karakuri_world_get_active_conversations`');
+    expect(instructions).toContain('`karakuri_world_get_event`');
     expect(instructions).toContain('`karakuri_world_move`');
     expect(instructions).toContain('`karakuri_world_conversation_join`');
     expect(instructions).toContain('`karakuri_world_conversation_stay`');

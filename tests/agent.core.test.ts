@@ -462,6 +462,7 @@ const EXPECTED_KW_TOOL_NAMES = [
   'karakuri_world_get_status',
   'karakuri_world_get_nearby_agents',
   'karakuri_world_get_active_conversations',
+  'karakuri_world_get_event',
   'karakuri_world_move',
   'karakuri_world_action',
   'karakuri_world_use_item',
@@ -477,7 +478,6 @@ const EXPECTED_KW_TOOL_NAMES = [
   'karakuri_world_conversation_leave',
   'karakuri_world_conversation_speak',
   'karakuri_world_end_conversation',
-  'karakuri_world_server_event_select',
 ] as const;
 
 const FAKE_NOW = new Date('2026-03-27T06:30:00Z');
