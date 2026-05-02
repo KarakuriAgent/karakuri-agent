@@ -1,3 +1,4 @@
+export type { SnsCredentials, SnsProviderType } from '../config.js';
 export type SnsVisibility = 'public' | 'unlisted' | 'private' | 'direct';
 export type SnsActivityType = SnsActivity['type'];
 

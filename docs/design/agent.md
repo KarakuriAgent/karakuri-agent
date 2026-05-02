@@ -20,7 +20,11 @@ interface HandleMessageOptions {
   userId?: string;
   ephemeral?: boolean;
   skillActivityInstructions?: string | undefined;
-  autoLoadSnsSkill?: boolean | undefined;
+  /**
+   * provider 名を渡すと該当 SNS skill を auto-load する。
+   * `true` は legacy 互換で `'mastodon'` 相当（または `config.sns` legacy fixture では builtin 'sns' skill）にマップする。
+   */
+  autoLoadSnsSkill?: SnsProviderType | boolean | undefined;
 }
 
 interface IAgent {
@@ -70,9 +74,10 @@ interface IAgent {
    ├── RULES.md（あれば trusted に追加）
    ├── <memory> ... </memory>          memory.md の内容（常時注入）
    ├── <user-profile> ... </user-profile>
-   │    ├── Display name: ensureUser/getUser で得た保存済み表示名
-   │    ├── User ID: Discord user ID
-   │    └── Profile: 保存済みプロフィール
+   │    ├── Display name: ensureUser/getUser で得た保存済み表示名（alias の場合 alias 自身の displayName）
+   │    ├── User ID: Discord user ID（alias の場合は alias 自身の ID）
+   │    ├── Alias of User ID: primary user ID（alias の場合のみ）
+   │    └── Profile: primary に紐付く保存済みプロフィール（alias の場合は primary 側の profile を表示）
     ├── <diary> ... </diary>            直近3日分の diary（自動注入）
     ├── <skill-context> ... </skill-context>
     │    └── SNS 専用ループの自動ロード時に、動的コンテキスト + スキル指示を事前注入
@@ -122,6 +127,21 @@ interface IAgent {
 - 保存済みプロフィールから他ユーザー情報を検索する
 - 空クエリ時は `updated_at DESC` で最近アクティブだった既知ユーザーを返す
 
+### `linkUser` / `unlinkUser` (`src/agent/tools/user-alias.ts`)
+
+| パラメータ | 型 | 説明 |
+| --- | --- | --- |
+| `alias_user_id` | `string` | alias 側の user ID |
+| `primary_user_id` | `string` | primary 側の user ID（`linkUser` のみ） |
+| `note` | `string?` | 任意メモ（最大 500 文字、`linkUser` のみ） |
+
+- 同一人物の複数アカウントを admin が手動で紐付ける／解除する。alias → primary の片方向リンク
+- admin (`ADMIN_USER_IDS`) かつ KW モードでないときのみ公開（KW モードでは非公開）
+- primary の選び方: Discord ID (`discord:` prefix) を優先。Discord アカウントが片方にしかない場合は最も継続的に観測されているアカウント（KW モードなら KW 側、SNS のみなら最初に観測した SNS account）を primary にする
+- `linkUser` は次のいずれかの場合に拒否する: `self_link` / `not_found`（双方が `users` テーブルに存在しない） / `already_linked` / `chain_detected`（primary が他レコードの alias） / `cannot_demote_primary`（alias 側がすでに primary として使われている）
+- `unlinkUser` は対象 alias が登録されていないと `not_linked` エラーを返す
+- 修正・primary 入れ替えは `unlinkUser` → `linkUser` の 2 ステップで対応する（force / 上書き API は提供しない）
+
 ### `recallDiary` (`src/agent/tools/recall-diary.ts`)
 
 | パラメータ | 型       | 説明                               |
@@ -163,25 +183,25 @@ interface IAgent {
 - `allowedTools` を持つ skill では、本文返却と同時に対応する skill-gated tool を現在ターンの `tools` オブジェクトへ動的登録する
 - 本文の全文は必要になったときだけロードさせ、システムプロンプトには skill 一覧のみ注入する
 
-### `sns_*` skill-gated tools (`src/agent/tools/sns.ts`, `src/sns/*`)
+### `sns_<provider>_<action>` skill-gated tools (`src/agent/tools/sns.ts`, `src/sns/*`)
 
-- `SNS_PROVIDER` に応じた必須 SNS 設定（Mastodon: `SNS_INSTANCE_URL` + `SNS_ACCESS_TOKEN`, X: `SNS_ACCESS_TOKEN`）がそろうと、system ユーザー向けにビルトイン SNS skill が利用可能になる
-- cron では `loadSkill("sns")` したターンで `sns_*` ツールが公開される。SNS 専用ループでは `autoLoadSnsSkill: true` と `skillActivityInstructions` を渡したときだけ自動ロードされ、`<skill-context>` と `sns_*` ツールが事前注入される
+- `config.snsList` に含まれる provider ごとに system ユーザー向けビルトイン SNS skill が利用可能になる。設定は provider-specific で、Mastodon は `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`、ELYTH は `ELYTH_API_KEY` + `ELYTH_API_BASE` が必須
+- cron では `loadSkill("sns-mastodon")` / `loadSkill("sns-x")` / `loadSkill("sns-elyth")` したターンで、対応する `sns_<provider>_<action>` ツールが公開される。SNS 専用ループでは `autoLoadSnsSkill: true` と `skillActivityInstructions` を provider ごとに渡したときだけ自動ロードされ、`<skill-context>` と `sns_<provider>_*` ツールが事前注入される
 - SNS ループの活動指示にある `postMessage` レポート要求は、実際に `postMessage` ツールが公開され、かつ `REPORT_CHANNEL_ID` がその送信許可先にも含まれる構成のときだけ含める
-- `data/system-skills/sns/SKILL.md` は存在しなくてもビルトイン定義で動作する。legacy な同名ファイルが残っていてもすべての system ユーザー文脈ではビルトイン側を優先し、対話ユーザーに公開したい場合は運用側で `data/skills/*` に shared skill を追加する
-- provider は Mastodon / X をサポート
-- 公開ツール:
-  - `sns_post`
-  - `sns_get_post`
-  - `sns_like`
-  - `sns_repost`
-  - `sns_upload_media`
-  - `sns_get_thread`
-- `loadSkill("sns")` 時に、新着通知・トレンド・直近行動ログを動的コンテキストとして注入する
-- `sns_post` の投稿本文は 140 文字以内に制限される（Zod スキーマの `.max(140)` + ツール description + ビルトインスキル instructions の 3 層で制御）。プラットフォームごとの上限ではなく、エージェントの投稿スタイルとして全 SNS プロバイダ共通で適用する設計判断
-- `sns_post` / `sns_like` / `sns_repost` は SQLite の SNS activity store を参照し、重複返信・引用・いいね・リポストを API 呼び出し前に抑止する
-- `sns_post` / `sns_like` / `sns_repost` は即時 API 実行のみをサポートする。X では `sns_post` の visibility は `public` のみ許可する
-- `sns_upload_media` は remote URL を直接渡してアップロードできるが、`webFetch` と同じ SSRF 対策を共有し、`http` / `https` 以外のスキーム、private / loopback / link-local 宛て、およびそれらへ到達する redirect を拒否する
+- `data/system-skills/sns-*/SKILL.md` は存在しなくてもビルトイン定義で動作する。同名の system skill が残っていても system ユーザー文脈ではビルトイン側を優先し、対話ユーザーに公開したい場合は運用側で `data/skills/*` に shared skill を追加する
+- provider は Mastodon / X / ELYTH をサポート
+- 公開ツール（`<provider>` は `mastodon` / `x` / `elyth`）:
+  - `sns_<provider>_post`
+  - `sns_<provider>_get_post`
+  - `sns_<provider>_like`
+  - `sns_<provider>_repost`
+  - `sns_mastodon_upload_media` / `sns_x_upload_media`（ELYTH は非対応）
+  - `sns_<provider>_get_thread`
+- provider 別 SNS skill のロード時に、新着通知・トレンド・直近行動ログを動的コンテキストとして注入する
+- `sns_<provider>_post` の投稿本文は 140 文字以内に制限される（Zod スキーマの `.max(140)` + ツール description + ビルトインスキル instructions の 3 層で制御）。プラットフォームごとの上限ではなく、エージェントの投稿スタイルとして全 SNS プロバイダ共通で適用する設計判断
+- `sns_<provider>_post` / `sns_<provider>_like` / `sns_<provider>_repost` は provider 別 SQLite SNS activity store（`DATA_DIR/sns-activity-{provider}.db`）を参照し、重複返信・引用・いいね・リポストを API 呼び出し前に抑止する。旧 `DATA_DIR/sns-activity.db` は `SNS_LEGACY_DB_MIGRATE_TO` で明示移行する
+- `sns_<provider>_post` / `sns_<provider>_like` / `sns_<provider>_repost` は即時 API 実行のみをサポートする。X / ELYTH では post の visibility は `public` のみ許可する。ELYTH は quote posts と media uploads も非対応
+- `sns_mastodon_upload_media` / `sns_x_upload_media` は remote URL を直接渡してアップロードできるが、`webFetch` と同じ SSRF 対策を共有し、`http` / `https` 以外のスキーム、private / loopback / link-local 宛て、およびそれらへ到達する redirect を拒否する
 - remote media はサイズ上限付きで読み込む。Mastodon が `202 Accepted` を返した場合は `GET /api/v1/media/:id` を短時間ポーリングし、X では chunked upload の `getUploadStatus()` をポーリングして ready を待つ。所定回数で ready にならなければエラーにする
 
 ## 要約処理 (`Agent.summarizeSession`)
@@ -206,8 +226,9 @@ interface IAgent {
 <user-profile>
 Display name: {保存済み表示名 or 現在の userName}
 User ID: {Discord user ID}
+Alias of User ID: {primary user ID}  # alias の場合のみ
 Profile:
-{現在ユーザーの保存済みプロフィール}
+{primary に紐付く保存済みプロフィール}
 </user-profile>
 
 <diary>
@@ -216,8 +237,8 @@ Profile:
 
 [auto-loaded skill contexts がある場合]
 <skill-context>
-### sns
-{動的コンテキスト + スキル指示}
+### sns-<provider>
+{provider 別の動的コンテキスト + スキル指示}
 </skill-context>
 
 [session.summary がある場合]
@@ -265,7 +286,7 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 | 要約トリガーの連携 | additionalTokens を含むトークン数で予算超過時に summarizeSession が呼ばれる |
 | 要約トリガーなし | 予算以内の場合に summarizeSession が呼ばれない |
 | システムプロンプト構築 | memory / user-profile / diary / summary がタグ付きで正しく組み立てられる |
-| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill / karakuri-world KW mode / sns skill-gated tools が想定どおり呼ばれる |
+| ツール実行 | recallDiary / userLookup / webFetch / webSearch / loadSkill / karakuri-world KW mode / provider-namespaced SNS skill-gated tools が想定どおり呼ばれる |
 | lifecycle callback 配線 | AgentLifecycleCallbacks が generateText の step/tool callback へ同期で橋渡しされる |
 | 応答メッセージ保存 | result.response.messages が sessionManager.addMessages で保存される |
 | post-response evaluation | reply を先に返しつつ evaluator がバックグラウンドで動き、drainPendingEvaluations で待機できる |
@@ -275,5 +296,5 @@ Agent 層は LLM 呼び出しを含むため、`sessionManager` / `memoryStore` 
 - memory / user-profile / diary / summary はすべてタグで囲い、instruction と分離
 - 応答後の永続化判断はポストレスポンス評価 LLM に集約する
 - `webFetch` は DNS 解決と各 redirect hop を検査し、危険なスキームや private / loopback / link-local への SSRF を拒否する。15 秒タイムアウトは DNS 解決も含めて適用する
-- `sns_upload_media` も同じ safe-fetch 実装を共有し、危険なスキームや private 宛て redirect を拒否する。タイムアウトは DNS 解決も含めて適用する
+- `sns_mastodon_upload_media` / `sns_x_upload_media` も同じ safe-fetch 実装を共有し、危険なスキームや private 宛て redirect を拒否する。タイムアウトは DNS 解決も含めて適用する
 - ツールのステップ数上限（`stopWhen: stepCountIs(n)`）を設定して無限ループを防ぐ

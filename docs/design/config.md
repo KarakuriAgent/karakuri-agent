@@ -23,15 +23,18 @@
 | `BRAVE_API_KEY` |  | - | Brave Search API キー（設定時のみ `webSearch` を有効化） |
 | `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（`KARAKURI_WORLD_API_KEY` と両方あるときのみ、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーへ KW モードを有効化） |
 | `KARAKURI_WORLD_API_KEY` |  | - | karakuri-world API の Bearer token |
-| `SNS_PROVIDER` |  | - | SNS provider 種別。`mastodon` / `x` |
-| `SNS_INSTANCE_URL` |  | - | Mastodon instance の Base URL（`SNS_PROVIDER=mastodon` のとき必須。標準添付 skill は system 専用） |
-| `SNS_ACCESS_TOKEN` |  | - | SNS API 用の access token（X では必須、Mastodon でも使用） |
-| `SNS_CLIENT_ID` |  | - | X OAuth 2.0 client id |
-| `SNS_CLIENT_SECRET` |  | - | X OAuth 2.0 client secret（任意） |
-| `SNS_REFRESH_TOKEN` |  | - | X OAuth 2.0 refresh token（任意、rotation 後は `DATA_DIR/sns-token-state.json` に永続化） |
-| `SNS_API_KEY` |  | - | X OAuth 1.0a / consumer key（任意） |
-| `SNS_API_SECRET` |  | - | X OAuth 1.0a / consumer secret（任意） |
-| `SNS_ACCESS_TOKEN_SECRET` |  | - | X OAuth 1.0a access token secret（任意） |
+| `MASTODON_INSTANCE_URL` |  | - | Mastodon instance の Base URL（`MASTODON_ACCESS_TOKEN` と両方あるとき provider 有効化） |
+| `MASTODON_ACCESS_TOKEN` |  | - | Mastodon API 用 access token |
+| `X_ACCESS_TOKEN` |  | - | X API 用 access token（いずれかの `X_*` を設定する場合は必須） |
+| `X_CLIENT_ID` |  | - | X OAuth 2.0 client id |
+| `X_CLIENT_SECRET` |  | - | X OAuth 2.0 client secret（任意） |
+| `X_REFRESH_TOKEN` |  | - | X OAuth 2.0 refresh token（任意、rotation 後は `DATA_DIR/sns-token-state.json` に永続化） |
+| `X_API_KEY` |  | - | X OAuth 1.0a / consumer key（任意） |
+| `X_API_SECRET` |  | - | X OAuth 1.0a / consumer secret（任意） |
+| `X_ACCESS_TOKEN_SECRET` |  | - | X OAuth 1.0a access token secret（任意） |
+| `ELYTH_API_KEY` |  | - | ELYTH API key（`ELYTH_API_BASE` と両方あるとき provider 有効化） |
+| `ELYTH_API_BASE` |  | - | ELYTH API Base URL（例: `https://elythworld.com`。key 未設定時の partial config を避けるため雛形では空） |
+| `SNS_LEGACY_DB_MIGRATE_TO` |  | - | 旧 `DATA_DIR/sns-activity.db` の移行先。`mastodon` / `x` / `elyth` / `skip` |
 | `DATA_DIR` |  | `./data` | memory / session / user / bot state ファイルの保存ディレクトリ |
 | `TIMEZONE` |  | `Asia/Tokyo` | diary 日付の基準タイムゾーン |
 | `MAX_STEPS` |  | `10` | ツールループの最大ステップ数 |
@@ -80,7 +83,7 @@
 ## 設定オブジェクト
 
 ```typescript
-type SnsProviderType = 'mastodon' | 'x';
+type SnsProviderType = 'mastodon' | 'x' | 'elyth';
 
 type SnsCredentials =
   | { provider: 'mastodon'; instanceUrl: string; accessToken: string }
@@ -93,7 +96,8 @@ type SnsCredentials =
       apiKey?: string | undefined;
       apiSecret?: string | undefined;
       accessTokenSecret?: string | undefined;
-    };
+    }
+  | { provider: 'elyth'; apiKey: string; apiBase: string };
 
 interface Config {
   discordApplicationId: string;
@@ -122,7 +126,10 @@ interface Config {
     apiBaseUrl: string;
     apiKey: string;
   } | undefined;
+  snsList?: SnsCredentials[] | undefined;
+  /** @deprecated Use snsList. Kept only for legacy test fixtures; loadConfig no longer sets it. */
   sns?: SnsCredentials | undefined;
+  snsLegacyDbMigrateTo?: SnsProviderType | 'skip' | undefined;
   dataDir: string;
   timezone: string;
   maxSteps: number;
@@ -148,7 +155,7 @@ interface Config {
 `karakuriWorld` は `KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` が両方そろったときだけ含まれる。
 `memoryMaintenanceIntervalMinutes` は `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を空文字列なら `undefined` に正規化したうえで保持する。
 `memoryMaintenanceRecentDiaryDays` は `MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` を空文字列なら `undefined` に正規化したうえで保持し、未設定時は runner 側の既定値 30 日を使う。
-`sns` は `SNS_PROVIDER` 設定時のみ検討される。`mastodon` では `SNS_INSTANCE_URL` + `SNS_ACCESS_TOKEN`、`x` では `SNS_ACCESS_TOKEN` が必須で、その他の X 認証情報は任意で含まれる。既存の Mastodon 環境も `SNS_PROVIDER=mastodon` を追加しない限り SNS は無効として扱われる。
+`snsList` は provider ごとの必須設定がそろった SNS credentials をすべて保持する。Mastodon は `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`（その他の X OAuth 情報は任意）、ELYTH は `ELYTH_API_KEY` + `ELYTH_API_BASE` が必要。いずれか片方だけの partial provider config は fail-fast で拒否する。旧 `sns` は legacy test fixture 用の deprecated property で、`loadConfig()` は設定しない。旧 `SNS_PROVIDER` / `SNS_*` credentials は読み込まれず、旧 `DATA_DIR/sns-activity.db` の扱いだけ `SNS_LEGACY_DB_MIGRATE_TO` に保持する。
 `llmEnableThinking` は `LLM_ENABLE_THINKING` を boolean に正規化した値で、`false` のときは通常応答・要約・post-response evaluator が no-thinking 設定を使う。memory maintenance は別途常時 no-thinking で実行される。
 
 ## `loadConfig()` の動作
@@ -164,7 +171,8 @@ function loadConfig(): Config {
   // SNS_LOOP_MIN_INTERVAL_MINUTES <= SNS_LOOP_MAX_INTERVAL_MINUTES を検証する
   // MEMORY_MAINTENANCE_INTERVAL_MINUTES は空文字列を undefined に正規化して optional number として扱う
   // MEMORY_MAINTENANCE_RECENT_DIARY_DAYS は空文字列を undefined に正規化して optional number として扱う
-  // SNS_* は SNS_PROVIDER がある場合だけ provider ごとの必須項目を検証する
+  // MASTODON_* / X_* / ELYTH_* は provider ごとの部分設定を検出して検証し、完全な provider を snsList に追加する
+  // SNS_LEGACY_DB_MIGRATE_TO は mastodon/x/elyth/skip のみ受け付ける
   // LLM_ENABLE_THINKING は true/false/1/0/yes/no を受け付け、通常応答・要約・post-response evaluator に反映する
 }
 ```
@@ -173,7 +181,7 @@ function loadConfig(): Config {
 
 - `.env` は `.gitignore` に含め、リポジトリにコミットしない
 - `DISCORD_BOT_TOKEN` / `LLM_API_KEY` などのシークレットをログに出力しない
-- `SNS_INSTANCE_URL` は `SNS_PROVIDER=mastodon` のときだけ `LLM_BASE_URL` と同様に `http` / `https` のみ許可し、credentials / query / fragment を含む URL を拒否する
+- `MASTODON_INSTANCE_URL` / `ELYTH_API_BASE` は `LLM_BASE_URL` と同様に `http` / `https` のみ許可し、credentials / query / fragment を含む URL を拒否する
 
 ## 互換用エイリアス
 

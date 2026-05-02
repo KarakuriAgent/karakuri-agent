@@ -4,7 +4,7 @@
 
 ## プロジェクト概要
 
-Discord を主導線にした TypeScript 製の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換 LLM で応答を生成し、ファイルベースのコアメモリ / セッション管理、SQLite による日記・ユーザー・SNS 活動の永続化、Heartbeat / Cron / メモリメンテナンスによる system turn 実行、Mastodon / X 連携、Karakuri World 専用モードを備える。
+Discord を主導線にした TypeScript 製の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換 LLM で応答を生成し、ファイルベースのコアメモリ / セッション管理、SQLite による日記・ユーザー・SNS 活動の永続化、Heartbeat / Cron / メモリメンテナンスによる system turn 実行、Mastodon / X / ELYTH 連携、Karakuri World 専用モードを備える。
 
 ## コマンド
 
@@ -54,12 +54,12 @@ src/bot.ts                    — Chat SDK + Discord adapter 統合、Webhook/Ga
 src/agent/core.ts             — generateText による応答生成、セッション要約判定、ツール構築、system/user turn 制御
 src/agent/prompt.ts           — システムプロンプト構築、AGENT.md / RULES.md 読み込み
 src/agent/prompt-context.ts   — trusted / untrusted 文脈の分離などプロンプト用コンテキスト構築
-src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_*, karakuri_world_*）
+src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_<provider>_*, karakuri_world_*）
 src/session/                  — JSON ファイルベースのセッション保存。ハッシュ化ファイル名 + メモリキャッシュを使用
 src/memory/                   — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore + maintenance runner
 src/skill/                    — `data/skills/` と `data/system-skills/` を監視する frontmatter 付き SKILL.md ストア
 src/scheduler/                — HEARTBEAT.md 読み込み、CRON.md frontmatter 解釈、Heartbeat/Cron 実行、scheduler store
-src/sns/                      — Mastodon / X provider、活動ログの SQLite ストア、SNS skill dynamic context、SNS 専用ループ
+src/sns/                      — Mastodon / X / ELYTH provider、provider 別 SQLite 活動ログ、SNS skill dynamic context、provider 別 SNS 専用ループ、レガシー DB 移行
 src/user/                     — SqliteUserStore と PostResponseEvaluator によるユーザープロファイル永続化・更新
 src/state/                    — Chat SDK の state adapter を `data/state/chat-state.json` に永続化
 src/status-reaction.ts        — Discord 上の進行状態リアクション制御
@@ -76,7 +76,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **Markdown + frontmatter の使い分け**:
   - `AGENT.md` / `RULES.md` / `HEARTBEAT.md` は生の Markdown / text をそのまま読む。
   - `SKILL.md` と `CRON.md` は frontmatter 必須。
-- **Skill-gated ツール**: 一部ツールはスキル経由でのみ解放される。SNS 系ツールは `loadSkill("sns")`、または runtime が auto-load したスキルを通じて公開される。
+- **Skill-gated ツール**: 一部ツールはスキル経由でのみ解放される。SNS 系ツールは provider 別 skill（`sns-mastodon` / `sns-x` / `sns-elyth`）を `loadSkill` するか、runtime が provider ごとに auto-load したスキルを通じて公開される。
 - **Admin-gated ツール**: `postMessage` と `manageCron` は管理者権限が必要。特に `manageCron` は scheduler store が存在しても admin 以外には公開されない。
 - **トークンバジェット管理**: セッションはトークン見積りで管理し、しきい値超過時は `KarakuriAgent` が要約して最近の turn を保持する。
 - **System turn の直列化**: heartbeat・cron・memory maintenance はグローバル mutex で system turn を直列実行し、共有セッションの破損や競合を防ぐ。
@@ -84,7 +84,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **スレッド単位排他**: Discord 側のユーザー会話処理は thread ごとに mutex で直列化する。
 - **ファイルベース state**: Chat SDK の subscription / cache / lock 状態は `data/state/chat-state.json` に保存される。
 - **SNS の重複防止と専用ループ**: SNS 活動は SQLite に記録し、like / repost / reply / quote の重複防止を行う。SNS 自動実行は heartbeat から分離した専用ループで行う。
-- **SNS 投稿の 140 文字制限**: `sns_post` の投稿本文は全プロバイダ共通で 140 文字以内に制限される（Zod スキーマ + ツール description + ビルトインスキル instructions の 3 層制御）。プラットフォーム固有の上限ではなく、エージェントの投稿スタイルとしての設計判断。
+- **SNS 投稿の 140 文字制限**: `sns_<provider>_post` の投稿本文は全プロバイダ共通で 140 文字以内に制限される（Zod スキーマ + ツール description + ビルトインスキル instructions の 3 層制御）。プラットフォーム固有の上限ではなく、エージェントの投稿スタイルとしての設計判断。
 - **Karakuri World 専用モード**: `KARAKURI_WORLD_BOT_IDS` に一致する相手では専用ツールセットのみを公開する。
 
 ### Scheduler / proactive messaging の注意点
@@ -116,12 +116,25 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - `data/state/chat-state.json` — Chat SDK の永続 state
 - `data/diary.db` — 日記ストア
 - `data/users.db` — ユーザープロファイルストア
-- `data/sns-activity.db` — SNS 活動履歴 / 通知予約ストア
+- `data/sns-activity-{provider}.db` — provider 別 SNS 活動履歴 / 通知予約ストア（旧 `data/sns-activity.db` は `SNS_LEGACY_DB_MIGRATE_TO` で明示移行）
 
 ## セキュリティ
 
 - `utils/safe-fetch.ts` は SSRF 対策の中核で、private / loopback / link-local 宛ての拒否、DNS pinning、redirect ごとの再検証を行う。
-- `webFetch` と `sns_upload_media` は同じ safe-fetch 系の URL 検証基盤を利用する。
+- `webFetch` と `sns_mastodon_upload_media` / `sns_x_upload_media` は同じ safe-fetch 系の URL 検証基盤を利用する。
 - `webFetch` は http/https のみを受け付け、レスポンスサイズ上限と HTML/XHTML の抽出処理を持つ。
 - プロンプトでは `<memory>`、`<user-profile>`、`<diary>`、`<skill-dynamic-context>`、`<summary>` と、`recallDiary` / `userLookup` / `webFetch` / `webSearch` / skill-gated tool の結果を untrusted content として扱う。
 - trusted instruction と untrusted context は XML ライクなタグで分離され、下位コンテキストによる上書きを避ける前提で設計されている。
+
+## ユーザー記憶 / alias 運用
+
+- 同一人物の複数アカウントは `linkUser` / `unlinkUser` で admin が手動管理する（KW モードでは非公開）。
+- primary は `discord:` ID を優先。Discord が無い場合は継続的に観測されるアカウント（KW 側、または最初に観測した SNS account）を primary にする。
+- alias からの profile 更新は primary に集約される。alias 側の row / display_name は履歴として残す。
+- `userLookup` は primary の `aliases` と alias 側の `alias_of` を表示する。
+
+## Multi SNS provider
+
+- SNS skill は `sns-mastodon` / `sns-x` / `sns-elyth`、tool は `sns_<provider>_<action>` 形式（例: `sns_mastodon_post`, `sns_x_like`）。
+- 複数 provider は同時有効化され、SNS loop は provider ごとに独立して走る。`SNS_LOOP_MIN/MAX_INTERVAL_MINUTES` は共通設定。
+- 旧 `SNS_PROVIDER` / `SNS_*` env は使わない。旧 `data/sns-activity.db` は `SNS_LEGACY_DB_MIGRATE_TO` で明示移行する。

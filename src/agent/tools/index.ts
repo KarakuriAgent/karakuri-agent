@@ -15,6 +15,7 @@ import { createLoadSkillTool } from './load-skill.js';
 import { createManageCronTool } from './manage-cron.js';
 import { createPostMessageTool } from './post-message.js';
 import { createRecallDiaryTool } from './recall-diary.js';
+import { createLinkUserTool, createUnlinkUserTool } from './user-alias.js';
 import { createUserLookupTool } from './user-lookup.js';
 import { createWebFetchTool } from './web-fetch.js';
 import { createWebSearchTool } from './web-search.js';
@@ -25,8 +26,10 @@ export interface CreateAgentToolsOptions {
   memoryStore: IMemoryStore;
   dataDir?: string | undefined;
   braveApiKey?: string | undefined;
+  snsList?: SnsCredentials[] | undefined;
+  /** @deprecated Use snsList. */
   sns?: SnsCredentials | undefined;
-  snsActivityStore?: ISnsActivityStore | undefined;
+  snsActivityStores?: Map<SnsCredentials['provider'], ISnsActivityStore> | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   autoLoadedSkills?: SkillDefinition[] | undefined;
@@ -40,6 +43,7 @@ export interface CreateAgentToolsOptions {
   userStore?: IUserStore | undefined;
   includeSystemOnly?: boolean | undefined;
   contextScope?: SkillContextScope | undefined;
+  kwMode?: boolean | undefined;
   evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
 }
 
@@ -47,8 +51,9 @@ export function createAgentTools({
   memoryStore,
   dataDir,
   braveApiKey,
+  snsList,
   sns,
-  snsActivityStore,
+  snsActivityStores,
   skillStore,
   skills = [],
   autoLoadedSkills = [],
@@ -62,12 +67,15 @@ export function createAgentTools({
   userStore,
   includeSystemOnly,
   contextScope,
+  kwMode = false,
   evaluateUser,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
     && hasAdminAccess;
   const manageCronEnabled = hasAdminAccess && schedulerStore != null;
+  const shouldExposeUserAlias = hasAdminAccess && !kwMode && userStore != null;
+  const evaluatedUsers = new Set<string>();
 
   const tools: ToolSet = {
     recallDiary: createRecallDiaryTool({ memoryStore }),
@@ -103,6 +111,12 @@ export function createAgentTools({
           }),
         }
       : {}),
+    ...(shouldExposeUserAlias
+      ? {
+          linkUser: createLinkUserTool({ userStore: userStore!, adminUserIds, userId }),
+          unlinkUser: createUnlinkUserTool({ userStore: userStore!, adminUserIds, userId }),
+        }
+      : {}),
   };
 
   const reportError = messageSink != null && reportChannelId != null
@@ -112,12 +126,14 @@ export function createAgentTools({
     ...skills,
     ...autoLoadedSkills,
   ], {
-    sns,
+    ...(sns != null ? { sns } : {}),
+    snsList,
     dataDir,
-    snsActivityStore,
+    snsActivityStores,
     userStore,
     evaluateUser,
     reportError,
+    evaluatedUsers,
   });
   // Auto-loaded skills have their gated tools registered immediately.
   // loadSkill.execute() also mutates this tools object to dynamically register

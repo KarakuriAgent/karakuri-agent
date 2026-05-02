@@ -20,12 +20,12 @@ const SNS_CREDS = {
 const SNS_OPTIONS = { sns: SNS_CREDS };
 
 const EXPECTED_TOOL_NAMES = [
-  'sns_post',
-  'sns_get_post',
-  'sns_like',
-  'sns_repost',
-  'sns_upload_media',
-  'sns_get_thread',
+  'sns_mastodon_post',
+  'sns_mastodon_get_post',
+  'sns_mastodon_like',
+  'sns_mastodon_repost',
+  'sns_mastodon_upload_media',
+  'sns_mastodon_get_thread',
 ] as const;
 
 function createPublicLookup(): LookupFn {

@@ -28,17 +28,18 @@ const configSchema = z.object({
   braveApiKey: z.string().trim().min(1).optional(),
   karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
-  snsProvider: z.enum(['mastodon', 'x', 'elyth']).optional(),
-  snsInstanceUrl: z.string().trim().min(1).optional(),
-  snsAccessToken: z.string().trim().min(1).optional(),
-  snsClientId: z.string().trim().min(1).optional(),
-  snsClientSecret: z.string().trim().min(1).optional(),
-  snsRefreshToken: z.string().trim().min(1).optional(),
-  snsApiKey: z.string().trim().min(1).optional(),
-  snsApiSecret: z.string().trim().min(1).optional(),
-  snsAccessTokenSecret: z.string().trim().min(1).optional(),
+  mastodonInstanceUrl: z.string().trim().min(1).optional(),
+  mastodonAccessToken: z.string().trim().min(1).optional(),
+  xAccessToken: z.string().trim().min(1).optional(),
+  xClientId: z.string().trim().min(1).optional(),
+  xClientSecret: z.string().trim().min(1).optional(),
+  xRefreshToken: z.string().trim().min(1).optional(),
+  xApiKey: z.string().trim().min(1).optional(),
+  xApiSecret: z.string().trim().min(1).optional(),
+  xAccessTokenSecret: z.string().trim().min(1).optional(),
   elythApiKey: z.string().trim().min(1).optional(),
   elythApiBase: z.string().trim().min(1).optional(),
+  snsLegacyDbMigrateTo: z.enum(['mastodon', 'x', 'elyth', 'skip']).optional(),
   dataDir: z.string().trim().default('./data'),
   timezone: z.string().trim().default('Asia/Tokyo'),
   maxSteps: z.coerce.number().int().positive().default(10),
@@ -91,7 +92,10 @@ export interface Config {
   postResponseLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
   karakuriWorld?: ApiCredentials | undefined;
+  snsList?: SnsCredentials[] | undefined;
+  /** @deprecated Use snsList. Kept only for legacy test fixtures; loadConfig no longer sets it. */
   sns?: SnsCredentials | undefined;
+  snsLegacyDbMigrateTo?: SnsProviderType | 'skip' | undefined;
   dataDir: string;
   timezone: string;
   maxSteps: number;
@@ -134,17 +138,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     braveApiKey: env.BRAVE_API_KEY || undefined,
     karakuriWorldApiBaseUrl: normalizeOptionalString(env.KARAKURI_WORLD_API_BASE_URL),
     karakuriWorldApiKey: normalizeOptionalString(env.KARAKURI_WORLD_API_KEY),
-    snsProvider: normalizeOptionalString(env.SNS_PROVIDER),
-    snsInstanceUrl: normalizeOptionalString(env.SNS_INSTANCE_URL),
-    snsAccessToken: normalizeOptionalString(env.SNS_ACCESS_TOKEN),
-    snsClientId: normalizeOptionalString(env.SNS_CLIENT_ID),
-    snsClientSecret: normalizeOptionalString(env.SNS_CLIENT_SECRET),
-    snsRefreshToken: normalizeOptionalString(env.SNS_REFRESH_TOKEN),
-    snsApiKey: normalizeOptionalString(env.SNS_API_KEY),
-    snsApiSecret: normalizeOptionalString(env.SNS_API_SECRET),
-    snsAccessTokenSecret: normalizeOptionalString(env.SNS_ACCESS_TOKEN_SECRET),
+    mastodonInstanceUrl: normalizeOptionalString(env.MASTODON_INSTANCE_URL),
+    mastodonAccessToken: normalizeOptionalString(env.MASTODON_ACCESS_TOKEN),
+    xAccessToken: normalizeOptionalString(env.X_ACCESS_TOKEN),
+    xClientId: normalizeOptionalString(env.X_CLIENT_ID),
+    xClientSecret: normalizeOptionalString(env.X_CLIENT_SECRET),
+    xRefreshToken: normalizeOptionalString(env.X_REFRESH_TOKEN),
+    xApiKey: normalizeOptionalString(env.X_API_KEY),
+    xApiSecret: normalizeOptionalString(env.X_API_SECRET),
+    xAccessTokenSecret: normalizeOptionalString(env.X_ACCESS_TOKEN_SECRET),
     elythApiKey: normalizeOptionalString(env.ELYTH_API_KEY),
     elythApiBase: normalizeOptionalString(env.ELYTH_API_BASE),
+    snsLegacyDbMigrateTo: normalizeOptionalString(env.SNS_LEGACY_DB_MIGRATE_TO),
     dataDir: env.DATA_DIR,
     timezone: env.TIMEZONE,
     maxSteps: env.MAX_STEPS ?? env.AGENT_MAX_STEPS,
@@ -169,13 +174,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
     const karakuriWorldApiBaseUrl = normalizeBaseUrl(parsed.karakuriWorldApiBaseUrl, 'KARAKURI_WORLD_API_BASE_URL');
     const karakuriWorldApiKey = normalizeOptionalString(parsed.karakuriWorldApiKey);
-    const snsAccessToken = normalizeOptionalString(parsed.snsAccessToken);
-    const snsClientId = normalizeOptionalString(parsed.snsClientId);
-    const snsClientSecret = normalizeOptionalString(parsed.snsClientSecret);
-    const snsRefreshToken = normalizeOptionalString(parsed.snsRefreshToken);
-    const snsApiKey = normalizeOptionalString(parsed.snsApiKey);
-    const snsApiSecret = normalizeOptionalString(parsed.snsApiSecret);
-    const snsAccessTokenSecret = normalizeOptionalString(parsed.snsAccessTokenSecret);
+    const mastodonInstanceUrl = normalizeBaseUrl(parsed.mastodonInstanceUrl, 'MASTODON_INSTANCE_URL');
+    const mastodonAccessToken = normalizeOptionalString(parsed.mastodonAccessToken);
+    const xAccessToken = normalizeOptionalString(parsed.xAccessToken);
+    const xClientId = normalizeOptionalString(parsed.xClientId);
+    const xClientSecret = normalizeOptionalString(parsed.xClientSecret);
+    const xRefreshToken = normalizeOptionalString(parsed.xRefreshToken);
+    const xApiKey = normalizeOptionalString(parsed.xApiKey);
+    const xApiSecret = normalizeOptionalString(parsed.xApiSecret);
+    const xAccessTokenSecret = normalizeOptionalString(parsed.xAccessTokenSecret);
     const elythApiKey = normalizeOptionalString(parsed.elythApiKey);
     const elythApiBaseRaw = normalizeOptionalString(parsed.elythApiBase);
 
@@ -214,71 +221,52 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         + 'KW mode will not activate.',
       );
     }
-    let sns: SnsCredentials | undefined;
-    if (parsed.snsProvider != null) {
-      switch (parsed.snsProvider) {
-        case 'mastodon': {
-          if (snsAccessToken == null) {
-            throw new Error('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER=mastodon.');
-          }
-          const snsInstanceUrl = normalizeBaseUrl(parsed.snsInstanceUrl, 'SNS_INSTANCE_URL');
-          if (snsInstanceUrl == null) {
-            throw new Error('Partial SNS configuration: SNS_INSTANCE_URL must be set when SNS_PROVIDER=mastodon.');
-          }
-          sns = {
-            provider: 'mastodon',
-            instanceUrl: snsInstanceUrl,
-            accessToken: snsAccessToken,
-          };
-          break;
-        }
-        case 'x': {
-          if (snsAccessToken == null) {
-            throw new Error('Partial SNS configuration: SNS_ACCESS_TOKEN must be set when SNS_PROVIDER=x.');
-          }
-          const oauth1Fields = [snsApiKey, snsApiSecret, snsAccessTokenSecret];
-          const oauth1SetCount = oauth1Fields.filter((v) => v != null).length;
-          if (oauth1SetCount > 0 && oauth1SetCount < 3) {
-            logger.warn(
-              'Partial X OAuth 1.0a configuration: all of SNS_API_KEY, SNS_API_SECRET, and SNS_ACCESS_TOKEN_SECRET must be set together. '
-              + 'Falling back to bearer token mode.',
-            );
-          }
-          if (snsClientId != null && snsRefreshToken == null) {
-            logger.warn('SNS_CLIENT_ID is set but SNS_REFRESH_TOKEN is missing; OAuth2 token refresh will not work.');
-          }
-          sns = {
-            provider: 'x',
-            accessToken: snsAccessToken,
-            ...(snsClientId != null ? { clientId: snsClientId } : {}),
-            ...(snsClientSecret != null ? { clientSecret: snsClientSecret } : {}),
-            ...(snsRefreshToken != null ? { refreshToken: snsRefreshToken } : {}),
-            ...(snsApiKey != null ? { apiKey: snsApiKey } : {}),
-            ...(snsApiSecret != null ? { apiSecret: snsApiSecret } : {}),
-            ...(snsAccessTokenSecret != null ? { accessTokenSecret: snsAccessTokenSecret } : {}),
-          };
-          break;
-        }
-        case 'elyth': {
-          const elythApiBase = normalizeBaseUrl(elythApiBaseRaw, 'ELYTH_API_BASE');
-          if (elythApiKey == null || elythApiBase == null) {
-            throw new Error(
-              'Partial SNS configuration: ELYTH_API_KEY/ELYTH_API_BASE must be set when SNS_PROVIDER=elyth.',
-            );
-          }
-          sns = {
-            provider: 'elyth',
-            apiKey: elythApiKey,
-            apiBase: elythApiBase,
-          };
-          break;
-        }
-        default: {
-          const _exhaustive: never = parsed.snsProvider;
-          throw new Error(`Unknown SNS provider: ${String(_exhaustive)}`);
-        }
+    const snsList: SnsCredentials[] = [];
+    const hasMastodonConfig = mastodonInstanceUrl != null || mastodonAccessToken != null;
+    if (hasMastodonConfig) {
+      if (mastodonInstanceUrl == null || mastodonAccessToken == null) {
+        throw new Error('Partial Mastodon configuration: both MASTODON_INSTANCE_URL and MASTODON_ACCESS_TOKEN must be set.');
       }
+      snsList.push({ provider: 'mastodon', instanceUrl: mastodonInstanceUrl, accessToken: mastodonAccessToken });
     }
+
+    const xFields = [xAccessToken, xClientId, xClientSecret, xRefreshToken, xApiKey, xApiSecret, xAccessTokenSecret];
+    const hasXConfig = xFields.some((value) => value != null);
+    if (hasXConfig) {
+      if (xAccessToken == null) {
+        throw new Error('Partial X configuration: X_ACCESS_TOKEN must be set when any X_* SNS setting is set.');
+      }
+      const oauth1SetCount = [xApiKey, xApiSecret, xAccessTokenSecret].filter((v) => v != null).length;
+      if (oauth1SetCount > 0 && oauth1SetCount < 3) {
+        logger.warn(
+          'Partial X OAuth 1.0a configuration: all of X_API_KEY, X_API_SECRET, and X_ACCESS_TOKEN_SECRET must be set together. '
+          + 'Falling back to bearer token mode.',
+        );
+      }
+      if (xClientId != null && xRefreshToken == null) {
+        logger.warn('X_CLIENT_ID is set but X_REFRESH_TOKEN is missing; OAuth2 token refresh will not work.');
+      }
+      snsList.push({
+        provider: 'x',
+        accessToken: xAccessToken,
+        ...(xClientId != null ? { clientId: xClientId } : {}),
+        ...(xClientSecret != null ? { clientSecret: xClientSecret } : {}),
+        ...(xRefreshToken != null ? { refreshToken: xRefreshToken } : {}),
+        ...(xApiKey != null ? { apiKey: xApiKey } : {}),
+        ...(xApiSecret != null ? { apiSecret: xApiSecret } : {}),
+        ...(xAccessTokenSecret != null ? { accessTokenSecret: xAccessTokenSecret } : {}),
+      });
+    }
+
+    const elythApiBase = normalizeBaseUrl(elythApiBaseRaw, 'ELYTH_API_BASE');
+    const hasElythConfig = elythApiKey != null || elythApiBase != null;
+    if (hasElythConfig) {
+      if (elythApiKey == null || elythApiBase == null) {
+        throw new Error('Partial ELYTH configuration: both ELYTH_API_KEY and ELYTH_API_BASE must be set.');
+      }
+      snsList.push({ provider: 'elyth', apiKey: elythApiKey, apiBase: elythApiBase });
+    }
+
     const config = {
       ...parsed,
       llmBaseUrl,
@@ -295,7 +283,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       adminUserIds: parseIdList(parsed.adminUserIds),
       karakuriWorldBotIds,
       ...(karakuriWorld != null ? { karakuriWorld } : {}),
-      ...(sns != null ? { sns } : {}),
+      snsList,
+      ...(parsed.snsLegacyDbMigrateTo != null ? { snsLegacyDbMigrateTo: parsed.snsLegacyDbMigrateTo } : {}),
       llmEnableThinking: parseBooleanEnv(parsed.llmEnableThinking, 'LLM_ENABLE_THINKING', true),
     };
     logger.debug('Config parsed', {
@@ -306,7 +295,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmApi: config.llmModelSelector.api,
       hasPostResponseModel: config.postResponseLlmModelSelector != null,
       hasKarakuriWorld: config.karakuriWorld != null,
-      hasSns: config.sns != null,
+      snsProviders: config.snsList.map((sns) => sns.provider),
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
       memoryMaintenanceIntervalMinutes: config.memoryMaintenanceIntervalMinutes,

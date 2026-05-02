@@ -11,7 +11,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
 - `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザー向けの karakuri-world 専用 KW モード（`karakuri_world_*` のみ登録、1通知=1アクション、`comment` を返信に使用）
-- `sns_*` ツールによる Mastodon / X 向け SNS 投稿・取得・通知確認・メディアアップロード（skill-gated）。SNS 専用ループがランダム間隔でビルトイン SNS スキルを自動ロードし、投稿や通知対応を行う。X は `public` 投稿のみ対応）
+- provider namespaced な `sns_<provider>_<action>` ツールによる Mastodon / X / ELYTH 向け SNS 投稿・取得・通知確認・メディアアップロード（skill-gated。例: `sns_mastodon_post`, `sns_x_like`, `sns_elyth_get_thread`）。SNS 専用ループが provider ごとにビルトイン SNS スキル（`sns-mastodon` / `sns-x` / `sns-elyth`）を自動ロードし、投稿や通知対応を行う。X / ELYTH は `public` 投稿のみ対応、ELYTH はメディアアップロード非対応）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
 - `MEMORY_MAINTENANCE_INTERVAL_MINUTES` によるコアメモリ・日記の自動整理
 - `postMessage` / `manageCron` ツールによる管理者限定のプロアクティブ投稿と Cron 管理
@@ -23,9 +23,9 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 ## セットアップ
 
 1. `cp .env.example .env`
-2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーは karakuri-world 専用 KW モードで動作し、`karakuri_world_*` ツールだけが直接登録される。`comment` フィールドの内容が Discord 返信として使われる。`SNS_PROVIDER=mastodon` では `SNS_INSTANCE_URL` / `SNS_ACCESS_TOKEN`、`SNS_PROVIDER=x` では `SNS_ACCESS_TOKEN`（必要なら `SNS_CLIENT_ID` / `SNS_CLIENT_SECRET` / `SNS_REFRESH_TOKEN` または `SNS_API_KEY` / `SNS_API_SECRET` / `SNS_ACCESS_TOKEN_SECRET`）を設定すると、system ユーザー向けにビルトイン SNS スキルが利用可能になり、cron では通常どおり `loadSkill("sns")` を使い、SNS 専用ループでは動的コンテキストと `sns_*` ツールが自動ロードされる。`SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` でループ間隔を指定できる（デフォルト 60〜180 分）。`data/system-skills/sns/SKILL.md` は不要で、存在してもすべての system ユーザー文脈ではビルトイン定義が優先される。対話ユーザーにも公開したい場合は、運用側で `data/skills/*/SKILL.md` に shared skill を追加する。必要なら `POST_RESPONSE_LLM_MODEL` / `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` で応答後評価専用モデルを分離できる）
-   - 既存の Mastodon 運用を更新する場合も `SNS_PROVIDER=mastodon` の追加が必須。以前の `SNS_INSTANCE_URL` + `SNS_ACCESS_TOKEN` だけの設定は、そのままだと SNS 機能が無効扱いになる
-   - X で `SNS_REFRESH_TOKEN` を使う場合、OAuth 2.0 の refresh-token rotation 後の状態は `DATA_DIR/sns-token-state.json` に保存される。再起動後も継続利用するには `DATA_DIR` を永続化する
+2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーは karakuri-world 専用 KW モードで動作し、`karakuri_world_*` ツールだけが直接登録される。`comment` フィールドの内容が Discord 返信として使われる。SNS は provider ごとの環境変数で同時有効化される。Mastodon は `MASTODON_INSTANCE_URL` / `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`（必要なら `X_CLIENT_ID` / `X_CLIENT_SECRET` / `X_REFRESH_TOKEN` または `X_API_KEY` / `X_API_SECRET` / `X_ACCESS_TOKEN_SECRET`）、ELYTH は `ELYTH_API_KEY` / `ELYTH_API_BASE`（例: `https://elythworld.com`）を両方設定する。system ユーザー向けには provider 別のビルトイン SNS スキル（`sns-mastodon` / `sns-x` / `sns-elyth`）が追加され、cron では `loadSkill("sns-mastodon")` のように provider 名付き skill を使う。SNS 専用ループでは provider ごとに動的コンテキストと `sns_<provider>_<action>` ツールが自動ロードされる。`SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` でループ間隔を指定できる（デフォルト 60〜180 分）。`data/system-skills/sns-*/SKILL.md` は不要で、同名の system skill が存在しても system ユーザー文脈ではビルトイン定義が優先される。対話ユーザーにも公開したい場合は、運用側で `data/skills/*/SKILL.md` に shared skill を追加する。必要なら `POST_RESPONSE_LLM_MODEL` / `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` で応答後評価専用モデルを分離できる）
+   - 旧 `SNS_PROVIDER` / `SNS_*` credentials は読み込まれない。既存の Mastodon 運用は `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN` へ移行する。旧 `data/sns-activity.db` がある場合は初回起動前に `SNS_LEGACY_DB_MIGRATE_TO=mastodon|x|elyth|skip` を一度だけ指定する
+   - X で `X_REFRESH_TOKEN` を使う場合、OAuth 2.0 の refresh-token rotation 後の状態は `DATA_DIR/sns-token-state.json` に保存される。再起動後も継続利用するには `DATA_DIR` を永続化する
    - `LLM_MODEL` は `openai/gpt-4o` のような OpenAI Responses API セレクタ、または `openai/chat/gpt-4o` のような OpenAI Chat API セレクタで指定する
    - 旧形式の bare model 名（例: `gpt-4o`）も互換用に受け付けるが、内部では `openai/gpt-4o` として扱う
    - `LLM_API_KEY` 未設定時のエラーでは legacy alias の `OPENAI_API_KEY` も案内する
@@ -38,7 +38,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 
 `data.example/` にはサンプルの `AGENT.md`・`RULES.md`・スキル定義に加えて、`HEARTBEAT.md` と `cron/daily-summary/CRON.md` も含まれている。
 `data/` はユーザーごとにカスタマイズするため `.gitignore` で除外されている。
-SNS 専用ループ対応へ更新する既存環境では、ローカルの `data/HEARTBEAT.md` も手動で見直す。以前の SNS 活動手順や `loadSkill("sns")` 前提の記述が残っている場合は削除し、heartbeat には本来の監視・報告だけを残す。
+SNS 専用ループ対応へ更新する既存環境では、ローカルの `data/HEARTBEAT.md` も手動で見直す。以前の SNS 活動手順や legacy `loadSkill("sns")` 前提の記述が残っている場合は削除し、heartbeat には本来の監視・報告だけを残す。
 同様に KW モード移行後は、ローカルの `data/skills/karakuri-world/SKILL.md` と `data/system-skills/karakuri-world/SKILL.md` を削除する。これらの legacy ファイルは通常モードでは無視されるが、今後の運用混乱を避けるためにも手動で消しておく。
 
 Discord Developer Portal では `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` を取得し、
@@ -103,15 +103,15 @@ npm run docker:dev
 - `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は全ユーザー向けスキル、`data/system-skills/*/SKILL.md` は `userId === 'system'`（Cron / Heartbeat）でのみ見える system 専用スキル定義
 - `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、Heartbeat は単発の ephemeral session で走る。SNS 活動は heartbeat から分離された専用ループで実行される。`data/cron/*/CRON.md` で Cron ジョブも定義できる
 - `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を設定すると、専用のメモリメンテナンスループが `runExclusiveSystemTurn` + shared persistence mutex 内で core memory / diary を read → LLM → overwrite / rewrite / delete まで atomic に実行し、`REPORT_CHANNEL_ID` には成功時 summary と失敗時メタ情報のみを投稿する。post-response evaluator / SNS 観測ユーザー評価は snapshot read + LLM を lock 外で行い、apply だけ同じ mutex に入るため、heartbeat / cron / SNS loop の system turn が evaluator の LLM 待ちで詰まらない。全 diary 日付は常に inspection 対象で、`MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` は本文を読む範囲だけを広げる
-- 既存環境の `data/HEARTBEAT.md` は `.gitignore` されて自動更新されないため、旧来の SNS 指示や `loadSkill("sns")` が残っていないか確認する。SNS 活動の正本は専用ループ側のコード内指示
+- 既存環境の `data/HEARTBEAT.md` は `.gitignore` されて自動更新されないため、旧来の SNS 指示や legacy `loadSkill("sns")` が残っていないか確認する。SNS 活動の正本は専用ループ側のコード内指示
 - 1 つ以上のスキルが存在するときだけ `loadSkill` ツールが公開され、システムプロンプトには利用可能なスキル一覧だけを注入する
 - 通常ユーザーには `data/skills/*/SKILL.md` のみ公開され、`data/system-skills/*/SKILL.md` は `userId === 'system'` のときだけ一覧表示・`loadSkill` 対象になる
 - `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`karakuri-world` は `allowed-tools` の有無に関係なく通常の skill discovery / `loadSkill` から常に除外され、`karakuri_world_*` は `KARAKURI_WORLD_*` 設定済みかつ `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーの KW モードでのみ直接公開する
-- `SNS_*` 設定時は system ユーザー向けにビルトイン SNS skill が追加される。Mastodon と X は `SNS_PROVIDER` で切り替える。cron では `loadSkill("sns")` で `sns_*` ツール群を遅延公開し、SNS 専用ループだけが `autoLoadSnsSkill` と動的コンテキストを使って自動実行する。動的コンテキストには新着通知・トレンド・直近行動ログが含まれ、重複いいね/リポスト/返信/引用をツール層で防ぐ。ループ間隔は `SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` で制御する。SNS ループ自体の成功/失敗は `REPORT_CHANNEL_ID` に通知され、追加の活動レポート本文を `postMessage` で同じチャンネルへ送らせたい場合だけ `REPORT_CHANNEL_ID` を `postMessage` の送信許可チャンネルにも含める。X は `sns_post` の公開範囲が `public` のみ。対話ユーザーに公開する場合は運用側で shared skill を定義する
+- `MASTODON_*` / `X_*` / `ELYTH_*` のうち必要項目がそろった provider ごとに、system ユーザー向けビルトイン SNS skill（`sns-mastodon` / `sns-x` / `sns-elyth`）が追加される。cron では `loadSkill("sns-mastodon")` などで provider namespaced skill をロードし、`sns_mastodon_post` / `sns_x_like` / `sns_elyth_get_thread` のような `sns_<provider>_<action>` ツール群を遅延公開する。SNS 専用ループだけが `autoLoadSnsSkill` と動的コンテキストを使って provider ごとに自動実行する。動的コンテキストには新着通知・トレンド・直近行動ログが含まれ、重複いいね/リポスト/返信/引用をツール層で防ぐ。ループ間隔は `SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` で制御する。SNS ループ自体の成功/失敗は `REPORT_CHANNEL_ID` に通知され、追加の活動レポート本文を `postMessage` で同じチャンネルへ送らせたい場合だけ `REPORT_CHANNEL_ID` を `postMessage` の送信許可チャンネルにも含める。X / ELYTH は `*_post` の公開範囲が `public` のみ。対話ユーザーに公開する場合は運用側で shared skill を定義する
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は各 redirect hop を再検証し、`http` / `https` 以外のスキームや private / loopback / link-local 宛てへの遷移を拒否して SSRF を抑止する。15 秒のタイムアウトは DNS 解決も含めて適用する
-- `sns_upload_media` も `webFetch` と同じ URL 検証を使い、`http` / `https` 以外のスキームや private / loopback / link-local 宛て、そこへ向かう redirect を拒否する。こちらも DNS 解決を含めてタイムアウトを適用する
-- Mastodon のメディア処理が非同期な場合、`sns_upload_media` は `GET /api/v1/media/:id` を短時間ポーリングして ready を確認する。X では chunked upload (`initializeUpload` / `appendUpload` / `finalizeUpload`) の完了を待つ。制限時間内に ready にならない場合はエラーとして再試行を促す
+- `sns_mastodon_upload_media` / `sns_x_upload_media` も `webFetch` と同じ URL 検証を使い、`http` / `https` 以外のスキームや private / loopback / link-local 宛て、そこへ向かう redirect を拒否する。こちらも DNS 解決を含めてタイムアウトを適用する
+- Mastodon のメディア処理が非同期な場合、`sns_mastodon_upload_media` は `GET /api/v1/media/:id` を短時間ポーリングして ready を確認する。X では chunked upload (`initializeUpload` / `appendUpload` / `finalizeUpload`) の完了を待つ。制限時間内に ready にならない場合はエラーとして再試行を促す
 - `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う
 - `postMessage` / `manageCron` は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` が設定された管理者コンテキストでのみ公開される
 - Heartbeat は `ALLOWED_CHANNEL_IDS` 設定時のみ有効化され、`REPORT_CHANNEL_ID` は空欄のままでも省略設定として扱われる
@@ -134,3 +134,11 @@ npm run docker:dev
 - [Skill 層 詳細設計](docs/design/skill.md)
 - [Bot 層 詳細設計](docs/design/bot.md)
 - [設定 詳細設計](docs/design/config.md)
+
+## Multi SNS providers and user aliases
+
+SNS configuration is provider-specific. Set any combination of `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN`, `X_ACCESS_TOKEN` (+ optional X OAuth fields), and `ELYTH_API_KEY` + `ELYTH_API_BASE` (for example `https://elythworld.com`); all fully configured providers run concurrently. SNS tools are provider-namespaced, e.g. `sns_mastodon_post`, `sns_x_like`, `sns_elyth_get_thread`, and skills are named `sns-mastodon`, `sns-x`, `sns-elyth`.
+
+Legacy `SNS_PROVIDER` / `SNS_*` credentials are no longer read. If `data/sns-activity.db` exists, set `SNS_LEGACY_DB_MIGRATE_TO=mastodon|x|elyth|skip` once before startup.
+
+Admins can link observed accounts that represent the same person by asking the bot to use `linkUser` (for example, link `sns:mastodon:1234` to `discord:abcd`). Prefer `discord:` IDs as primary. Use `unlinkUser` then `linkUser` to correct a link.

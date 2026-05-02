@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SqliteUserStore } from '../src/user/store.js';
@@ -163,5 +164,99 @@ describe('SqliteUserStore', () => {
       displayName: 'Alice',
       profile: 'Persistent profile',
     });
+  });
+
+
+  it('links, resolves, lists, and unlinks user aliases', async () => {
+    const { store } = await createStore();
+
+    await store.ensureUser('discord:1', 'Alice');
+    await store.ensureUser('sns:mastodon:1', 'Alice@Mastodon');
+    await store.linkUserAlias('sns:mastodon:1', 'discord:1', { linkedBy: 'admin', note: 'same person' });
+
+    await expect(store.resolveAlias('sns:mastodon:1')).resolves.toMatchObject({
+      primaryUserId: 'discord:1',
+      aliasOf: { aliasUserId: 'sns:mastodon:1', primaryUserId: 'discord:1', linkedBy: 'admin', note: 'same person' },
+    });
+    await expect(store.listAliases('discord:1')).resolves.toMatchObject([
+      { aliasUserId: 'sns:mastodon:1', primaryUserId: 'discord:1' },
+    ]);
+    await store.unlinkUserAlias('sns:mastodon:1');
+    await expect(store.resolveAlias('sns:mastodon:1')).resolves.toEqual({ primaryUserId: 'sns:mastodon:1', aliasOf: null });
+  });
+
+  it('writes alias profile updates to the primary user only', async () => {
+    const { store } = await createStore();
+
+    await store.ensureUser('discord:1', 'Alice');
+    await store.ensureUser('sns:x:1', 'Alice on X');
+    await store.linkUserAlias('sns:x:1', 'discord:1');
+    await store.updateProfile('sns:x:1', 'Unified profile');
+    await store.updateDisplayName('sns:x:1', 'X Alice');
+
+    await expect(store.getUser('discord:1')).resolves.toMatchObject({ profile: 'Unified profile', displayName: 'Alice' });
+    await expect(store.getUser('sns:x:1')).resolves.toMatchObject({ profile: null, displayName: 'X Alice' });
+  });
+
+  it('rejects invalid alias relationships', async () => {
+    const { store } = await createStore();
+
+    await store.ensureUser('primary', 'Primary');
+    await store.ensureUser('alias', 'Alias');
+    await store.ensureUser('other', 'Other');
+
+    await expect(store.linkUserAlias('primary', 'primary')).rejects.toThrow('self_link');
+    await expect(store.linkUserAlias('missing', 'primary')).rejects.toThrow('not_found');
+    await store.linkUserAlias('alias', 'primary');
+    await expect(store.linkUserAlias('alias', 'other')).rejects.toThrow('already_linked');
+    await expect(store.linkUserAlias('other', 'alias')).rejects.toThrow('chain_detected');
+    await expect(store.linkUserAlias('primary', 'other')).rejects.toThrow('cannot_demote_primary');
+  });
+
+  it('rejects unlinking an alias that is not currently linked', async () => {
+    const { store } = await createStore();
+
+    await store.ensureUser('discord:1', 'Alice');
+    await expect(store.unlinkUserAlias('discord:1')).rejects.toThrow('not_linked');
+    await expect(store.unlinkUserAlias('never-existed')).rejects.toThrow('not_linked');
+    await expect(store.unlinkUserAlias('   ')).rejects.toThrow('invalid_user_id');
+  });
+
+  it('keeps getUser raw without alias resolution', async () => {
+    const { store } = await createStore();
+
+    await store.ensureUser('discord:1', 'Alice');
+    await store.ensureUser('sns:x:1', 'X Alice');
+    await store.linkUserAlias('sns:x:1', 'discord:1');
+    await store.updateProfile('sns:x:1', 'Primary profile via alias');
+
+    const aliasRaw = await store.getUser('sns:x:1');
+    expect(aliasRaw?.userId).toBe('sns:x:1');
+    expect(aliasRaw?.profile).toBeNull();
+
+    const primaryRow = await store.getUser('discord:1');
+    expect(primaryRow?.profile).toBe('Primary profile via alias');
+  });
+
+  it('resolveAlias follows multi-hop chains with bounded depth', async () => {
+    const { dataDir, store } = await createStore();
+
+    await store.ensureUser('a', 'A');
+    await store.ensureUser('b', 'B');
+    await store.ensureUser('c', 'C');
+    await store.linkUserAlias('a', 'b');
+
+    const sideChannel = new Database(join(dataDir, 'users.db'));
+    try {
+      sideChannel
+        .prepare(`INSERT INTO user_aliases (alias_user_id, primary_user_id, linked_at, linked_by, note) VALUES (?, ?, ?, NULL, NULL)`)
+        .run('b', 'c', new Date().toISOString());
+    } finally {
+      sideChannel.close();
+    }
+
+    const resolved = await store.resolveAlias('a');
+    expect(resolved.primaryUserId).toBe('c');
+    expect(resolved.aliasOf?.aliasUserId).toBe('a');
   });
 });
