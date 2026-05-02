@@ -19,6 +19,7 @@ const EXPECTED_TOOL_NAMES = [
   'karakuri_world_get_status',
   'karakuri_world_get_nearby_agents',
   'karakuri_world_get_active_conversations',
+  'karakuri_world_get_event',
   'karakuri_world_move',
   'karakuri_world_action',
   'karakuri_world_use_item',
@@ -34,7 +35,6 @@ const EXPECTED_TOOL_NAMES = [
   'karakuri_world_conversation_leave',
   'karakuri_world_conversation_speak',
   'karakuri_world_end_conversation',
-  'karakuri_world_server_event_select',
 ] as const;
 
 describe('karakuri-world tools', () => {
@@ -65,6 +65,10 @@ describe('karakuri-world tools', () => {
       operation: 'get_active_conversations',
     });
     expect(() => karakuriWorldInputSchema.parse({ operation: 'get_active_conversations', extra: true })).toThrow();
+    expect(karakuriWorldInputSchema.parse({ operation: 'get_event' })).toEqual({
+      operation: 'get_event',
+    });
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'get_event', extra: true })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({ operation: 'wait', duration: '1000ms' })).toThrow();
     expect(karakuriWorldInputSchema.parse({ operation: 'use_item', item_id: 'potion' })).toEqual({
       operation: 'use_item',
@@ -542,6 +546,9 @@ describe('karakuri-world tools', () => {
     const activeConversationsInputSchema = tools.karakuri_world_get_active_conversations?.inputSchema as {
       safeParse: (value: unknown) => { success: boolean };
     };
+    const getEventInputSchema = tools.karakuri_world_get_event?.inputSchema as {
+      safeParse: (value: unknown) => { success: boolean };
+    };
 
     expect(moveInputSchema.safeParse({ target_node_id: '1-2' }).success).toBe(false);
     expect(moveInputSchema.safeParse({
@@ -565,6 +572,8 @@ describe('karakuri-world tools', () => {
     expect(nearbyAgentsInputSchema.safeParse({ comment: '近くの相手を確認します。' }).success).toBe(true);
     expect(activeConversationsInputSchema.safeParse({}).success).toBe(false);
     expect(activeConversationsInputSchema.safeParse({ comment: '参加可能な会話を確認します。' }).success).toBe(true);
+    expect(getEventInputSchema.safeParse({}).success).toBe(false);
+    expect(getEventInputSchema.safeParse({ comment: '実施中のサーバーイベントを確認します。' }).success).toBe(true);
   });
 
   it('uses GET endpoints without sending a request body for read operations', async () => {
@@ -657,6 +666,11 @@ describe('karakuri-world tools', () => {
       'karakuri_world_get_active_conversations',
       'https://example.com/api/agents/active-conversations',
       'Active conversations request accepted. Details will arrive by notification.',
+    ],
+    [
+      'karakuri_world_get_event',
+      'https://example.com/api/agents/event',
+      'Server events request accepted. Details will arrive by notification.',
     ],
   ] as const)('uses GET for %s and returns a notification ack response', async (toolName, expectedUrl, message) => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>

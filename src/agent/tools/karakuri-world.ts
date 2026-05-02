@@ -203,19 +203,12 @@ const conversationLeaveOperationSchema = z
   })
   .strict();
 
-const serverEventSelectOperationSchema = z
-  .object({
-    operation: z.literal('server_event_select'),
-    server_event_id: z.string().min(1).describe('サーバーイベントID'),
-    choice_id: z.string().min(1).describe('選択肢ID'),
-  })
-  .strict();
-
 const getMapOperationSchema = z.object({ operation: z.literal('get_map') }).strict();
 const getWorldAgentsOperationSchema = z.object({ operation: z.literal('get_world_agents') }).strict();
 const getStatusOperationSchema = z.object({ operation: z.literal('get_status') }).strict();
 const getNearbyAgentsOperationSchema = z.object({ operation: z.literal('get_nearby_agents') }).strict();
 const getActiveConversationsOperationSchema = z.object({ operation: z.literal('get_active_conversations') }).strict();
+const getEventOperationSchema = z.object({ operation: z.literal('get_event') }).strict();
 
 export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   moveOperationSchema,
@@ -233,12 +226,12 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   conversationLeaveOperationSchema,
   conversationSpeakOperationObjectSchema,
   endConversationOperationSchema,
-  serverEventSelectOperationSchema,
   getMapOperationSchema,
   getWorldAgentsOperationSchema,
   getStatusOperationSchema,
   getNearbyAgentsOperationSchema,
   getActiveConversationsOperationSchema,
+  getEventOperationSchema,
 ]).superRefine((input, ctx) => {
   if (input.operation === 'transfer') {
     validateExclusiveItemOrMoney(input, ctx);
@@ -264,12 +257,12 @@ const conversationStayToolInputSchema = conversationStayOperationSchema.omit({ o
 const conversationLeaveToolInputSchema = conversationLeaveOperationSchema.omit({ operation: true });
 const conversationSpeakToolInputSchema = conversationSpeakOperationObjectSchema.omit({ operation: true });
 const endConversationToolInputSchema = endConversationOperationSchema.omit({ operation: true });
-const serverEventSelectToolInputSchema = serverEventSelectOperationSchema.omit({ operation: true });
 const getMapToolInputSchema = getMapOperationSchema.omit({ operation: true });
 const getWorldAgentsToolInputSchema = getWorldAgentsOperationSchema.omit({ operation: true });
 const getStatusToolInputSchema = getStatusOperationSchema.omit({ operation: true });
 const getNearbyAgentsToolInputSchema = getNearbyAgentsOperationSchema.omit({ operation: true });
 const getActiveConversationsToolInputSchema = getActiveConversationsOperationSchema.omit({ operation: true });
+const getEventToolInputSchema = getEventOperationSchema.omit({ operation: true });
 
 function withComment<TSchema extends z.AnyZodObject>(schema: TSchema) {
   return schema.extend({ comment: commentSchema });
@@ -853,18 +846,6 @@ async function executeKarakuriWorldOperation(
           },
           responseSchema: endConversationResponseSchema,
         });
-      case 'server_event_select':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/server-event/select',
-          body: {
-            server_event_id: input.server_event_id,
-            choice_id: input.choice_id,
-          },
-          responseSchema: okResponseSchema,
-        });
       case 'get_map':
         return requestJson({
           ...context,
@@ -903,6 +884,14 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'GET',
           path: 'api/agents/active-conversations',
+          responseSchema: notificationAckResponseSchema,
+        });
+      case 'get_event':
+        return requestJson({
+          ...context,
+          operation: input.operation,
+          method: 'GET',
+          path: 'api/agents/event',
           responseSchema: notificationAckResponseSchema,
         });
       default: {
@@ -1026,6 +1015,11 @@ export function createKarakuriWorldTools({
       inputSchema: withComment(getActiveConversationsToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_active_conversations', input, context),
     }),
+    karakuri_world_get_event: tool({
+      description: '実施中の永続サーバーイベント一覧の取得を依頼する。詳細は通知で届く。',
+      inputSchema: withComment(getEventToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_event', input, context),
+    }),
     karakuri_world_move: tool({
       description: '目的地ノードへ移動する。`target_node_id` を渡す。',
       inputSchema: withComment(moveToolInputSchema),
@@ -1103,11 +1097,6 @@ export function createKarakuriWorldTools({
       description: '会話を終了または退出する。お別れの `message` と `next_speaker_agent_id` を渡す。必要に応じて `transfer_response` のみ任意で添えられる。2人会話では会話全体を終了する。3人以上では自分だけ退出する。',
       inputSchema: withComment(endConversationToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('end_conversation', input, context),
-    }),
-    karakuri_world_server_event_select: tool({
-      description: 'サーバーイベントの選択肢を選ぶ。`server_event_id` と `choice_id` を渡す。',
-      inputSchema: withComment(serverEventSelectToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('server_event_select', input, context),
     }),
   };
 }
