@@ -26,8 +26,8 @@ export interface SkillContextEntry {
   dynamicContext?: string | undefined;
 }
 
-// Keep this map in sync with BUILTIN_SNS_ALLOWED_TOOLS in sns/builtin-skill.ts.
-// Missing entries use a generic fallback description.
+// Used only by the legacy un-namespaced `sns` builtin skill (createLegacyBuiltinSnsSkillDefinition in sns/builtin-skill.ts).
+// Provider-namespaced tools (sns_<provider>_*) are described by describeNamespacedAutoLoadedTool() below.
 const AUTO_LOADED_TOOL_GUIDANCE: Readonly<Record<string, string>> = {
   sns_post: '- sns_post: publish an SNS post, optionally as a reply, quote, or media post.',
   sns_get_post: '- sns_get_post: fetch a specific SNS post by post_id.',
@@ -37,6 +37,24 @@ const AUTO_LOADED_TOOL_GUIDANCE: Readonly<Record<string, string>> = {
   sns_get_thread: '- sns_get_thread: fetch the surrounding thread context for an SNS post.',
 };
 
+
+function describeNamespacedAutoLoadedTool(toolName: string): string {
+  const match = /^sns_([^_]+)_(post|get_post|like|repost|upload_media|get_thread)$/.exec(toolName);
+  if (match == null) {
+    return `- ${toolName}: available via an auto-loaded skill.`;
+  }
+  const action = match[2]!;
+  const descriptions: Record<string, string> = {
+    post: 'publish an SNS post, optionally as a reply, quote, or media post.',
+    get_post: 'fetch a specific SNS post by post_id.',
+    like: 'like an SNS post immediately.',
+    repost: 'repost an SNS post immediately.',
+    upload_media: 'upload media from a URL and return a media ID for the provider-specific post tool.',
+    get_thread: 'fetch the surrounding thread context for an SNS post.',
+  };
+  return `- ${toolName}: ${descriptions[action] ?? 'available via an auto-loaded skill.'}`;
+}
+
 export interface BuildSystemPromptOptions {
   agentInstructions?: string | null;
   currentDateTime: string;
@@ -45,6 +63,7 @@ export interface BuildSystemPromptOptions {
   userName?: string | null | undefined;
   userId?: string | null | undefined;
   userProfile?: string | null | undefined;
+  userAliasOf?: string | null | undefined;
   recentDiaries: DiaryEntry[];
   summary?: string | null;
   skills?: SkillDefinition[];
@@ -92,6 +111,7 @@ export function buildUserProfileSection(
   userName?: string | null,
   userId?: string | null,
   profile?: string | null,
+  aliasOf?: string | null,
 ): string {
   if (userName == null && userId == null && profile == null) {
     return '';
@@ -101,12 +121,16 @@ export function buildUserProfileSection(
   const normalizedName = userName?.trim();
   const normalizedUserId = userId?.trim();
   const normalizedProfile = profile?.trim();
+  const normalizedAliasOf = aliasOf?.trim();
 
   if (normalizedName != null && normalizedName.length > 0) {
     lines.push(`Display name: ${sanitizeTagContent(normalizedName)}`);
   }
   if (normalizedUserId != null && normalizedUserId.length > 0) {
     lines.push(`User ID: ${sanitizeTagContent(normalizedUserId)}`);
+  }
+  if (normalizedAliasOf != null && normalizedAliasOf.length > 0) {
+    lines.push(`Alias of User ID: ${sanitizeTagContent(normalizedAliasOf)}`);
   }
   lines.push('Profile:');
   lines.push(
@@ -194,7 +218,7 @@ export function buildToolGuidance(
   const autoLoadedToolLines = Array.from(new Set(
     (options.autoLoadedSkills ?? [])
       .flatMap((skill) => skill.allowedTools ?? [])
-      .map((toolName) => AUTO_LOADED_TOOL_GUIDANCE[toolName] ?? `- ${toolName}: available via an auto-loaded skill.`),
+      .map((toolName) => AUTO_LOADED_TOOL_GUIDANCE[toolName] ?? describeNamespacedAutoLoadedTool(toolName)),
   ));
 
   if (options.hasWebSearch === true) {
@@ -245,6 +269,7 @@ export function countAdditionalContextTokens(
     userName?: string | null | undefined;
     userId?: string | null | undefined;
     userProfile?: string | null | undefined;
+  userAliasOf?: string | null | undefined;
     skills?: SkillDefinition[] | undefined;
     autoLoadedSkills?: SkillDefinition[] | undefined;
     skillContexts?: SkillContextEntry[] | undefined;
@@ -265,7 +290,7 @@ export function countAdditionalContextTokens(
     buildCurrentDateTimeSection(options.currentDateTime),
     buildRulesSection(options.rules),
     buildMemorySection(coreMemory),
-    buildUserProfileSection(options.userName, options.userId, options.userProfile),
+    buildUserProfileSection(options.userName, options.userId, options.userProfile, options.userAliasOf),
     buildDiarySection(recentDiaries),
     buildSkillContextSection(options.skillContexts),
     options.includeSkillList === false ? '' : buildSkillListSection(options.skills),
@@ -291,6 +316,7 @@ export function buildSystemPrompt({
   userName,
   userId,
   userProfile,
+  userAliasOf,
   recentDiaries,
   summary,
   skills = [],
@@ -313,7 +339,7 @@ export function buildSystemPrompt({
     buildCurrentDateTimeSection(currentDateTime),
     buildRulesSection(rules),
     buildMemorySection(coreMemory),
-    buildUserProfileSection(userName, userId, userProfile),
+    buildUserProfileSection(userName, userId, userProfile, userAliasOf),
     buildDiarySection(recentDiaries),
     buildSkillContextSection(skillContexts),
     includeSummary === false ? '' : buildSummarySection(summary),

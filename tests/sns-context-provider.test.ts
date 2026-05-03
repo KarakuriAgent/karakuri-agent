@@ -56,14 +56,20 @@ function createProvider(overrides: Partial<SnsProvider> = {}): SnsProvider {
     getTimeline: vi.fn(),
     search: vi.fn(),
     like: vi.fn(),
+    unlike: vi.fn(),
     repost: vi.fn(),
+    follow: vi.fn(),
+    unfollow: vi.fn(),
+    getUserProfile: vi.fn(),
+    getMyMetrics: vi.fn(),
+    markNotificationsRead: vi.fn(),
     getNotifications: vi.fn(async () => createNotificationResult([])),
     uploadMedia: vi.fn(),
     getThread: vi.fn(),
     getUserPosts: vi.fn(),
     getTrends: vi.fn(async () => []),
     ...overrides,
-  } as never;
+  };
 }
 
 describe('SnsSkillContextProvider', () => {

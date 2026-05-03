@@ -17,7 +17,7 @@ import {
   resolveAgentInstructions,
   sanitizeTagContent,
 } from '../src/agent/prompt.js';
-import { createBuiltinSnsSkillDefinition } from '../src/sns/builtin-skill.js';
+import { buildSnsLoopActivityInstructions, createBuiltinSnsSkillDefinition } from '../src/sns/builtin-skill.js';
 
 describe('buildMemorySection', () => {
   it('wraps core memory in <memory> tags', () => {
@@ -113,6 +113,22 @@ describe('skill context helpers', () => {
 
   it('returns empty string when no skill activity instructions are provided', () => {
     expect(buildSkillActivitySection()).toBe('');
+  });
+
+  it('excludes unsupported ELYTH repost from builtin skill and loop guidance', () => {
+    const builtin = createBuiltinSnsSkillDefinition('elyth');
+    const loopGuidance = buildSnsLoopActivityInstructions({ provider: 'elyth' });
+
+    expect(builtin.allowedTools).toEqual([
+      'sns_elyth_post',
+      'sns_elyth_get_post',
+      'sns_elyth_like',
+      'sns_elyth_get_thread',
+    ]);
+    expect(builtin.instructions).toContain('リポスト非対応');
+    expect(builtin.instructions).not.toContain('sns_elyth_repost');
+    expect(loopGuidance).toContain('リポスト非対応');
+    expect(loopGuidance).not.toContain('`sns_elyth_repost`');
   });
 
   it('AUTO_LOADED_TOOL_GUIDANCE covers all builtin SNS allowed tools', () => {

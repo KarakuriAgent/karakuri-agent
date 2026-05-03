@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import { buildGatedToolSets, filterSkillsToAvailableTools } from '../src/agent/tools/gated-tools.js';
+import { createBuiltinSnsSkillDefinition } from '../src/sns/builtin-skill.js';
 import type { SkillDefinition } from '../src/skill/types.js';
 
 const SNS_CREDS = {
@@ -11,6 +12,14 @@ const SNS_CREDS = {
     instanceUrl: 'https://social.example',
     accessToken: 'secret',
   },
+};
+
+const ELYTH_CREDS = {
+  snsList: [{
+    provider: 'elyth' as const,
+    apiKey: 'elyth-key',
+    apiBase: 'https://elythworld.com',
+  }],
 };
 
 const NO_CREDS = {};
@@ -98,14 +107,25 @@ describe('buildGatedToolSets', () => {
     const skills = [
       makeSkill({
         name: 'sns',
-        allowedTools: ['sns_get_post', 'sns_post'],
+        allowedTools: ['sns_mastodon_get_post', 'sns_mastodon_post'],
       }),
     ];
 
     const result = buildGatedToolSets(skills, SNS_CREDS);
 
     expect(result.size).toBe(1);
-    expect(Object.keys(result.get('sns')!)).toEqual(['sns_get_post', 'sns_post']);
+    expect(Object.keys(result.get('sns')!)).toEqual(['sns_mastodon_get_post', 'sns_mastodon_post']);
+  });
+
+  it('does not expose unsupported ELYTH repost through the builtin skill gate', () => {
+    const result = buildGatedToolSets([createBuiltinSnsSkillDefinition('elyth')], ELYTH_CREDS);
+
+    expect(Object.keys(result.get('sns-elyth')!)).toEqual([
+      'sns_elyth_post',
+      'sns_elyth_get_post',
+      'sns_elyth_like',
+      'sns_elyth_get_thread',
+    ]);
   });
 });
 
@@ -210,11 +230,11 @@ describe('filterSkillsToAvailableTools', () => {
     const skills = [
       makeSkill({
         name: 'sns',
-        allowedTools: ['sns_get_post'],
+        allowedTools: ['sns_mastodon_get_post'],
       }),
     ];
 
     expect(filterSkillsToAvailableTools(skills, NO_CREDS)).toHaveLength(0);
-    expect(filterSkillsToAvailableTools(skills, SNS_CREDS)[0]!.allowedTools).toEqual(['sns_get_post']);
+    expect(filterSkillsToAvailableTools(skills, SNS_CREDS)[0]!.allowedTools).toEqual(['sns_mastodon_get_post']);
   });
 });

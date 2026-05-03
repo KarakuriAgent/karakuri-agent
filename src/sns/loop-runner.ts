@@ -5,12 +5,14 @@ import { createLogger } from '../utils/logger.js';
 import { reportSafely } from '../utils/report.js';
 import { runExclusiveSystemTurn } from '../scheduler/system-turn-mutex.js';
 import type { IMessageSink } from '../scheduler/types.js';
+import type { SnsProviderType } from './types.js';
 
 const logger = createLogger('SnsLoopRunner');
 const MINUTE_MS = 60_000;
 
 export interface SnsLoopRunnerOptions {
   agent: IAgent;
+  provider?: SnsProviderType | undefined;
   minIntervalMinutes: number;
   maxIntervalMinutes: number;
   messageSink?: IMessageSink;
@@ -85,7 +87,7 @@ export class SnsLoopRunner {
         await reportSafely(
           this.options.messageSink,
           this.options.reportChannelId,
-          `❌ SNS loop tick crashed unexpectedly: ${formatError(error)}`,
+          `❌ ${this.options.provider != null ? `[${this.options.provider}] ` : ''}SNS loop tick crashed unexpectedly: ${formatError(error)}`,
           logger,
         );
         if (!this.closed) {
@@ -133,11 +135,14 @@ export class SnsLoopRunner {
 
   private async runLoop(): Promise<void> {
     const startedAt = this.now();
+    const provider = this.options.provider ?? 'mastodon';
+    const providerLabel = this.options.provider != null ? `[${provider}] ` : '';
 
     try {
-      const skillActivityInstructions = buildSnsLoopActivityInstructions(
-        this.options.hasPostMessage != null ? { hasPostMessage: this.options.hasPostMessage } : {},
-      );
+      const skillActivityInstructions = buildSnsLoopActivityInstructions({
+        provider,
+        ...(this.options.hasPostMessage != null ? { hasPostMessage: this.options.hasPostMessage } : {}),
+      });
       await runExclusiveSystemTurn(async () => {
         if (this.closed) {
           logger.debug('Skipping SNS loop execution because runner closed before system turn lock');
@@ -145,14 +150,14 @@ export class SnsLoopRunner {
         }
 
         const response = await this.options.agent.handleMessage(
-          `sns-loop:${startedAt.toISOString()}`,
+          this.options.provider != null ? `sns-loop-${provider}:${startedAt.toISOString()}` : `sns-loop:${startedAt.toISOString()}`,
           '(sns loop tick)',
           'sns-loop',
           {
             userId: 'system',
             ephemeral: true,
             skillActivityInstructions,
-            autoLoadSnsSkill: true,
+            autoLoadSnsSkill: this.options.provider ?? true,
           },
         );
         const trimmedResponse = response.trim();
@@ -163,7 +168,7 @@ ${trimmedResponse}` : '';
         await reportSafely(
           this.options.messageSink,
           this.options.reportChannelId,
-          `✅ SNS loop succeeded in ${elapsed}ms${summary}`,
+          `✅ ${providerLabel}SNS loop succeeded in ${elapsed}ms${summary}`,
           logger,
         );
       });
@@ -172,7 +177,7 @@ ${trimmedResponse}` : '';
       await reportSafely(
         this.options.messageSink,
         this.options.reportChannelId,
-        `❌ SNS loop failed in ${this.now().getTime() - startedAt.getTime()}ms
+        `❌ ${providerLabel}SNS loop failed in ${this.now().getTime() - startedAt.getTime()}ms
 ${formatError(error)}`,
         logger,
       );

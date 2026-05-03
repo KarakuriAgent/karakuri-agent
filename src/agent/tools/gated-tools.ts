@@ -11,12 +11,15 @@ import { createSnsTools } from './sns.js';
 const logger = createLogger('GatedTools');
 
 export interface AvailableGatedToolSources {
+  snsList?: SnsCredentials[] | undefined;
+  /** @deprecated Use snsList. */
   sns?: SnsCredentials | undefined;
   dataDir?: string | undefined;
-  snsActivityStore?: ISnsActivityStore | undefined;
+  snsActivityStores?: Map<SnsCredentials['provider'], ISnsActivityStore> | undefined;
   userStore?: IUserStore | undefined;
   evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
   reportError?: ((message: string) => void) | undefined;
+  evaluatedUsers?: Set<string> | undefined;
 }
 
 export function buildGatedToolSets(
@@ -79,15 +82,25 @@ export function filterSkillsToAvailableTools(
 function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): ToolSet {
   const allGatedTools: ToolSet = {};
 
-  if (availableToolSources.sns != null) {
-    Object.assign(allGatedTools, createSnsTools({
-      sns: availableToolSources.sns,
+  const snsSources = availableToolSources.snsList ?? (availableToolSources.sns != null ? [availableToolSources.sns] : []);
+  for (const sns of snsSources) {
+    const providerTools = createSnsTools({
+      sns,
       ...(availableToolSources.dataDir != null ? { dataDir: availableToolSources.dataDir } : {}),
-      ...(availableToolSources.snsActivityStore != null ? { activityStore: availableToolSources.snsActivityStore } : {}),
+      ...(availableToolSources.snsActivityStores?.get(sns.provider) != null
+        ? { activityStore: availableToolSources.snsActivityStores.get(sns.provider)! }
+        : {}),
       ...(availableToolSources.userStore != null ? { userStore: availableToolSources.userStore } : {}),
       ...(availableToolSources.evaluateUser != null ? { evaluateUser: availableToolSources.evaluateUser } : {}),
       ...(availableToolSources.reportError != null ? { reportError: availableToolSources.reportError } : {}),
-    }));
+      evaluatedUsers: availableToolSources.evaluatedUsers ?? new Set<string>(),
+    });
+    Object.assign(allGatedTools, providerTools);
+    if (availableToolSources.snsList == null && availableToolSources.sns != null) {
+      for (const action of ['post', 'get_post', 'like', 'repost', 'upload_media', 'get_thread'] as const) {
+        allGatedTools[`sns_${action}`] = providerTools[`sns_${action}`]!;
+      }
+    }
   }
 
   return allGatedTools;
