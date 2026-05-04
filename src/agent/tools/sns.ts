@@ -12,7 +12,7 @@ import { httpUrlSchema, type LookupFn } from '../../utils/safe-fetch.js';
 const logger = createLogger('SnsTools');
 const visibilitySchema = z.enum(['public', 'unlisted', 'private', 'direct']);
 // Cap LLM-based user evaluations per turn to limit cost and latency.
-// Relies on evaluatedUsers Set being recreated per createSnsTools() call (callers must create a fresh tool set per turn).
+// Callers can share evaluatedUsers across provider-specific tool sets within a turn.
 const MAX_USER_EVALUATIONS_PER_TURN = 3;
 
 const snsPostInputSchema = z.object({
@@ -54,6 +54,7 @@ export interface CreateSnsToolsOptions {
   userStore?: IUserStore;
   evaluateUser?: (snsUserId: string, displayName: string, postText: string) => void;
   reportError?: (message: string) => void;
+  evaluatedUsers?: Set<string> | undefined;
 }
 
 function formatError(error: unknown): string {
@@ -152,9 +153,25 @@ function assertSupportedVisibility(provider: SnsCredentials['provider'], visibil
   if (provider === 'x' && visibility !== 'public') {
     throw new Error('X only supports public visibility');
   }
+  if (provider === 'elyth' && visibility !== 'public') {
+    throw new Error('ELYTH only supports public visibility');
+  }
+}
+
+function assertProviderSupportsMedia(provider: SnsCredentials['provider'], mediaIds: string[] | undefined): void {
+  if (provider === 'elyth' && mediaIds != null && mediaIds.length > 0) {
+    throw new Error('ELYTH does not support media uploads');
+  }
+}
+
+function assertProviderSupportsQuote(provider: SnsCredentials['provider'], quotePostId: string | undefined): void {
+  if (provider === 'elyth' && quotePostId != null) {
+    throw new Error('ELYTH does not support quote posts');
+  }
 }
 
 export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
+  const snsProviderType = options.sns.provider;
   const provider = createSnsProvider({
     ...options.sns,
     ...(options.dataDir != null ? { dataDir: options.dataDir } : {}),
@@ -162,8 +179,10 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     ...(options.lookupFn != null ? { lookupFn: options.lookupFn } : {}),
     ...(options.sleep != null ? { sleep: options.sleep } : {}),
   });
-  const evaluatedUsers = new Set<string>();
-  const threadDescription = options.sns.provider === 'x'
+  const evaluatedUsers = options.evaluatedUsers ?? new Set<string>();
+  const toolPrefix = `sns_${snsProviderType}`;
+  const toolName = (action: string) => `${toolPrefix}_${action}`;
+  const threadDescription = snsProviderType === 'x'
     ? '投稿のスレッド文脈を取得する。X では自分の返信を除外しつつ、過去7日以内の対象投稿から辿れる会話のみを返す。7日を超える投稿は空の結果を返す。'
     : '投稿のスレッド文脈を取得する。';
 
@@ -171,15 +190,17 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     logger.warn('SNS activity store is not configured; duplicate prevention is disabled');
   }
 
-  return {
-    sns_post: tool({
-      description: 'SNS に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? }` を返す。',
+  const tools: ToolSet = {
+    [toolName('post')]: tool({
+      description: `${snsProviderType} に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに { status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? } を返す。`,
       inputSchema: snsPostInputSchema,
-      execute: async (input) => executeSafely('sns_post', async () => runWithSnsActionLocks([
-        input.reply_to_id != null ? buildReplyLockKey(input.reply_to_id) : '',
-        input.quote_post_id != null ? buildQuoteLockKey(input.quote_post_id) : '',
+      execute: async (input) => executeSafely(toolName('post'), async () => runWithSnsActionLocks([
+        input.reply_to_id != null ? buildReplyLockKey(snsProviderType, input.reply_to_id) : '',
+        input.quote_post_id != null ? buildQuoteLockKey(snsProviderType, input.quote_post_id) : '',
       ], async () => {
-        assertSupportedVisibility(options.sns.provider, input.visibility);
+        assertSupportedVisibility(snsProviderType, input.visibility);
+        assertProviderSupportsMedia(snsProviderType, input.media_ids);
+        assertProviderSupportsQuote(snsProviderType, input.quote_post_id);
         if (input.reply_to_id != null) {
           const alreadyReplied = await safeCheck('hasReplied', () => options.activityStore?.hasReplied(input.reply_to_id!) ?? Promise.resolve(false));
           if (alreadyReplied) {
@@ -204,19 +225,19 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
-    sns_get_post: tool({
-      description: 'SNS の特定投稿を取得する。`post_id` を渡す。',
+    [toolName('get_post')]: tool({
+      description: `${snsProviderType} の特定投稿を取得する。\`post_id\` を渡す。`,
       inputSchema: snsGetPostInputSchema,
-      execute: async (input) => executeSafely('sns_get_post', async () => {
+      execute: async (input) => executeSafely(toolName('get_post'), async () => {
         const result = await provider.getPost(input.post_id);
-        trackPost(result, options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
         return result;
       }),
     }),
-    sns_like: tool({
-      description: '指定した投稿にいいねする。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_liked", post_id }` を返す。',
+    [toolName('like')]: tool({
+      description: `${snsProviderType} の指定した投稿にいいねする。重複防止で既に処理済みなら投稿オブジェクトの代わりに { status: "skipped", reason: "already_liked", post_id } を返す。`,
       inputSchema: snsLikeInputSchema,
-      execute: async (input) => executeSafely('sns_like', async () => runWithSnsActionLocks([buildLikeLockKey(input.post_id)], async () => {
+      execute: async (input) => executeSafely(toolName('like'), async () => runWithSnsActionLocks([buildLikeLockKey(snsProviderType, input.post_id)], async () => {
         const alreadyLiked = await safeCheck('hasLiked', () => options.activityStore?.hasLiked(input.post_id) ?? Promise.resolve(false));
         if (alreadyLiked) {
           return { status: 'skipped' as const, reason: 'already_liked' as const, post_id: input.post_id };
@@ -224,14 +245,14 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
         const result = await provider.like(input.post_id);
         const warning = await safeRecord('sns_like', () => options.activityStore?.recordLike(input.post_id) ?? Promise.resolve(), options.reportError);
-        trackPost(result, options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
-    sns_repost: tool({
-      description: '指定した投稿をリポストする。重複防止で既に処理済みなら投稿オブジェクトの代わりに `{ status: "skipped", reason: "already_reposted", post_id }` を返す。',
+    [toolName('repost')]: tool({
+      description: `${snsProviderType} の指定した投稿をリポストする。重複防止で既に処理済みなら投稿オブジェクトの代わりに { status: "skipped", reason: "already_reposted", post_id } を返す。`,
       inputSchema: snsRepostInputSchema,
-      execute: async (input) => executeSafely('sns_repost', async () => runWithSnsActionLocks([buildRepostLockKey(input.post_id)], async () => {
+      execute: async (input) => executeSafely(toolName('repost'), async () => runWithSnsActionLocks([buildRepostLockKey(snsProviderType, input.post_id)], async () => {
         const alreadyReposted = await safeCheck('hasReposted', () => options.activityStore?.hasReposted(input.post_id) ?? Promise.resolve(false));
         if (alreadyReposted) {
           return { status: 'skipped' as const, reason: 'already_reposted' as const, post_id: input.post_id };
@@ -239,26 +260,38 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
         const result = await provider.repost(input.post_id);
         const warning = await safeRecord('sns_repost', () => options.activityStore?.recordRepost(input.post_id) ?? Promise.resolve(), options.reportError);
-        trackPost(result, options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
-    sns_upload_media: tool({
-      description: 'URL からメディアをアップロードし、処理完了を待って投稿用 mediaId を返す。',
+    [toolName('upload_media')]: tool({
+      description: `${snsProviderType} 用に URL からメディアをアップロードし、処理完了を待って投稿用 mediaId を返す。`,
       inputSchema: snsUploadMediaInputSchema,
-      execute: async (input) => executeSafely('sns_upload_media', () => provider.uploadMedia({
+      execute: async (input) => executeSafely(toolName('upload_media'), () => provider.uploadMedia({
         url: input.url,
         altText: input.alt_text,
       })),
     }),
-    sns_get_thread: tool({
+    [toolName('get_thread')]: tool({
       description: threadDescription,
       inputSchema: snsGetThreadInputSchema,
-      execute: async (input) => executeSafely('sns_get_thread', async () => {
+      execute: async (input) => executeSafely(toolName('get_thread'), async () => {
         const result = await provider.getThread(input.post_id);
-        trackThread([...result.ancestors, ...result.descendants], options.sns.provider, options.userStore, options.evaluateUser, evaluatedUsers);
+        trackThread([...result.ancestors, ...result.descendants], snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
         return result;
       }),
     }),
   };
+
+  // Backward-compatible non-enumerable aliases for unit tests and direct imports.
+  // They are intentionally not enumerable, so LLM tool exposure remains provider-namespaced.
+  for (const action of ['post', 'get_post', 'like', 'repost', 'upload_media', 'get_thread'] as const) {
+    Object.defineProperty(tools, `sns_${action}`, {
+      value: tools[toolName(action)],
+      enumerable: false,
+      configurable: true,
+    });
+  }
+
+  return tools;
 }

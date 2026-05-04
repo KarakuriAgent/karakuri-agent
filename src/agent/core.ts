@@ -7,8 +7,8 @@ import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
 import type { ISessionManager, SessionData } from '../session/types.js';
-import { createBuiltinSnsSkillDefinition, BUILTIN_SNS_SKILL_NAME } from '../sns/builtin-skill.js';
-import type { ISnsActivityStore } from '../sns/types.js';
+import { createBuiltinSnsSkillDefinition, createLegacyBuiltinSnsSkillDefinition, getBuiltinSnsSkillName } from '../sns/builtin-skill.js';
+import type { ISnsActivityStore, SnsProviderType } from '../sns/types.js';
 import type { SkillContextRegistry } from '../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../skill/types.js';
 import { evaluatePostResponse } from '../user/post-response-evaluator.js';
@@ -54,7 +54,7 @@ export interface HandleMessageOptions {
    */
   ephemeral?: boolean | undefined;
   skillActivityInstructions?: string | undefined;
-  autoLoadSnsSkill?: boolean | undefined;
+  autoLoadSnsSkill?: SnsProviderType | boolean | undefined;
 }
 
 export interface IAgent {
@@ -76,6 +76,8 @@ export interface KarakuriAgentOptions {
   schedulerStore?: ISchedulerStore | undefined;
   messageSink?: IMessageSink | undefined;
   userStore?: IUserStore | undefined;
+  snsActivityStores?: Map<SnsProviderType, ISnsActivityStore> | undefined;
+  /** @deprecated Use snsActivityStores. */
   snsActivityStore?: ISnsActivityStore | undefined;
   snsContextRegistry?: SkillContextRegistry | undefined;
   generateTextFn?: typeof generateText;
@@ -93,7 +95,7 @@ export class KarakuriAgent implements IAgent {
   private readonly schedulerStore: ISchedulerStore | undefined;
   private readonly messageSink: IMessageSink | undefined;
   private readonly userStore: IUserStore | undefined;
-  private readonly snsActivityStore: ISnsActivityStore | undefined;
+  private readonly snsActivityStores: Map<SnsProviderType, ISnsActivityStore>;
   private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
@@ -113,6 +115,7 @@ export class KarakuriAgent implements IAgent {
     schedulerStore,
     messageSink,
     userStore,
+    snsActivityStores,
     snsActivityStore,
     snsContextRegistry,
     generateTextFn = generateText,
@@ -128,7 +131,7 @@ export class KarakuriAgent implements IAgent {
     this.schedulerStore = schedulerStore;
     this.messageSink = messageSink;
     this.userStore = userStore;
-    this.snsActivityStore = snsActivityStore;
+    this.snsActivityStores = snsActivityStores ?? (snsActivityStore != null ? new Map([['mastodon', snsActivityStore]]) : new Map());
     this.snsContextRegistry = snsContextRegistry;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
@@ -171,7 +174,7 @@ export class KarakuriAgent implements IAgent {
     const isKarakuriWorldMode = isKarakuriWorldBot && this.config.karakuriWorld != null;
     const shouldIncludeUserProfile = isRealUser && !isKarakuriWorldMode;
     const ensuredUserPromise = shouldIncludeUserProfile && this.userStore != null
-      ? this.userStore.ensureUser(userId, userName).catch((error) => {
+      ? this.ensureUserAndResolveProfile(userId, userName).catch((error) => {
           logger.warn('Failed to ensure user record', error, { userId });
           return null;
         })
@@ -193,10 +196,14 @@ export class KarakuriAgent implements IAgent {
     const isSystemUser = userId === 'system';
     const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
     const includeSystemOnly = isSystemUser || hasAdminAccess;
-    const builtinSkills = !isKarakuriWorldMode && this.config.sns != null && includeSystemOnly
-      ? [createBuiltinSnsSkillDefinition()]
+    const configuredSnsList = this.config.snsList ?? (this.config.sns != null ? [this.config.sns] : []);
+    const useLegacySnsSkill = this.config.snsList == null && this.config.sns != null;
+    const builtinSkills = !isKarakuriWorldMode && configuredSnsList.length > 0 && includeSystemOnly
+      ? useLegacySnsSkill
+        ? [createLegacyBuiltinSnsSkillDefinition()]
+        : configuredSnsList.map((credentials) => createBuiltinSnsSkillDefinition(credentials.provider))
       : [];
-    const [coreMemory, recentDiaries, promptContext, listedSkills, ensuredUser] = await Promise.all([
+    const [coreMemory, recentDiaries, promptContext, listedSkills, ensuredUserProfile] = await Promise.all([
       this.memoryStore.readCoreMemory(),
       this.memoryStore.getRecentDiaries(this.recentDiaryCount),
       this.promptContextStore?.read() ?? Promise.resolve({ agentInstructions: null, rules: null }),
@@ -204,8 +211,9 @@ export class KarakuriAgent implements IAgent {
       ensuredUserPromise,
     ]);
 
-    const promptUserName = shouldIncludeUserProfile ? ensuredUser?.displayName ?? userName : undefined;
-    const promptUserProfile = shouldIncludeUserProfile ? ensuredUser?.profile ?? null : undefined;
+    const promptUserName = shouldIncludeUserProfile ? ensuredUserProfile?.record.displayName ?? userName : undefined;
+    const promptUserProfile = shouldIncludeUserProfile ? ensuredUserProfile?.profile.profile ?? null : undefined;
+    const promptUserAliasOf = shouldIncludeUserProfile ? ensuredUserProfile?.aliasOf?.primaryUserId ?? null : undefined;
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
       && this.messageSink != null;
@@ -215,22 +223,34 @@ export class KarakuriAgent implements IAgent {
     const effectiveSkills = isKarakuriWorldMode
       ? []
       : filterSkillsToAvailableTools(mergedSkills, {
-        sns: this.config.sns,
+        snsList: useLegacySnsSkill ? undefined : (isKarakuriWorldMode ? [] : configuredSnsList),
+        ...(useLegacySnsSkill ? { sns: this.config.sns } : {}),
         dataDir: this.config.dataDir,
-        snsActivityStore: this.snsActivityStore,
+        snsActivityStores: this.snsActivityStores,
         userStore: this.userStore,
+        evaluatedUsers: new Set<string>(),
       });
     // Auto-load the builtin SNS skill when explicitly requested via autoLoadSnsSkill option
     // so the LLM receives dynamic context (notifications, trends, activity log) and gated
     // tools without needing to call loadSkill. Currently only SnsLoopRunner sets this flag.
-    const shouldAutoLoadSnsSkill = options?.autoLoadSnsSkill === true
-      && this.snsContextRegistry != null
-      && effectiveSkills.some((skill) => skill.name === BUILTIN_SNS_SKILL_NAME);
+    const autoLoadSnsProvider = options?.autoLoadSnsSkill === true ? 'mastodon' : options?.autoLoadSnsSkill === false ? undefined : options?.autoLoadSnsSkill;
+    const autoLoadSnsSkillName = useLegacySnsSkill && options?.autoLoadSnsSkill === true
+      ? 'sns'
+      : autoLoadSnsProvider != null ? getBuiltinSnsSkillName(autoLoadSnsProvider) : null;
+    if (autoLoadSnsSkillName != null) {
+      if (this.snsContextRegistry == null) {
+        throw new Error(`Cannot auto-load SNS skill '${autoLoadSnsSkillName}': SNS context registry is not configured.`);
+      }
+      if (!effectiveSkills.some((skill) => skill.name === autoLoadSnsSkillName)) {
+        throw new Error(`Cannot auto-load SNS skill '${autoLoadSnsSkillName}': skill is not present in effective skills (provider missing or filtered out due to unavailable tools).`);
+      }
+    }
+    const shouldAutoLoadSnsSkill = autoLoadSnsSkillName != null;
     const autoLoadedSkills = shouldAutoLoadSnsSkill
-      ? effectiveSkills.filter((skill) => skill.name === BUILTIN_SNS_SKILL_NAME)
+      ? effectiveSkills.filter((skill) => skill.name === autoLoadSnsSkillName)
       : [];
     const visibleSkills = shouldAutoLoadSnsSkill
-      ? effectiveSkills.filter((skill) => skill.name !== BUILTIN_SNS_SKILL_NAME)
+      ? effectiveSkills.filter((skill) => skill.name !== autoLoadSnsSkillName)
       : effectiveSkills;
     const skillContextScope = this.snsContextRegistry?.createScope();
     let result: Awaited<ReturnType<typeof this.generateTextFn>>;
@@ -281,6 +301,7 @@ export class KarakuriAgent implements IAgent {
               userName: promptUserName ?? userName,
               userId,
               userProfile: promptUserProfile,
+              userAliasOf: promptUserAliasOf,
             }
           : {}),
         skills: visibleSkills,
@@ -317,6 +338,7 @@ export class KarakuriAgent implements IAgent {
               userName: promptUserName ?? userName,
               userId,
               userProfile: promptUserProfile,
+              userAliasOf: promptUserAliasOf,
             }
           : {}),
         recentDiaries,
@@ -346,7 +368,8 @@ export class KarakuriAgent implements IAgent {
           memoryStore: this.memoryStore,
           dataDir: this.config.dataDir,
           braveApiKey: this.config.braveApiKey,
-          sns: this.config.sns,
+          snsList: useLegacySnsSkill ? undefined : (isKarakuriWorldMode ? [] : configuredSnsList),
+        ...(useLegacySnsSkill ? { sns: this.config.sns } : {}),
           postMessageEnabled: hasPostMessage,
           postMessageChannelIds: this.config.postMessageChannelIds,
           reportChannelId: this.config.reportChannelId,
@@ -360,7 +383,8 @@ export class KarakuriAgent implements IAgent {
               : {}),
           ...(this.schedulerStore != null ? { schedulerStore: this.schedulerStore } : {}),
           ...(this.messageSink != null ? { messageSink: this.messageSink } : {}),
-          ...(this.snsActivityStore != null ? { snsActivityStore: this.snsActivityStore } : {}),
+          snsActivityStores: this.snsActivityStores,
+          kwMode: isKarakuriWorldMode,
           ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
           ...(isSystemUser && this.userStore != null ? {
             evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
@@ -483,8 +507,53 @@ export class KarakuriAgent implements IAgent {
     return summary.length > 0 ? summary : session.summary ?? 'No durable summary available yet.';
   }
 
+
+  private async ensureUserAndResolveProfile(userId: string, displayName: string): Promise<{
+    record: NonNullable<Awaited<ReturnType<IUserStore['ensureUser']>>>;
+    profile: NonNullable<Awaited<ReturnType<IUserStore['ensureUser']>>>;
+    aliasOf: import('../user/types.js').UserAlias | null;
+  }> {
+    if (this.userStore == null) {
+      throw new Error('User store is not configured');
+    }
+    const record = await this.userStore.ensureUser(userId, displayName);
+    const resolved = this.userStore.resolveAlias != null
+      ? await this.userStore.resolveAlias(userId)
+      : { primaryUserId: userId, aliasOf: null };
+    if (resolved.aliasOf == null) {
+      return { record, profile: record, aliasOf: null };
+    }
+    const primary = await this.userStore.getUser(resolved.primaryUserId);
+    return { record, profile: primary ?? record, aliasOf: resolved.aliasOf };
+  }
+
+
+  private async resolveProfileRecord(record: NonNullable<Awaited<ReturnType<IUserStore['getUser']>>>): Promise<NonNullable<Awaited<ReturnType<IUserStore['getUser']>>>> {
+    if (this.userStore?.resolveAlias == null) {
+      return record;
+    }
+    const resolved = await this.userStore.resolveAlias(record.userId);
+    if (resolved.aliasOf == null) {
+      return record;
+    }
+    return await this.userStore.getUser(resolved.primaryUserId) ?? record;
+  }
+
   async drainPendingEvaluations(): Promise<void> {
     await Promise.allSettled([...this.pendingEvaluations]);
+  }
+
+  private async resolveEvaluationLockUserId(userId: string, skipUserStore = false): Promise<string> {
+    if (skipUserStore || this.userStore?.resolveAlias == null) {
+      return userId;
+    }
+
+    try {
+      return (await this.userStore.resolveAlias(userId)).primaryUserId;
+    } catch (error) {
+      logger.warn('Failed to resolve user alias for evaluation mutex; falling back to raw user ID', error, { userId });
+      return userId;
+    }
   }
 
   private enqueueSnsUserEvaluation({
@@ -496,31 +565,34 @@ export class KarakuriAgent implements IAgent {
     userName: string;
     postText: string;
   }): void {
-    const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
-      try {
-        const ensuredUser = await (this.userStore?.ensureUser(userId, userName) ?? Promise.resolve(null));
-        const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
-        const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
+    const task = (async () => {
+      const lockUserId = await this.resolveEvaluationLockUserId(userId);
+      await this.evaluationMutex.runExclusive(`eval:${lockUserId}`, async () => {
+        try {
+          const ensuredUser = this.userStore != null ? await this.ensureUserAndResolveProfile(userId, userName) : null;
+          const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
+          const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
 
-        await evaluatePostResponse({
-          model: modelFactory(modelSelector),
-          memoryStore: this.memoryStore,
-          userStore: ensuredUser != null ? this.userStore : undefined,
-          userId,
-          userName,
-          savedDisplayName: ensuredUser?.displayName,
-          userMessage: `SNS post observed from ${userName}:\n${postText.trim()}`,
-          assistantResponse: 'Recorded SNS user context from the observed post.',
-          currentProfile: ensuredUser?.profile,
-          timezone: this.config.timezone,
-          generateTextFn: this.generateTextFn,
-          logger,
-          ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
-        });
-      } catch (error) {
-        logger.error('SNS user evaluation task failed', error, { userId });
-      }
-    });
+          await evaluatePostResponse({
+            model: modelFactory(modelSelector),
+            memoryStore: this.memoryStore,
+            userStore: ensuredUser != null ? this.userStore : undefined,
+            userId,
+            userName,
+            savedDisplayName: ensuredUser?.record.displayName,
+            userMessage: `SNS post observed from ${userName}:\n${postText.trim()}`,
+            assistantResponse: 'Recorded SNS user context from the observed post.',
+            currentProfile: ensuredUser?.profile.profile,
+            timezone: this.config.timezone,
+            generateTextFn: this.generateTextFn,
+            logger,
+            ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
+          });
+        } catch (error) {
+          logger.error('SNS user evaluation task failed', error, { userId });
+        }
+      });
+    })();
 
     this.pendingEvaluations.add(task);
     void task.finally(() => {
@@ -541,32 +613,36 @@ export class KarakuriAgent implements IAgent {
     assistantResponse: string;
     skipUserStore?: boolean;
   }): void {
-    const task = this.evaluationMutex.runExclusive(`eval:${userId}`, async () => {
-      try {
-        const currentUser = skipUserStore ? null : await (this.userStore?.getUser(userId) ?? Promise.resolve(null));
-        const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
-        const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
-        const userStoreIfKnown = !skipUserStore && currentUser != null ? this.userStore : undefined;
+    const task = (async () => {
+      const lockUserId = await this.resolveEvaluationLockUserId(userId, skipUserStore);
+      await this.evaluationMutex.runExclusive(`eval:${lockUserId}`, async () => {
+        try {
+          const currentUser = skipUserStore ? null : await (this.userStore?.getUser(userId) ?? Promise.resolve(null));
+          const currentProfileUser = !skipUserStore && currentUser != null ? await this.resolveProfileRecord(currentUser) : null;
+          const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
+          const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
+          const userStoreIfKnown = !skipUserStore && currentUser != null ? this.userStore : undefined;
 
-        await evaluatePostResponse({
-          model: modelFactory(modelSelector),
-          memoryStore: this.memoryStore,
-          userStore: userStoreIfKnown,
-          userId,
-          userName,
-          savedDisplayName: currentUser?.displayName,
-          userMessage,
-          assistantResponse,
-          currentProfile: currentUser?.profile,
-          timezone: this.config.timezone,
-          generateTextFn: this.generateTextFn,
-          logger,
-          ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
-        });
-      } catch (error) {
-        logger.warn('Post-response evaluation task failed', error, { userId });
-      }
-    });
+          await evaluatePostResponse({
+            model: modelFactory(modelSelector),
+            memoryStore: this.memoryStore,
+            userStore: userStoreIfKnown,
+            userId,
+            userName,
+            savedDisplayName: currentUser?.displayName,
+            userMessage,
+            assistantResponse,
+            currentProfile: currentProfileUser?.profile,
+            timezone: this.config.timezone,
+            generateTextFn: this.generateTextFn,
+            logger,
+            ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
+          });
+        } catch (error) {
+          logger.warn('Post-response evaluation task failed', error, { userId });
+        }
+      });
+    })();
 
     this.pendingEvaluations.add(task);
     void task.finally(() => {

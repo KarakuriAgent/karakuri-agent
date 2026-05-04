@@ -9,6 +9,7 @@ import type {
   ISnsActivityStore,
   SnsActivity,
   SnsActivityType,
+  SnsProviderType,
 } from './types.js';
 
 const logger = createLogger('SnsActivityStore');
@@ -46,6 +47,7 @@ interface PendingScheduledCountRow {
 
 export interface SqliteSnsActivityStoreOptions {
   dataDir: string;
+  provider?: SnsProviderType | undefined;
   now?: (() => Date) | undefined;
 }
 
@@ -72,8 +74,8 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
   private readonly deleteNotificationReservationStatement: Database.Statement<[string]>;
   private readonly deleteAllNotificationReservationsStatement: Database.Statement<[]>;
 
-  constructor({ dataDir, now }: SqliteSnsActivityStoreOptions) {
-    const dbPath = join(dataDir, 'sns-activity.db');
+  constructor({ dataDir, provider = 'mastodon', now }: SqliteSnsActivityStoreOptions) {
+    const dbPath = join(dataDir, `sns-activity-${provider}.db`);
     try {
       mkdirSync(dataDir, { recursive: true });
       this.db = new Database(dbPath);

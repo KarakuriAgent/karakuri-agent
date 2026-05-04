@@ -6,6 +6,7 @@ import type {
   SnsNotification,
   SnsPost,
   SnsProvider,
+  SnsProviderType,
 } from './types.js';
 import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
@@ -13,6 +14,7 @@ import { KeyedMutex } from '../utils/mutex.js';
 export interface SnsSkillContextProviderOptions {
   activityStore: ISnsActivityStore;
   snsProvider: SnsProvider;
+  provider?: SnsProviderType | undefined;
   notificationLimit?: number;
   trendLimit?: number;
   recentActivityLimit?: number;
@@ -61,7 +63,7 @@ export class SnsSkillContextProvider implements SkillContextProvider {
             notificationReservationToken = await this.options.activityStore.reserveLastNotificationId(latestNotificationId);
           } catch (error) {
             logger.error('Failed to reserve SNS notification cursor', error);
-            this.options.reportError?.('⚠️ Failed to reserve last SNS notification cursor; duplicate notification fetches may occur');
+            this.options.reportError?.(`⚠️ [${this.options.provider}] Failed to reserve last SNS notification cursor; duplicate notification fetches may occur`);
           }
         }
         sections.push(formatNotifications(notifications));
@@ -104,7 +106,7 @@ export class SnsSkillContextProvider implements SkillContextProvider {
                 } catch (error) {
                   const message = 'Failed to persist last SNS notification cursor -- next fetch may return duplicate notifications';
                   logger.error(message, error);
-                  this.options.reportError?.(`⚠️ ${message}`);
+                  this.options.reportError?.(`⚠️ [${this.options.provider}] ${message}`);
                 }
               },
               ...(notificationReservationToken != null
@@ -114,7 +116,7 @@ export class SnsSkillContextProvider implements SkillContextProvider {
                         await this.options.activityStore.releaseLastNotificationReservation?.(notificationReservationToken);
                       } catch (error) {
                         logger.error('Failed to release SNS notification cursor reservation', error);
-                        this.options.reportError?.('⚠️ Failed to release reserved SNS notification cursor after an aborted turn');
+                        this.options.reportError?.(`⚠️ [${this.options.provider}] Failed to release reserved SNS notification cursor after an aborted turn`);
                       }
                     },
                   }

@@ -1,7 +1,7 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 
-import type { IUserStore } from '../../user/types.js';
+import type { IUserStore, UserAlias } from '../../user/types.js';
 
 const DEFAULT_USER_LOOKUP_LIMIT = 5;
 const MAX_USER_LOOKUP_LIMIT = 10;
@@ -31,17 +31,40 @@ export function createUserLookupTool({ userStore }: UserLookupToolOptions) {
       });
       const hasMore = users.length > requestedLimit;
       const visibleUsers = users.slice(0, requestedLimit);
+      const userIds = visibleUsers.map((user) => user.userId);
+      const aliasesByPrimary = userStore.listAliasesByPrimaryIds != null
+        ? await userStore.listAliasesByPrimaryIds(userIds)
+        : new Map();
+      const aliasResolutions = userStore.resolveAlias != null
+        ? await Promise.all(userIds.map((id) => userStore.resolveAlias!(id)))
+        : [];
+      const aliasOfByUser = new Map(aliasResolutions
+        .filter((entry) => entry.aliasOf != null)
+        .map((entry) => [entry.aliasOf!.aliasUserId, entry.aliasOf!.primaryUserId]));
 
       return {
         found: visibleUsers.length,
         offset,
         hasMore,
         nextOffset: hasMore ? offset + visibleUsers.length : null,
-        users: visibleUsers.map((user) => ({
-          userId: user.userId,
-          displayName: user.displayName,
-          profile: truncateProfile(user.profile),
-        })),
+        users: visibleUsers.map((user) => {
+          const aliases = aliasesByPrimary.get(user.userId) ?? [];
+          const aliasOf = aliasOfByUser.get(user.userId);
+          return {
+            userId: user.userId,
+            displayName: user.displayName,
+            profile: truncateProfile(user.profile),
+            ...(aliases.length > 0
+              ? {
+                  aliases: aliases.map((alias: UserAlias) => ({
+                    user_id: alias.aliasUserId,
+                    ...(alias.note != null ? { note: alias.note } : {}),
+                  })),
+                }
+              : {}),
+            ...(aliasOf != null ? { alias_of: aliasOf } : {}),
+          };
+        }),
       };
     },
   });

@@ -129,6 +129,7 @@ class UserStoreStub implements IUserStore {
   profileUpdates: Array<{ userId: string; profile: string | null }> = [];
   displayNameUpdates: Array<{ userId: string; displayName: string }> = [];
   users = new Map<string, UserRecord>();
+  aliases = new Map<string, string>();
   failEnsure = false;
   failGetUser = false;
 
@@ -169,7 +170,8 @@ class UserStoreStub implements IUserStore {
 
   async updateProfile(userId: string, profile: string | null): Promise<void> {
     this.profileUpdates.push({ userId, profile });
-    const current = this.users.get(userId);
+    const { primaryUserId } = await this.resolveAlias(userId);
+    const current = this.users.get(primaryUserId);
     if (current != null) {
       current.profile = profile;
     }
@@ -192,6 +194,23 @@ class UserStoreStub implements IUserStore {
     const offset = options?.offset ?? 0;
     const limit = options?.limit ?? users.length;
     return users.slice(offset, offset + limit);
+  }
+
+  async resolveAlias(userId: string): Promise<{ primaryUserId: string; aliasOf: null | { aliasUserId: string; primaryUserId: string; linkedAt: string; linkedBy: string | null; note: string | null } }> {
+    const primaryUserId = this.aliases.get(userId);
+    if (primaryUserId == null) {
+      return { primaryUserId: userId, aliasOf: null };
+    }
+    return {
+      primaryUserId,
+      aliasOf: {
+        aliasUserId: userId,
+        primaryUserId,
+        linkedAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+        linkedBy: null,
+        note: null,
+      },
+    };
   }
 
   async close(): Promise<void> {}
@@ -250,6 +269,12 @@ class SessionManagerStub implements ISessionManager {
 
 function assistantMessage(content: string): ModelMessage {
   return { role: 'assistant', content };
+}
+
+async function flushMicrotasks(times = 8): Promise<void> {
+  for (let i = 0; i < times; i += 1) {
+    await Promise.resolve();
+  }
 }
 
 function makeGenerateTextResult(text: string, messages: ModelMessage[]) {
@@ -2082,8 +2107,7 @@ describe('KarakuriAgent', () => {
       agent.handleMessage('session-1', 'hi', 'Alice', { userId: 'user-1' }),
       agent.handleMessage('session-2', 'again', 'Alice', { userId: 'user-1' }),
     ]);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushMicrotasks();
 
     expect(evaluationSnapshots).toEqual(['user-1:(empty)']);
 
@@ -2094,6 +2118,75 @@ describe('KarakuriAgent', () => {
       'user-1:user-1 fact',
     ]);
     expect(memoryStore.coreWrites).toEqual(['user-1 fact', 'user-1 fact']);
+  });
+
+  it('serializes post-response evaluations by resolved alias primary user', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const userStore = new UserStoreStub([
+      {
+        userId: 'primary-user',
+        displayName: 'Primary',
+        profile: null,
+        createdAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+        updatedAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+      },
+      {
+        userId: 'sns:mastodon:alias-user',
+        displayName: 'Alias',
+        profile: null,
+        createdAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+        updatedAt: new Date('2025-01-01T00:00:00.000Z').toISOString(),
+      },
+    ]);
+    userStore.aliases.set('sns:mastodon:alias-user', 'primary-user');
+    const evaluationSnapshots: string[] = [];
+    let releaseFirstEvaluation!: () => void;
+    const firstEvaluationGate = new Promise<void>((resolve) => {
+      releaseFirstEvaluation = resolve;
+    });
+
+    const generateTextFn = vi.fn(async (options: { prompt?: string; output?: unknown }) => {
+      if (options.output != null) {
+        const userId = options.prompt?.match(/User ID: ([^\n]+)/)?.[1] ?? 'unknown';
+        const currentCoreMemory = options.prompt?.match(/Current core memory:\n([\s\S]*?)\n\nLatest user message:/)?.[1] ?? 'missing';
+        evaluationSnapshots.push(`${userId}:${currentCoreMemory}`);
+        if (evaluationSnapshots.length === 1) {
+          await firstEvaluationGate;
+        }
+        return makeStructuredEvaluationResult({
+          profileAction: 'none',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: `${userId} fact`,
+          diaryEntry: '',
+        });
+      }
+      return makeGenerateTextResult('reply', [assistantMessage('reply')]);
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      userStore,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await agent.handleMessage('session-1', 'hi', 'Primary', { userId: 'primary-user' });
+    await flushMicrotasks();
+    await agent.handleMessage('session-2', 'again', 'Alias', { userId: 'sns:mastodon:alias-user' });
+    await flushMicrotasks();
+
+    expect(evaluationSnapshots).toHaveLength(1);
+
+    releaseFirstEvaluation();
+    await expect(agent.drainPendingEvaluations()).resolves.toBeUndefined();
+    expect(evaluationSnapshots).toEqual([
+      'primary-user:(empty)',
+      'sns:mastodon:alias-user:primary-user fact',
+    ]);
   });
 
   it('starts post-response generation before waiting on the persistence lock', async () => {
@@ -2411,8 +2504,7 @@ describe('KarakuriAgent', () => {
       await firstPersistenceLockEntered;
 
       await snsGetPost.execute?.({ post_id: 'post-2' }, { toolCallId: 'tool-2', messages: [] });
-      await Promise.resolve();
-      await Promise.resolve();
+      await flushMicrotasks();
 
       expect(startedEvaluations).toEqual(expect.arrayContaining([
         'sns:mastodon:acct-1',

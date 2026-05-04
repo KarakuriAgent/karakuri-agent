@@ -19,6 +19,8 @@ import { createSnsProvider } from './sns/index.js';
 import { SnsSkillContextProvider } from './sns/context-provider.js';
 import { SqliteSnsActivityStore } from './sns/activity-store.js';
 import { SnsLoopRunner } from './sns/loop-runner.js';
+import { migrateLegacySnsActivityDb } from './sns/legacy-migration.js';
+import type { SnsProviderType } from './sns/types.js';
 import { SkillContextRegistry } from './skill/context-provider.js';
 import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
@@ -76,7 +78,9 @@ async function main(): Promise<void> {
   const diaryStore = new SqliteDiaryStore({ dataDir: config.dataDir, timezone: config.timezone });
   const memoryStore = new CompositeMemoryStore(coreMemoryStore, diaryStore);
   const userStore = new SqliteUserStore({ dataDir: config.dataDir });
-  const snsActivityStore = config.sns != null ? new SqliteSnsActivityStore({ dataDir: config.dataDir }) : undefined;
+  migrateLegacySnsActivityDb({ dataDir: config.dataDir, snsProviders: (config.snsList ?? []).map((sns) => sns.provider), migrateTo: config.snsLegacyDbMigrateTo });
+  const snsActivityStores = new Map<SnsProviderType, SqliteSnsActivityStore>();
+  const snsLoopRunners = new Map<SnsProviderType, SnsLoopRunner>();
   const messageSink = config.allowedChannelIds != null && config.allowedChannelIds.length > 0
     ? new DiscordMessageSink({
         botToken: config.discordBotToken,
@@ -93,18 +97,23 @@ async function main(): Promise<void> {
         });
       }
     : undefined;
-  const snsProvider = config.sns != null ? createSnsProvider({ ...config.sns, dataDir: config.dataDir }) : undefined;
-  const snsContextRegistry = config.sns != null && snsActivityStore != null && snsProvider != null
-    ? (() => {
-        const registry = new SkillContextRegistry();
-        registry.register('sns', new SnsSkillContextProvider({
-          activityStore: snsActivityStore,
-          snsProvider,
-          reportError: snsReportError,
-        }));
-        return registry;
-      })()
+  const snsProviders = new Map<SnsProviderType, ReturnType<typeof createSnsProvider>>();
+  const snsContextRegistry = (config.snsList ?? []).length > 0
+    ? new SkillContextRegistry()
     : undefined;
+  for (const credentials of (config.snsList ?? [])) {
+    const provider = credentials.provider;
+    const activityStore = new SqliteSnsActivityStore({ dataDir: config.dataDir, provider });
+    const snsProvider = createSnsProvider({ ...credentials, dataDir: config.dataDir });
+    snsActivityStores.set(provider, activityStore);
+    snsProviders.set(provider, snsProvider);
+    snsContextRegistry?.register(`sns-${provider}`, new SnsSkillContextProvider({
+      activityStore,
+      snsProvider,
+      provider,
+      reportError: snsReportError,
+    }));
+  }
   const sessionManager = new FileSessionManager({
     dataDir: config.dataDir,
     tokenBudget: config.tokenBudget,
@@ -123,21 +132,23 @@ async function main(): Promise<void> {
     schedulerStore,
     messageSink,
     userStore,
-    snsActivityStore,
+    snsActivityStores,
     snsContextRegistry,
   });
-  const snsLoopRunner = config.sns != null
-    ? new SnsLoopRunner({
-        agent,
-        minIntervalMinutes: config.snsLoopMinIntervalMinutes,
-        maxIntervalMinutes: config.snsLoopMaxIntervalMinutes,
-        ...(messageSink != null ? { messageSink } : {}),
-        ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
-        hasPostMessage: messageSink != null
-          && config.reportChannelId != null
-          && (config.postMessageChannelIds ?? []).includes(config.reportChannelId),
-      })
-    : undefined;
+  for (const credentials of (config.snsList ?? [])) {
+    const provider = credentials.provider;
+    snsLoopRunners.set(provider, new SnsLoopRunner({
+      agent,
+      provider,
+      minIntervalMinutes: config.snsLoopMinIntervalMinutes,
+      maxIntervalMinutes: config.snsLoopMaxIntervalMinutes,
+      ...(messageSink != null ? { messageSink } : {}),
+      ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
+      hasPostMessage: messageSink != null
+        && config.reportChannelId != null
+        && (config.postMessageChannelIds ?? []).includes(config.reportChannelId),
+    }));
+  }
   const memoryMaintenanceRunner = config.memoryMaintenanceIntervalMinutes != null
     ? (() => {
         const maintenanceModelConfig = createMemoryMaintenanceModelConfig(config);
@@ -164,7 +175,9 @@ async function main(): Promise<void> {
   });
   const bot = createBot(config, agent, { messageSink });
 
-  snsLoopRunner?.start();
+  for (const runner of snsLoopRunners.values()) {
+    runner.start();
+  }
   memoryMaintenanceRunner?.start();
   await bot.initialize();
   logger.debug('Bot initialized');
@@ -193,7 +206,7 @@ async function main(): Promise<void> {
         closeServer: () => closeServer(server),
         closeScheduler: () => Promise.all([
           scheduler.close(),
-          snsLoopRunner?.close() ?? Promise.resolve(),
+          ...Array.from(snsLoopRunners.values(), (runner) => runner.close()),
           memoryMaintenanceRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
@@ -201,7 +214,7 @@ async function main(): Promise<void> {
         closeStores: () => [
           memoryStore.close(),
           userStore.close(),
-          snsActivityStore?.close() ?? Promise.resolve(),
+          ...Array.from(snsActivityStores.values(), (store) => store.close()),
           promptContextStore.close(),
           skillStore.close(),
           schedulerStore.close(),

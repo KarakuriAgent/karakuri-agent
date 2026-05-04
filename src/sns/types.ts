@@ -1,3 +1,4 @@
+export type { SnsCredentials, SnsProviderType } from '../config.js';
 export type SnsVisibility = 'public' | 'unlisted' | 'private' | 'direct';
 export type SnsActivityType = SnsActivity['type'];
 
@@ -101,6 +102,25 @@ export interface SnsUserSummary {
   url: string;
 }
 
+export interface SnsUserProfile extends SnsUserSummary {
+  bio?: string | undefined;
+  followerCount: number;
+  followingCount: number;
+  postCount: number;
+  /**
+   * provider が relationship 取得不能な場合はフィールドを省略（不明）。
+   * `false` は「明示的にフォローしていない」を意味し、`undefined`（不明）と区別される。
+   * X provider は API 制約のため常に未設定。
+   */
+  followedByMe?: boolean;
+}
+
+export interface SnsMyMetrics {
+  followerCount: number;
+  followingCount: number;
+  postCount: number;
+}
+
 export interface SearchResult {
   posts: SnsPost[];
   users: SnsUserSummary[];
@@ -148,7 +168,13 @@ export interface SnsProvider {
   getTimeline(params?: TimelineParams): Promise<SnsPost[]>;
   search(params: SearchParams): Promise<SearchResult>;
   like(postId: string): Promise<SnsPost>;
+  unlike(postId: string): Promise<SnsPost>;
   repost(postId: string): Promise<SnsPost>;
+  follow(handle: string): Promise<void>;
+  unfollow(handle: string): Promise<void>;
+  getUserProfile(handle: string): Promise<SnsUserProfile>;
+  getMyMetrics(): Promise<SnsMyMetrics>;
+  markNotificationsRead(notificationIds: string[]): Promise<void>;
   getNotifications(params?: NotificationParams): Promise<NotificationFetchResult>;
   uploadMedia(params: UploadMediaParams): Promise<UploadMediaResult>;
   getThread(postId: string): Promise<ThreadResult>;
