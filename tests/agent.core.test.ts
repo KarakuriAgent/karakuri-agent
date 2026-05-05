@@ -302,7 +302,7 @@ function makeKwModeGenerateTextResult(comment?: string) {
       }],
       toolResults: [{
         toolName: 'karakuri_world_get_map',
-        output: { ok: true, message: 'Map request accepted.' },
+        output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
       }],
     }],
     response: {
@@ -328,7 +328,7 @@ function makeKwModeGenerateTextResult(comment?: string) {
               type: 'tool-result',
               toolCallId,
               toolName: 'karakuri_world_get_map',
-              output: { ok: true, message: 'Map request accepted.' },
+              output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
             },
           ],
         },
@@ -354,7 +354,7 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
       toolResults: [
         {
           toolName: 'karakuri_world_get_map',
-          output: { ok: true, message: 'Map request accepted.' },
+          output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
         },
         {
           toolName: 'karakuri_world_move',
@@ -1352,7 +1352,7 @@ describe('KarakuriAgent', () => {
           type: 'tool-result',
           toolCallId: 'kw-tool-1',
           toolName: 'karakuri_world_get_map',
-          output: { ok: true, message: 'Map request accepted.' },
+          output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
         },
       ],
     });

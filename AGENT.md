@@ -85,7 +85,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **ファイルベース state**: Chat SDK の subscription / cache / lock 状態は `data/state/chat-state.json` に保存される。
 - **SNS の重複防止と専用ループ**: SNS 活動は SQLite に記録し、like / repost / reply / quote の重複防止を行う。SNS 自動実行は heartbeat から分離した専用ループで行う。
 - **SNS 投稿の 140 文字制限**: `sns_<provider>_post` の投稿本文は全プロバイダ共通で 140 文字以内に制限される（Zod スキーマ + ツール description + ビルトインスキル instructions の 3 層制御）。プラットフォーム固有の上限ではなく、エージェントの投稿スタイルとしての設計判断。
-- **Karakuri World 専用モード**: `KARAKURI_WORLD_BOT_IDS` に一致する相手では専用ツールセットのみを公開する。
+- **Karakuri World 専用モード**: `KARAKURI_WORLD_BOT_IDS` に一致する相手では専用ツールセットのみを公開する。info 系ツールは戻り値の `data` に実データを inline 返却し、後続 Discord 通知は choices のみを扱う。
 
 ### Scheduler / proactive messaging の注意点
 

@@ -10,7 +10,7 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` / `data/system-skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
 - trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
-- `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザー向けの karakuri-world 専用 KW モード（`karakuri_world_*` のみ登録、1通知=1アクション、`comment` を返信に使用）
+- `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザー向けの karakuri-world 専用 KW モード（`karakuri_world_*` のみ登録、1通知=1アクション、`comment` を返信に使用。info 系ツールの実データは戻り値の `data` で inline 取得）
 - provider namespaced な `sns_<provider>_<action>` ツールによる Mastodon / X / ELYTH 向け SNS 投稿・取得・通知確認・メディアアップロード（skill-gated。例: `sns_mastodon_post`, `sns_x_like`, `sns_elyth_get_thread`）。SNS 専用ループが provider ごとにビルトイン SNS スキル（`sns-mastodon` / `sns-x` / `sns-elyth`）を自動ロードし、投稿や通知対応を行う。X / ELYTH は `public` 投稿のみ対応、ELYTH は repost / quote / メディアアップロード非対応）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
 - `MEMORY_MAINTENANCE_INTERVAL_MINUTES` によるコアメモリ・日記の自動整理

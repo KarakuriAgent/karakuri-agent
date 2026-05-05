@@ -368,6 +368,25 @@ const endConversationResponseSchema = z.union([conversationSpeakResponseSchema, 
 export type KarakuriWorldInput = z.infer<typeof karakuriWorldInputSchema>;
 
 type KarakuriWorldOperation = KarakuriWorldInput['operation'];
+type InfoCommandOperation = Extract<
+  KarakuriWorldOperation,
+  'get_map'
+  | 'get_world_agents'
+  | 'get_status'
+  | 'get_nearby_agents'
+  | 'get_active_conversations'
+  | 'get_event'
+>;
+
+const getInfoCommandResponseSchema = <C extends InfoCommandOperation>(command: C) =>
+  z
+    .object({
+      ok: z.literal(true),
+      message: z.string().min(1),
+      command: z.literal(command),
+      data: z.record(z.string(), z.unknown()),
+    })
+    .strict();
 
 export interface CreateKarakuriWorldToolsOptions extends ApiCredentials {
   fetch?: typeof fetch;
@@ -852,7 +871,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'GET',
           path: 'api/agents/map',
-          responseSchema: notificationAckResponseSchema,
+          responseSchema: getInfoCommandResponseSchema('get_map'),
         });
       case 'get_world_agents':
         return requestJson({
@@ -860,7 +879,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'GET',
           path: 'api/agents/world-agents',
-          responseSchema: notificationAckResponseSchema,
+          responseSchema: getInfoCommandResponseSchema('get_world_agents'),
         });
       case 'get_status':
         return requestJson({
@@ -868,7 +887,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'GET',
           path: 'api/agents/status',
-          responseSchema: notificationAckResponseSchema,
+          responseSchema: getInfoCommandResponseSchema('get_status'),
         });
       case 'get_nearby_agents':
         return requestJson({
@@ -876,7 +895,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'GET',
           path: 'api/agents/nearby-agents',
-          responseSchema: notificationAckResponseSchema,
+          responseSchema: getInfoCommandResponseSchema('get_nearby_agents'),
         });
       case 'get_active_conversations':
         return requestJson({
@@ -884,7 +903,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'GET',
           path: 'api/agents/active-conversations',
-          responseSchema: notificationAckResponseSchema,
+          responseSchema: getInfoCommandResponseSchema('get_active_conversations'),
         });
       case 'get_event':
         return requestJson({
@@ -892,7 +911,7 @@ async function executeKarakuriWorldOperation(
           operation: input.operation,
           method: 'GET',
           path: 'api/agents/event',
-          responseSchema: notificationAckResponseSchema,
+          responseSchema: getInfoCommandResponseSchema('get_event'),
         });
       default: {
         const _exhaustive: never = input;
@@ -991,32 +1010,32 @@ export function createKarakuriWorldTools({
 
   return {
     karakuri_world_get_map: tool({
-      description: 'ワールド全体の地図情報取得を依頼する。詳細は通知で届く。',
+      description: 'ワールド全体の地図情報を取得する。結果は戻り値の `data` (rows / cols / nodes / buildings / npcs) に含まれる。後続 Discord 通知は choices のみ。',
       inputSchema: withComment(getMapToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_map', input, context),
     }),
     karakuri_world_get_world_agents: tool({
-      description: 'ログイン中エージェントの一覧と状態の取得を依頼する。詳細は通知で届く。',
+      description: 'ログイン中エージェントの一覧と状態を取得する。結果は戻り値の `data.agents` に含まれる。後続 Discord 通知は choices のみ。',
       inputSchema: withComment(getWorldAgentsToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_world_agents', input, context),
     }),
     karakuri_world_get_status: tool({
-      description: '自分の所持金 / 所持品 / 現在地の取得を依頼する。詳細は通知で届く。',
+      description: '自分の所持金 / 所持品 / 現在地を取得する。結果は戻り値の `data` (`node_id` / `money` / `items`) に含まれる。`use_item` の `item_id` および `transfer` の `item.item_id` ソース。後続 Discord 通知は choices のみ。',
       inputSchema: withComment(getStatusToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_status', input, context),
     }),
     karakuri_world_get_nearby_agents: tool({
-      description: '隣接エージェント（会話候補 / 譲渡候補）の取得を依頼する。詳細は通知で届く。',
+      description: '隣接エージェント (`conversation_candidates` / `transfer_candidates`) を取得する。結果は戻り値の `data` に含まれる。後続 Discord 通知は choices のみ。',
       inputSchema: withComment(getNearbyAgentsToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_nearby_agents', input, context),
     }),
     karakuri_world_get_active_conversations: tool({
-      description: '参加可能な進行中会話の取得を依頼する。詳細は通知で届く。',
+      description: '参加可能な進行中会話を取得する。結果は戻り値の `data.conversations` に含まれる (`conversation_id` 付き)。後続 Discord 通知は choices のみ。',
       inputSchema: withComment(getActiveConversationsToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_active_conversations', input, context),
     }),
     karakuri_world_get_event: tool({
-      description: '実施中の永続サーバーイベント一覧の取得を依頼する。詳細は通知で届く。',
+      description: '実施中の永続サーバーイベント一覧を取得する。結果は戻り値の `data.events` に含まれる。後続 Discord 通知は choices のみ。',
       inputSchema: withComment(getEventToolInputSchema),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('get_event', input, context),
     }),
