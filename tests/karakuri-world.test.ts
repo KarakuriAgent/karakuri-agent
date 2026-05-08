@@ -581,7 +581,9 @@ describe('karakuri-world tools', () => {
       new Response(
         JSON.stringify({
           ok: true,
-          message: 'Map request accepted. Details will arrive by notification.',
+          message: '結果をレスポンスに含めて返却しました。',
+          command: 'get_map',
+          data: { rows: 5, cols: 5, nodes: [], buildings: [], npcs: [] },
         }),
         {
           status: 200,
@@ -616,16 +618,20 @@ describe('karakuri-world tools', () => {
     expect(requestInit).not.toHaveProperty('body');
     expect(result).toEqual({
       ok: true,
-      message: 'Map request accepted. Details will arrive by notification.',
+      message: '結果をレスポンスに含めて返却しました。',
+      command: 'get_map',
+      data: { rows: 5, cols: 5, nodes: [], buildings: [], npcs: [] },
     });
   });
 
-  it('uses GET for get_world_agents and returns a notification ack response', async () => {
+  it('uses GET for get_world_agents and returns inline data', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(
         JSON.stringify({
           ok: true,
-          message: 'World agents request accepted. Details will arrive by notification.',
+          message: '結果をレスポンスに含めて返却しました。',
+          command: 'get_world_agents',
+          data: { agents: [] },
         }),
         {
           status: 200,
@@ -647,7 +653,9 @@ describe('karakuri-world tools', () => {
     expect(requestInit).not.toHaveProperty('body');
     expect(result).toEqual({
       ok: true,
-      message: 'World agents request accepted. Details will arrive by notification.',
+      message: '結果をレスポンスに含めて返却しました。',
+      command: 'get_world_agents',
+      data: { agents: [] },
     });
   });
 
@@ -655,29 +663,45 @@ describe('karakuri-world tools', () => {
     [
       'karakuri_world_get_status',
       'https://example.com/api/agents/status',
-      'Status request accepted. Details will arrive by notification.',
+      '結果をレスポンスに含めて返却しました。',
+      'get_status',
+      { node_id: '1-1', money: 100, items: [] },
     ],
     [
       'karakuri_world_get_nearby_agents',
       'https://example.com/api/agents/nearby-agents',
-      'Nearby agents request accepted. Details will arrive by notification.',
+      '結果をレスポンスに含めて返却しました。',
+      'get_nearby_agents',
+      { conversation_candidates: [], transfer_candidates: [] },
     ],
     [
       'karakuri_world_get_active_conversations',
       'https://example.com/api/agents/active-conversations',
-      'Active conversations request accepted. Details will arrive by notification.',
+      '結果をレスポンスに含めて返却しました。',
+      'get_active_conversations',
+      { conversations: [] },
     ],
     [
       'karakuri_world_get_event',
       'https://example.com/api/agents/event',
-      'Server events request accepted. Details will arrive by notification.',
+      '結果をレスポンスに含めて返却しました。',
+      'get_event',
+      { events: [] },
     ],
-  ] as const)('uses GET for %s and returns a notification ack response', async (toolName, expectedUrl, message) => {
+  ] as const)('uses GET for %s and returns inline data', async (
+    toolName,
+    expectedUrl,
+    message,
+    expectedCommand,
+    expectedData,
+  ) => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(
         JSON.stringify({
           ok: true,
           message,
+          command: expectedCommand,
+          data: expectedData,
         }),
         {
           status: 200,
@@ -700,8 +724,80 @@ describe('karakuri-world tools', () => {
       expect(requestInit).toMatchObject({ method: 'GET' });
       expect(requestInit).not.toHaveProperty('body');
     }
-    expect(resultWithoutComment).toEqual({ ok: true, message });
-    expect(resultWithComment).toEqual({ ok: true, message });
+    expect(resultWithoutComment).toEqual({
+      ok: true,
+      message,
+      command: expectedCommand,
+      data: expectedData,
+    });
+    expect(resultWithComment).toEqual({
+      ok: true,
+      message,
+      command: expectedCommand,
+      data: expectedData,
+    });
+  });
+
+  it.each([
+    ['null data', { ok: true, message: 'bad', command: 'get_map', data: null }],
+    ['string data', { ok: true, message: 'bad', command: 'get_map', data: 'bad' }],
+    ['array data', { ok: true, message: 'bad', command: 'get_map', data: [] }],
+    ['command echo mismatch', { ok: true, message: 'bad', command: 'get_status', data: {} }],
+    ['extra top-level field', {
+      ok: true,
+      message: 'bad',
+      command: 'get_map',
+      data: {},
+      extra: 'leak',
+    }],
+    ['legacy ok-message-only shape', { ok: true, message: 'Map request accepted.' }],
+  ] as const)('rejects invalid inline info response: %s', async (_caseName, responseBody) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify(responseBody), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(
+      tools.karakuri_world_get_map!.execute!({}, DEFAULT_OPTIONS),
+    ).rejects.toThrow(KarakuriWorldResponseError);
+  });
+
+  it.each([
+    ['karakuri_world_get_map', 'get_map', 'get_status'],
+    ['karakuri_world_get_world_agents', 'get_world_agents', 'get_map'],
+    ['karakuri_world_get_status', 'get_status', 'get_map'],
+    ['karakuri_world_get_nearby_agents', 'get_nearby_agents', 'get_map'],
+    ['karakuri_world_get_active_conversations', 'get_active_conversations', 'get_map'],
+    ['karakuri_world_get_event', 'get_event', 'get_map'],
+  ] as const)('rejects mismatched command echo for %s', async (toolName, _expected, wrongCommand) => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          message: 'bad',
+          command: wrongCommand,
+          data: {},
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      ));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com',
+      apiKey: 'secret',
+      fetch,
+    });
+
+    await expect(
+      tools[toolName]!.execute!({}, DEFAULT_OPTIONS),
+    ).rejects.toThrow(KarakuriWorldResponseError);
   });
 
   it('retries once on transient network failures for GET requests', async () => {
@@ -715,6 +811,8 @@ describe('karakuri-world tools', () => {
         new Response(JSON.stringify({
           ok: true,
           message: 'Map request accepted.',
+          command: 'get_map',
+          data: {},
         }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
@@ -729,7 +827,12 @@ describe('karakuri-world tools', () => {
     const result = await tools.karakuri_world_get_map!.execute!({}, DEFAULT_OPTIONS);
 
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(result).toEqual({ ok: true, message: 'Map request accepted.' });
+    expect(result).toEqual({
+      ok: true,
+      message: 'Map request accepted.',
+      command: 'get_map',
+      data: {},
+    });
   });
 
   it('does not retry transient network failures for POST requests', async () => {
@@ -761,6 +864,8 @@ describe('karakuri-world tools', () => {
           new Response(JSON.stringify({
             ok: true,
             message: 'Map request accepted.',
+            command: 'get_map',
+            data: {},
           }), {
             status: 200,
             headers: { 'content-type': 'application/json' },
@@ -779,7 +884,12 @@ describe('karakuri-world tools', () => {
       expect(fetch.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
       expect(fetch.mock.calls[1]?.[1]?.signal).toBeInstanceOf(AbortSignal);
       expect(fetch.mock.calls[0]?.[1]?.signal).not.toBe(fetch.mock.calls[1]?.[1]?.signal);
-      expect(result).toEqual({ ok: true, message: 'Map request accepted.' });
+      expect(result).toEqual({
+        ok: true,
+        message: 'Map request accepted.',
+        command: 'get_map',
+        data: {},
+      });
     } finally {
       timeoutSpy.mockRestore();
     }
