@@ -24,8 +24,8 @@ const EXPECTED_TOOL_NAMES = [
   'karakuri_world_action',
   'karakuri_world_use_item',
   'karakuri_world_transfer',
-  'karakuri_world_accept_transfer',
-  'karakuri_world_reject_transfer',
+  'karakuri_world_transfer_accept',
+  'karakuri_world_transfer_reject',
   'karakuri_world_wait',
   'karakuri_world_conversation_start',
   'karakuri_world_conversation_accept',
@@ -34,7 +34,7 @@ const EXPECTED_TOOL_NAMES = [
   'karakuri_world_conversation_stay',
   'karakuri_world_conversation_leave',
   'karakuri_world_conversation_speak',
-  'karakuri_world_end_conversation',
+  'karakuri_world_conversation_end',
 ] as const;
 
 describe('karakuri-world tools', () => {
@@ -186,34 +186,34 @@ describe('karakuri-world tools', () => {
     })).toThrow();
   });
 
-  it('validates accept_transfer / reject_transfer schemas strictly (no arguments)', () => {
-    // accept_transfer / reject_transfer は引数なし。サーバー側が pending_transfer_id から自動解決する
+  it('validates transfer_accept / transfer_reject schemas strictly (no arguments)', () => {
+    // transfer_accept / transfer_reject は引数なし。サーバー側が pending_transfer_id から自動解決する
     expect(karakuriWorldInputSchema.parse({
-      operation: 'accept_transfer',
+      operation: 'transfer_accept',
     })).toEqual({
-      operation: 'accept_transfer',
+      operation: 'transfer_accept',
     });
     expect(karakuriWorldInputSchema.parse({
-      operation: 'reject_transfer',
+      operation: 'transfer_reject',
     })).toEqual({
-      operation: 'reject_transfer',
+      operation: 'transfer_reject',
     });
 
     // 旧 API 引数 transfer_id は strict object で拒否される (リグレッションガード)
     expect(() => karakuriWorldInputSchema.parse({
-      operation: 'accept_transfer',
+      operation: 'transfer_accept',
       transfer_id: 't-1',
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
-      operation: 'accept_transfer',
+      operation: 'transfer_accept',
       extra: true,
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
-      operation: 'reject_transfer',
+      operation: 'transfer_reject',
       transfer_id: 't-1',
     })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
-      operation: 'reject_transfer',
+      operation: 'transfer_reject',
       extra: true,
     })).toThrow();
   });
@@ -317,7 +317,7 @@ describe('karakuri-world tools', () => {
       transfer_status: 'pending',
       transfer_id: 't-0',
     });
-    await expect(tools.karakuri_world_accept_transfer!.execute!(
+    await expect(tools.karakuri_world_transfer_accept!.execute!(
       { comment: '受け取ります。' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
@@ -326,7 +326,7 @@ describe('karakuri-world tools', () => {
       transfer_status: 'completed',
       transfer_id: 't-1',
     });
-    await expect(tools.karakuri_world_reject_transfer!.execute!(
+    await expect(tools.karakuri_world_transfer_reject!.execute!(
       { comment: '今は受け取れません。' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
@@ -1017,7 +1017,7 @@ describe('karakuri-world tools', () => {
     expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_reject', conversation_id: 'conv-1' })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_speak', conversation_id: 'conv-1', message: 'hello' })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
-      operation: 'end_conversation',
+      operation: 'conversation_end',
       message: 'またね',
       next_speaker_agent_id: 'agent-2',
       transfer: { item: { item_id: 'x', quantity: 1 } },
@@ -1079,17 +1079,17 @@ describe('karakuri-world tools', () => {
     })).toThrow();
 
     expect(karakuriWorldInputSchema.parse({
-      operation: 'end_conversation',
+      operation: 'conversation_end',
       message: 'また後で。',
       next_speaker_agent_id: 'agent-2',
     })).toEqual({
-      operation: 'end_conversation',
+      operation: 'conversation_end',
       message: 'また後で。',
       next_speaker_agent_id: 'agent-2',
     });
-    expect(() => karakuriWorldInputSchema.parse({ operation: 'end_conversation', message: 'また後で。' })).toThrow();
+    expect(() => karakuriWorldInputSchema.parse({ operation: 'conversation_end', message: 'また後で。' })).toThrow();
     expect(() => karakuriWorldInputSchema.parse({
-      operation: 'end_conversation',
+      operation: 'conversation_end',
       message: 'また後で。',
       next_speaker_agent_id: '',
     })).toThrow();
@@ -1249,20 +1249,20 @@ describe('karakuri-world tools', () => {
     });
   });
 
-  it('validates end_conversation with transfer_response only', async () => {
+  it('validates conversation_end with transfer_response only', async () => {
     expect(karakuriWorldInputSchema.parse({
-      operation: 'end_conversation',
+      operation: 'conversation_end',
       message: 'またね。',
       next_speaker_agent_id: 'agent-2',
       transfer_response: 'reject',
     })).toEqual({
-      operation: 'end_conversation',
+      operation: 'conversation_end',
       message: 'またね。',
       next_speaker_agent_id: 'agent-2',
       transfer_response: 'reject',
     });
     expect(() => karakuriWorldInputSchema.parse({
-      operation: 'end_conversation',
+      operation: 'conversation_end',
       message: 'またね。',
       next_speaker_agent_id: 'agent-2',
       transfer: { item: { item_id: 'apple', quantity: 1 } },
@@ -1279,7 +1279,7 @@ describe('karakuri-world tools', () => {
       fetch,
     });
 
-    await expect(tools.karakuri_world_end_conversation!.execute!(
+    await expect(tools.karakuri_world_conversation_end!.execute!(
       {
         message: 'またね。',
         next_speaker_agent_id: 'agent-2',
@@ -1301,7 +1301,7 @@ describe('karakuri-world tools', () => {
     );
   });
 
-  it('rejects invalid transfer_response enum values on conversation_speak / end_conversation', () => {
+  it('rejects invalid transfer_response enum values on conversation_speak / conversation_end', () => {
     const invalidValues: unknown[] = ['maybe', '', 'ACCEPT', 'Accept', 'reject ', 1, true, null];
 
     for (const value of invalidValues) {
@@ -1312,7 +1312,7 @@ describe('karakuri-world tools', () => {
         transfer_response: value,
       }).success).toBe(false);
       expect(karakuriWorldInputSchema.safeParse({
-        operation: 'end_conversation',
+        operation: 'conversation_end',
         message: 'またね。',
         next_speaker_agent_id: 'agent-2',
         transfer_response: value,
@@ -1425,13 +1425,13 @@ describe('karakuri-world tools', () => {
     }).success).toBe(true);
   });
 
-  it('rejects transfer field on the end_conversation tool inputSchema', () => {
+  it('rejects transfer field on the conversation_end tool inputSchema', () => {
     const tools = createKarakuriWorldTools({
       apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
       fetch: vi.fn(),
     });
-    const endInputSchema = tools.karakuri_world_end_conversation?.inputSchema as {
+    const endInputSchema = tools.karakuri_world_conversation_end?.inputSchema as {
       safeParse: (value: unknown) => { success: boolean };
     };
 
@@ -1533,7 +1533,7 @@ describe('karakuri-world tools', () => {
       fetch,
     });
 
-    await expect(tools.karakuri_world_accept_transfer!.execute!(
+    await expect(tools.karakuri_world_transfer_accept!.execute!(
       { comment: '受諾試みる。' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({
@@ -1576,7 +1576,7 @@ describe('karakuri-world tools', () => {
     });
   });
 
-  it('returns a not_logged_in response for transfer / accept_transfer / reject_transfer', async () => {
+  it('returns a not_logged_in response for transfer / transfer_accept / transfer_reject', async () => {
     const tools = createKarakuriWorldTools({
       apiBaseUrl: 'https://example.com',
       apiKey: 'secret',
@@ -1598,11 +1598,11 @@ describe('karakuri-world tools', () => {
       },
       DEFAULT_OPTIONS,
     )).resolves.toMatchObject({ status: 'not_logged_in' });
-    await expect(tools.karakuri_world_accept_transfer!.execute!(
+    await expect(tools.karakuri_world_transfer_accept!.execute!(
       { comment: 'ログイン前。' },
       DEFAULT_OPTIONS,
     )).resolves.toMatchObject({ status: 'not_logged_in' });
-    await expect(tools.karakuri_world_reject_transfer!.execute!(
+    await expect(tools.karakuri_world_transfer_reject!.execute!(
       { comment: 'ログイン前。' },
       DEFAULT_OPTIONS,
     )).resolves.toMatchObject({ status: 'not_logged_in' });
@@ -1668,7 +1668,7 @@ describe('karakuri-world tools', () => {
     }
   });
 
-  it('accepts the group-leave status response for end_conversation', async () => {
+  it('accepts the group-leave status response for conversation_end', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(JSON.stringify({ status: 'ok' }), {
         status: 200,
@@ -1680,7 +1680,7 @@ describe('karakuri-world tools', () => {
       fetch,
     });
 
-    await expect(tools.karakuri_world_end_conversation!.execute!(
+    await expect(tools.karakuri_world_conversation_end!.execute!(
       { message: 'お先に失礼します。', next_speaker_agent_id: 'agent-3', comment: 'グループから退出します。' },
       DEFAULT_OPTIONS,
     )).resolves.toEqual({ status: 'ok' });
@@ -1748,7 +1748,7 @@ describe('karakuri-world tools', () => {
       DEFAULT_OPTIONS,
     ))
       .resolves.toEqual({ turn: 7 });
-    await expect(tools.karakuri_world_end_conversation!.execute!(
+    await expect(tools.karakuri_world_conversation_end!.execute!(
       { message: 'また後で。', next_speaker_agent_id: 'agent-2' },
       DEFAULT_OPTIONS,
     ))
