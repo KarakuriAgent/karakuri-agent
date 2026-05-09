@@ -29,9 +29,9 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('`karakuri_world_conversation_stay`');
     expect(instructions).toContain('`karakuri_world_conversation_leave`');
     expect(instructions).toContain('`karakuri_world_transfer`');
-    expect(instructions).toContain('`karakuri_world_accept_transfer`');
-    expect(instructions).toContain('`karakuri_world_reject_transfer`');
-    expect(instructions).toContain('`karakuri_world_end_conversation`');
+    expect(instructions).toContain('`karakuri_world_transfer_accept`');
+    expect(instructions).toContain('`karakuri_world_transfer_reject`');
+    expect(instructions).toContain('`karakuri_world_conversation_end`');
     expect(instructions).toContain('next_speaker_agent_id');
     expect(instructions).toContain('transfer_response');
     expect(instructions).toContain('in_transfer');

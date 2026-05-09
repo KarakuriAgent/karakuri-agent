@@ -126,14 +126,14 @@ const transferOperationObjectSchema = transferAttachmentBaseSchema
   })
   .strict();
 
-// accept_transfer / reject_transfer は引数なし。サーバー側が受信エージェントの
+// transfer_accept / transfer_reject は引数なし。サーバー側が受信エージェントの
 // pending_transfer_id から自動解決する。pending が無ければ state_conflict (409) になる。
-const acceptTransferOperationSchema = z.object({
-  operation: z.literal('accept_transfer'),
+const transferAcceptOperationSchema = z.object({
+  operation: z.literal('transfer_accept'),
 }).strict();
 
-const rejectTransferOperationSchema = z.object({
-  operation: z.literal('reject_transfer'),
+const transferRejectOperationSchema = z.object({
+  operation: z.literal('transfer_reject'),
 }).strict();
 
 const waitOperationSchema = z
@@ -174,9 +174,9 @@ const conversationSpeakOperationObjectSchema = z
   })
   .strict();
 
-const endConversationOperationSchema = z
+const conversationEndOperationSchema = z
   .object({
-    operation: z.literal('end_conversation'),
+    operation: z.literal('conversation_end'),
     message: z.string().min(1).describe('お別れのメッセージ'),
     next_speaker_agent_id: z.string().min(1).describe('次に発言すべきエージェントID'),
     transfer_response: z.enum(['accept', 'reject']).optional(),
@@ -215,8 +215,8 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   actionOperationSchema,
   useItemOperationSchema,
   transferOperationObjectSchema,
-  acceptTransferOperationSchema,
-  rejectTransferOperationSchema,
+  transferAcceptOperationSchema,
+  transferRejectOperationSchema,
   waitOperationSchema,
   conversationStartOperationSchema,
   conversationAcceptOperationSchema,
@@ -225,7 +225,7 @@ export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
   conversationStayOperationSchema,
   conversationLeaveOperationSchema,
   conversationSpeakOperationObjectSchema,
-  endConversationOperationSchema,
+  conversationEndOperationSchema,
   getMapOperationSchema,
   getWorldAgentsOperationSchema,
   getStatusOperationSchema,
@@ -246,8 +246,8 @@ const moveToolInputSchema = moveOperationSchema.omit({ operation: true });
 const actionToolInputSchema = actionOperationSchema.omit({ operation: true });
 const useItemToolInputSchema = useItemOperationSchema.omit({ operation: true });
 const transferToolInputSchema = transferOperationObjectSchema.omit({ operation: true });
-const acceptTransferToolInputSchema = acceptTransferOperationSchema.omit({ operation: true });
-const rejectTransferToolInputSchema = rejectTransferOperationSchema.omit({ operation: true });
+const transferAcceptToolInputSchema = transferAcceptOperationSchema.omit({ operation: true });
+const transferRejectToolInputSchema = transferRejectOperationSchema.omit({ operation: true });
 const waitToolInputSchema = waitOperationSchema.omit({ operation: true });
 const conversationStartToolInputSchema = conversationStartOperationSchema.omit({ operation: true });
 const conversationAcceptToolInputSchema = conversationAcceptOperationSchema.omit({ operation: true });
@@ -256,7 +256,7 @@ const conversationJoinToolInputSchema = conversationJoinOperationSchema.omit({ o
 const conversationStayToolInputSchema = conversationStayOperationSchema.omit({ operation: true });
 const conversationLeaveToolInputSchema = conversationLeaveOperationSchema.omit({ operation: true });
 const conversationSpeakToolInputSchema = conversationSpeakOperationObjectSchema.omit({ operation: true });
-const endConversationToolInputSchema = endConversationOperationSchema.omit({ operation: true });
+const conversationEndToolInputSchema = conversationEndOperationSchema.omit({ operation: true });
 const getMapToolInputSchema = getMapOperationSchema.omit({ operation: true });
 const getWorldAgentsToolInputSchema = getWorldAgentsOperationSchema.omit({ operation: true });
 const getStatusToolInputSchema = getStatusOperationSchema.omit({ operation: true });
@@ -361,9 +361,9 @@ const conversationSpeakResponseSchema = z
   })
   .superRefine(requireFailureReasonOnFailed);
 
-// end_conversation は 2 人会話終了時に { turn } を返すが、
+// conversation_end は 2 人会話終了時に { turn } を返すが、
 // 3 人以上のグループから自分だけ退出する場合は { status: 'ok' } を返す可能性がある。
-const endConversationResponseSchema = z.union([conversationSpeakResponseSchema, okResponseSchema]);
+const conversationEndResponseSchema = z.union([conversationSpeakResponseSchema, okResponseSchema]);
 
 export type KarakuriWorldInput = z.infer<typeof karakuriWorldInputSchema>;
 
@@ -750,7 +750,7 @@ async function executeKarakuriWorldOperation(
           },
           responseSchema: transferActionResponseSchema,
         });
-      case 'accept_transfer':
+      case 'transfer_accept':
         return requestJson({
           ...context,
           operation: input.operation,
@@ -759,7 +759,7 @@ async function executeKarakuriWorldOperation(
           body: {},
           responseSchema: transferActionResponseSchema,
         });
-      case 'reject_transfer':
+      case 'transfer_reject':
         return requestJson({
           ...context,
           operation: input.operation,
@@ -852,7 +852,7 @@ async function executeKarakuriWorldOperation(
           },
           responseSchema: conversationSpeakResponseSchema,
         });
-      case 'end_conversation':
+      case 'conversation_end':
         return requestJson({
           ...context,
           operation: input.operation,
@@ -863,7 +863,7 @@ async function executeKarakuriWorldOperation(
             next_speaker_agent_id: input.next_speaker_agent_id,
             ...(input.transfer_response !== undefined && { transfer_response: input.transfer_response }),
           },
-          responseSchema: endConversationResponseSchema,
+          responseSchema: conversationEndResponseSchema,
         });
       case 'get_map':
         return requestJson({
@@ -1061,15 +1061,15 @@ export function createKarakuriWorldTools({
       }),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer', input, context),
     }),
-    karakuri_world_accept_transfer: tool({
-      description: '受信中の standalone 譲渡オファーを受諾する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
-      inputSchema: withComment(acceptTransferToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('accept_transfer', input, context),
+    karakuri_world_transfer_accept: tool({
+      description: '受信中の standalone 譲渡オファーを受諾する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は karakuri_world_conversation_speak または karakuri_world_conversation_end の transfer_response を使うこと。',
+      inputSchema: withComment(transferAcceptToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer_accept', input, context),
     }),
-    karakuri_world_reject_transfer: tool({
-      description: '受信中の standalone 譲渡オファーを拒否する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は conversation_speak または end_conversation の transfer_response を使うこと。',
-      inputSchema: withComment(rejectTransferToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('reject_transfer', input, context),
+    karakuri_world_transfer_reject: tool({
+      description: '受信中の standalone 譲渡オファーを拒否する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は karakuri_world_conversation_speak または karakuri_world_conversation_end の transfer_response を使うこと。',
+      inputSchema: withComment(transferRejectToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer_reject', input, context),
     }),
     karakuri_world_wait: tool({
       description: 'その場で待機する。`duration` を渡す（10分単位、1〜6）。',
@@ -1112,10 +1112,10 @@ export function createKarakuriWorldTools({
         .superRefine(validateExclusiveTransferAndResponse),
       execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_speak', input, context),
     }),
-    karakuri_world_end_conversation: tool({
+    karakuri_world_conversation_end: tool({
       description: '会話を終了または退出する。お別れの `message` と `next_speaker_agent_id` を渡す。必要に応じて `transfer_response` のみ任意で添えられる。2人会話では会話全体を終了する。3人以上では自分だけ退出する。',
-      inputSchema: withComment(endConversationToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('end_conversation', input, context),
+      inputSchema: withComment(conversationEndToolInputSchema),
+      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_end', input, context),
     }),
   };
 }

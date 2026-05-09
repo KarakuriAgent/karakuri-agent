@@ -492,8 +492,8 @@ const EXPECTED_KW_TOOL_NAMES = [
   'karakuri_world_action',
   'karakuri_world_use_item',
   'karakuri_world_transfer',
-  'karakuri_world_accept_transfer',
-  'karakuri_world_reject_transfer',
+  'karakuri_world_transfer_accept',
+  'karakuri_world_transfer_reject',
   'karakuri_world_wait',
   'karakuri_world_conversation_start',
   'karakuri_world_conversation_accept',
@@ -502,7 +502,7 @@ const EXPECTED_KW_TOOL_NAMES = [
   'karakuri_world_conversation_stay',
   'karakuri_world_conversation_leave',
   'karakuri_world_conversation_speak',
-  'karakuri_world_end_conversation',
+  'karakuri_world_conversation_end',
 ] as const;
 
 const FAKE_NOW = new Date('2026-03-27T06:30:00Z');
