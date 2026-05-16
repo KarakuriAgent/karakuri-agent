@@ -249,8 +249,7 @@ class SessionManagerStub implements ISessionManager {
     return this.session;
   }
 
-  needsSummarization(session: SessionData, additionalTokens: number): boolean {
-    this.session = session;
+  needsSummarization(_session: SessionData, additionalTokens: number): boolean {
     this.lastAdditionalTokens = additionalTokens;
     return this.forceSummarization;
   }
@@ -409,6 +408,58 @@ function makeKwModeGenerateTextResultWithOutput(comment: string, output: Record<
               toolCallId,
               toolName: 'karakuri_world_move',
               output,
+            },
+          ],
+        },
+      ],
+    },
+  } as const;
+}
+
+function makeKwModeGenerateTextResultWithToolError(comment: string, value = 'karakuri-world API returned 409 for "get_nearby_agents"') {
+  const toolCallId = 'kw-tool-error-1';
+  return {
+    text: 'ignored kw mode text',
+    steps: [{
+      toolCalls: [{
+        toolName: 'karakuri_world_get_nearby_agents',
+        input: { comment },
+      }],
+      toolResults: [{
+        toolName: 'karakuri_world_get_nearby_agents',
+        output: {
+          type: 'error-text',
+          value,
+        },
+      }],
+    }],
+    response: {
+      id: 'response-id',
+      modelId: 'gpt-4o',
+      timestamp: new Date(),
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId,
+              toolName: 'karakuri_world_get_nearby_agents',
+              input: { comment },
+            },
+          ],
+        },
+        {
+          role: 'tool',
+          content: [
+            {
+              type: 'tool-result',
+              toolCallId,
+              toolName: 'karakuri_world_get_nearby_agents',
+              output: {
+                type: 'error-text',
+                value,
+              },
             },
           ],
         },
@@ -1426,6 +1477,33 @@ describe('KarakuriAgent', () => {
     expect(evaluationPrompt).toContain('Latest assistant response:\n');
   });
 
+  it('does not persist the turn when a karakuri-world tool execution fails', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn: vi.fn(async () =>
+        makeKwModeGenerateTextResultWithToolError('周辺を確認します。'),
+      ) as unknown as typeof import('ai').generateText,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', '状況を見て', 'KWBot', { userId: 'kw-bot-1' }))
+      .rejects.toThrow('KarakuriWorld mode tool execution failed.');
+    expect(sessionManager.session.messages).toHaveLength(0);
+    expect(sessionManager.addMessagesCalls).toBe(0);
+  });
+
   it('returns an empty string and persists only OK when a karakuri-world tool result is not_logged_in', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
@@ -1496,7 +1574,7 @@ describe('KarakuriAgent', () => {
 
     await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' }))
       .rejects.toThrow('KarakuriWorld mode expected exactly one action, but received 2.');
-    expect(sessionManager.session.messages).toHaveLength(1);
+    expect(sessionManager.session.messages).toHaveLength(0);
   });
 
   it('rejects missing karakuri-world actions in a single notification', async () => {
@@ -1522,7 +1600,27 @@ describe('KarakuriAgent', () => {
 
     await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' }))
       .rejects.toThrow('KarakuriWorld mode expected exactly one action, but received 0.');
-    expect(sessionManager.session.messages).toHaveLength(1);
+    expect(sessionManager.session.messages).toHaveLength(0);
+  });
+
+  it('does not persist the user turn when generation fails', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+
+    const agent = new KarakuriAgent({
+      config: baseConfig,
+      memoryStore,
+      sessionManager,
+      generateTextFn: vi.fn(async () => {
+        throw new Error('llm failed');
+      }) as unknown as typeof import('ai').generateText,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'hello', 'Alice'))
+      .rejects.toThrow('llm failed');
+    expect(sessionManager.session.messages).toHaveLength(0);
+    expect(sessionManager.addMessagesCalls).toBe(0);
   });
 
   it('keeps normal users on the standard tool path even when karakuri-world is configured', async () => {

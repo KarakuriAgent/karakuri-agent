@@ -181,17 +181,21 @@ export class KarakuriAgent implements IAgent {
       : Promise.resolve(null);
 
     const ephemeral = options?.ephemeral === true;
+    const userModelMessage: ModelMessage = {
+      role: 'user',
+      content: formatUserMessage(userName, userMessage),
+    };
+    // The user message is kept in-memory only and committed atomically alongside the
+    // assistant response after the LLM call succeeds. If the LLM call or any
+    // subsequent validation throws, the user message is dropped from history so that
+    // failed turns do not pile up in the persisted session (which previously caused
+    // a cascade where KW notifications stacked indefinitely after one bad turn).
     let session = ephemeral
-      ? createEphemeralSession(sessionId, [{
-          role: 'user',
-          content: formatUserMessage(userName, userMessage),
-        }])
-      : await this.sessionManager.addMessages(sessionId, [
-          {
-            role: 'user',
-            content: formatUserMessage(userName, userMessage),
-          },
-        ]);
+      ? createEphemeralSession(sessionId, [userModelMessage])
+      : await this.sessionManager.loadSession(sessionId);
+    if (!ephemeral) {
+      session = { ...session, messages: [...session.messages, userModelMessage] };
+    }
 
     const isSystemUser = userId === 'system';
     const hasAdminAccess = hasAdminToolAccess(userId, this.config.adminUserIds ?? []);
@@ -325,6 +329,10 @@ export class KarakuriAgent implements IAgent {
           summary,
           this.keepRecentTurns,
         );
+        // applySummary loads from disk, which does not yet contain the pending user
+        // message (held in-memory until atomic commit below). Re-append it so the
+        // LLM call sees the current user turn.
+        session = { ...session, messages: [...session.messages, userModelMessage] };
       }
 
       const lifecycle = options?.lifecycle;
@@ -431,6 +439,12 @@ export class KarakuriAgent implements IAgent {
         }
       }
       kwNotLoggedIn = isKarakuriWorldMode && hasKarakuriWorldNotLoggedIn(result);
+      if (isKarakuriWorldMode && hasKarakuriWorldRuntimeToolError(result)) {
+        logger.error('KarakuriWorld runtime tool error detected, dropping failed turn from session', {
+          sessionId,
+        });
+        throw new Error('KarakuriWorld mode tool execution failed.');
+      }
       if (isKarakuriWorldMode && !kwNotLoggedIn) {
         assertSingleKarakuriWorldAction(result);
       }
@@ -440,6 +454,7 @@ export class KarakuriAgent implements IAgent {
         assistantResponse = '';
         if (!ephemeral) {
           await this.sessionManager.addMessages(sessionId, [
+            userModelMessage,
             { role: 'assistant', content: 'OK' },
           ]);
         }
@@ -448,7 +463,10 @@ export class KarakuriAgent implements IAgent {
         if (!ephemeral) {
           await this.sessionManager.addMessages(
             sessionId,
-            buildPersistedResponseMessages(result.response.messages, assistantResponse, isKarakuriWorldMode),
+            [
+              userModelMessage,
+              ...buildPersistedResponseMessages(result.response.messages, assistantResponse, isKarakuriWorldMode),
+            ],
           );
         }
       }
@@ -707,6 +725,38 @@ function hasKarakuriWorldNotLoggedIn(result: Awaited<ReturnType<typeof generateT
     }
   }
   return false;
+}
+
+function hasKarakuriWorldRuntimeToolError(result: Awaited<ReturnType<typeof generateText>>): boolean {
+  for (const message of result.response.messages) {
+    const content = message.content;
+    if (!Array.isArray(content)) {
+      continue;
+    }
+
+    for (const part of content) {
+      if (
+        part.type === 'tool-result'
+        && String(part.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)
+        && isRuntimeToolErrorOutput(part.output)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function isRuntimeToolErrorOutput(output: unknown): boolean {
+  return isErrorTextOutput(output);
+}
+
+function isErrorTextOutput(output: unknown): output is { type: 'error-text'; value: unknown } {
+  return typeof output === 'object'
+    && output != null
+    && 'type' in output
+    && (output as Record<string, unknown>).type === 'error-text';
 }
 
 function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof generateText>>): string {
