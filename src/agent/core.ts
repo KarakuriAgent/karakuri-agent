@@ -187,9 +187,9 @@ export class KarakuriAgent implements IAgent {
     };
     // The user message is kept in-memory only and committed atomically alongside the
     // assistant response after the LLM call succeeds. If the LLM call or any
-    // subsequent validation throws, the user message is dropped from history so that
-    // failed turns do not pile up in the persisted session (which previously caused
-    // a cascade where KW notifications stacked indefinitely after one bad turn).
+    // subsequent agent-side validation throws, the user message is dropped from history.
+    // karakuri-world tool error results are still persisted so later turns can use
+    // server guidance such as waiting for the next notification.
     let session = ephemeral
       ? createEphemeralSession(sessionId, [userModelMessage])
       : await this.sessionManager.loadSession(sessionId);
@@ -439,12 +439,6 @@ export class KarakuriAgent implements IAgent {
         }
       }
       kwNotLoggedIn = isKarakuriWorldMode && hasKarakuriWorldNotLoggedIn(result);
-      if (isKarakuriWorldMode && hasKarakuriWorldRuntimeToolError(result)) {
-        logger.error('KarakuriWorld runtime tool error detected, dropping failed turn from session', {
-          sessionId,
-        });
-        throw new Error('KarakuriWorld mode tool execution failed.');
-      }
       if (isKarakuriWorldMode && !kwNotLoggedIn) {
         assertSingleKarakuriWorldAction(result);
       }
@@ -726,39 +720,6 @@ function hasKarakuriWorldNotLoggedIn(result: Awaited<ReturnType<typeof generateT
   }
   return false;
 }
-
-function hasKarakuriWorldRuntimeToolError(result: Awaited<ReturnType<typeof generateText>>): boolean {
-  for (const message of result.response.messages) {
-    const content = message.content;
-    if (!Array.isArray(content)) {
-      continue;
-    }
-
-    for (const part of content) {
-      if (
-        part.type === 'tool-result'
-        && String(part.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)
-        && isRuntimeToolErrorOutput(part.output)
-      ) {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-function isRuntimeToolErrorOutput(output: unknown): boolean {
-  return isErrorTextOutput(output);
-}
-
-function isErrorTextOutput(output: unknown): output is { type: 'error-text'; value: unknown } {
-  return typeof output === 'object'
-    && output != null
-    && 'type' in output
-    && (output as Record<string, unknown>).type === 'error-text';
-}
-
 function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof generateText>>): string {
   // Pass 1 — toolResults: busy レスポンスが返っていたら Discord への返信を抑制する。
   // Pass 2 — toolCalls: LLM が入力した comment を Discord 返信として採用する。

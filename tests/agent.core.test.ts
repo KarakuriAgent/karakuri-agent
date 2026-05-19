@@ -1477,9 +1477,10 @@ describe('KarakuriAgent', () => {
     expect(evaluationPrompt).toContain('Latest assistant response:\n');
   });
 
-  it('does not persist the turn when a karakuri-world tool execution fails', async () => {
+  it('persists karakuri-world tool error turns so later turns can use server guidance', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
+    const errorText = 'Info command get_nearby_agents is already excluded from current choices. Wait for the next notification.';
 
     const agent = new KarakuriAgent({
       config: {
@@ -1493,15 +1494,29 @@ describe('KarakuriAgent', () => {
       memoryStore,
       sessionManager,
       generateTextFn: vi.fn(async () =>
-        makeKwModeGenerateTextResultWithToolError('周辺を確認します。'),
+        makeKwModeGenerateTextResultWithToolError('周辺を確認します。', errorText),
       ) as unknown as typeof import('ai').generateText,
       modelFactory: () => ({}) as LanguageModel,
     });
 
     await expect(agent.handleMessage('session-1', '状況を見て', 'KWBot', { userId: 'kw-bot-1' }))
-      .rejects.toThrow('KarakuriWorld mode tool execution failed.');
-    expect(sessionManager.session.messages).toHaveLength(0);
-    expect(sessionManager.addMessagesCalls).toBe(0);
+      .resolves.toBe('周辺を確認します。');
+
+    expect(sessionManager.addMessagesCalls).toBe(1);
+    expect(sessionManager.session.messages).toContainEqual({
+      role: 'tool',
+      content: [
+        {
+          type: 'tool-result',
+          toolCallId: 'kw-tool-error-1',
+          toolName: 'karakuri_world_get_nearby_agents',
+          output: {
+            type: 'error-text',
+            value: errorText,
+          },
+        },
+      ],
+    });
   });
 
   it('returns an empty string and persists only OK when a karakuri-world tool result is not_logged_in', async () => {
