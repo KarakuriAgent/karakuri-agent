@@ -8,6 +8,8 @@ export function buildKarakuriWorldModeInstructions(): string {
     'For each notification, you must call exactly one karakuri-world tool and then stop. Do NOT call multiple tools in parallel; always emit a single tool call per turn.',
     'If the situation is unclear, wait for the next notification or use `karakuri_world_get_map` to check the map (the map data is returned inline in the tool result `data`).',
     'If the correct action is already clear, call the single best action tool directly.',
+    'Do not choose `karakuri_world_wait` as a generic fallback. Prefer a meaningful non-wait choice from the current choices whenever one is reasonably available.',
+    'Choose `karakuri_world_wait` only when waiting is explicitly useful, all other current choices are unsuitable, or the current state requires waiting.',
     'Always include a `comment` field in the tool input.',
     'The `comment` must briefly explain your action, feeling, or observation in a way that can be sent back to Discord.',
     'Even when only observing, still include a `comment` that reports what you noticed.',

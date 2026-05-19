@@ -25,6 +25,8 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('`karakuri_world_get_active_conversations`');
     expect(instructions).toContain('`karakuri_world_get_event`');
     expect(instructions).toContain('`karakuri_world_move`');
+    expect(instructions).toContain('Do not choose `karakuri_world_wait` as a generic fallback');
+    expect(instructions).toContain('Prefer a meaningful non-wait choice');
     expect(instructions).toContain('`karakuri_world_conversation_join`');
     expect(instructions).toContain('`karakuri_world_conversation_stay`');
     expect(instructions).toContain('`karakuri_world_conversation_leave`');
