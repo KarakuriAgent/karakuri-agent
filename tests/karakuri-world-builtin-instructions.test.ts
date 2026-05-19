@@ -39,6 +39,8 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('近くの会話');
     expect(instructions).toContain('近くのエージェント');
     expect(instructions).toContain('return their data inline');
+    expect(instructions).toContain('same decision group');
+    expect(instructions).toContain('do not repeat the same info tool');
     expect(instructions).toMatch(/結果は戻り値の `data/);
     expect(instructions).not.toContain('(詳細は通知で届く)');
     expect(instructions).toMatch(/STANDALONE|standalone/);
