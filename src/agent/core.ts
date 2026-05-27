@@ -24,7 +24,12 @@ import {
 import { createAgentTools } from './tools/index.js';
 import { hasAdminToolAccess } from './tools/admin-auth.js';
 import { filterSkillsToAvailableTools } from './tools/gated-tools.js';
-import { createKarakuriWorldTools } from './tools/karakuri-world.js';
+import {
+  createKarakuriWorldTools,
+  fetchKarakuriWorldNotification,
+  isKarakuriWorldNotificationFetchError,
+  type KarakuriWorldNotificationResponse,
+} from './tools/karakuri-world.js';
 import type { IPromptContextStore } from './prompt-context.js';
 import {
   buildSystemPrompt,
@@ -180,16 +185,26 @@ export class KarakuriAgent implements IAgent {
         })
       : Promise.resolve(null);
 
+    const karakuriWorldNotification = isKarakuriWorldMode && this.config.karakuriWorld != null
+      ? await this.prepareKarakuriWorldNotification(userMessage, this.config.karakuriWorld)
+      : null;
+    if (isKarakuriWorldMode && karakuriWorldNotification == null) {
+      return '';
+    }
+    const effectiveUserMessage = karakuriWorldNotification != null
+      ? buildKarakuriWorldNotificationUserMessage(userMessage, karakuriWorldNotification)
+      : userMessage;
+
     const ephemeral = options?.ephemeral === true;
     let session = ephemeral
       ? createEphemeralSession(sessionId, [{
           role: 'user',
-          content: formatUserMessage(userName, userMessage),
+          content: formatUserMessage(userName, effectiveUserMessage),
         }])
       : await this.sessionManager.addMessages(sessionId, [
           {
             role: 'user',
-            content: formatUserMessage(userName, userMessage),
+            content: formatUserMessage(userName, effectiveUserMessage),
           },
         ]);
 
@@ -363,7 +378,11 @@ export class KarakuriAgent implements IAgent {
       });
       logger.debug(`System prompt:\n${systemPrompt}`);
       const tools = isKarakuriWorldMode && this.config.karakuriWorld != null
-        ? createKarakuriWorldTools(this.config.karakuriWorld)
+        ? createKarakuriWorldTools({
+            ...this.config.karakuriWorld,
+            notificationId: karakuriWorldNotification!.notification_id,
+            allowedCommands: karakuriWorldNotification!.notification.choices.map((choice) => choice.command),
+          })
         : createAgentTools({
           memoryStore: this.memoryStore,
           dataDir: this.config.dataDir,
@@ -505,6 +524,50 @@ export class KarakuriAgent implements IAgent {
 
     const summary = result.text.trim();
     return summary.length > 0 ? summary : session.summary ?? 'No durable summary available yet.';
+  }
+
+
+  private async prepareKarakuriWorldNotification(
+    userMessage: string,
+    credentials: NonNullable<Config['karakuriWorld']>,
+  ): Promise<KarakuriWorldNotificationResponse | null> {
+    const notificationId = extractKarakuriWorldNotificationId(userMessage);
+    if (notificationId == null) {
+      logger.warn('Skipping karakuri-world notification without notification_id');
+      return null;
+    }
+
+    let notification: KarakuriWorldNotificationResponse;
+    try {
+      notification = await fetchKarakuriWorldNotification(credentials, notificationId);
+    } catch (error) {
+      if (isKarakuriWorldNotificationFetchError(error)) {
+        logger.warn('Skipping karakuri-world notification because get_notification failed', {
+          notificationId,
+          status: error.status,
+          code: error.code,
+          message: error.apiMessage,
+        });
+        return null;
+      }
+      throw error;
+    }
+
+    if (notification.stale) {
+      logger.info('Skipping stale karakuri-world notification', { notificationId });
+      return null;
+    }
+    if (notification.notification.choices.length === 0) {
+      logger.info('Skipping karakuri-world notification with no choices', { notificationId });
+      return null;
+    }
+
+    logger.debug('Fetched karakuri-world notification', {
+      notificationId,
+      kind: notification.notification.kind,
+      choices: notification.notification.choices.length,
+    });
+    return notification;
   }
 
 
@@ -651,6 +714,34 @@ export class KarakuriAgent implements IAgent {
   }
 }
 
+function extractKarakuriWorldNotificationId(userMessage: string): string | null {
+  const match = /(?:^|\b)notification_id\s*:\s*([^\s`]+)/im.exec(userMessage);
+  if (match?.[1] == null) {
+    return null;
+  }
+
+  const notificationId = match[1].replace(/[.,;，。]+$/, '').trim();
+  return notificationId.length > 0 ? notificationId : null;
+}
+
+function buildKarakuriWorldNotificationUserMessage(
+  discordMessage: string,
+  notification: KarakuriWorldNotificationResponse,
+): string {
+  return [
+    'Karakuri-world Discord notification received.',
+    'The saved notification detail has already been fetched with get_notification. Choose exactly one command from notification.choices and call karakuri_world_command.',
+    '',
+    '<discord-message>',
+    sanitizeTagContent(discordMessage.trim()),
+    '</discord-message>',
+    '',
+    '<karakuri-world-notification>',
+    sanitizeTagContent(JSON.stringify(notification, null, 2)),
+    '</karakuri-world-notification>',
+  ].join('\n');
+}
+
 function formatUserMessage(userName: string, userMessage: string): string {
   const normalizedName = userName.trim();
   const normalizedMessage = userMessage.trim();
@@ -710,24 +801,6 @@ function hasKarakuriWorldNotLoggedIn(result: Awaited<ReturnType<typeof generateT
 }
 
 function buildKarakuriWorldModeResponse(result: Awaited<ReturnType<typeof generateText>>): string {
-  // Pass 1 — toolResults: busy レスポンスが返っていたら Discord への返信を抑制する。
-  // Pass 2 — toolCalls: LLM が入力した comment を Discord 返信として採用する。
-  // busy チェックを優先するため2パスに分離。assertSingleKarakuriWorldAction が先に呼ばれるため KW ツールは常に1つ。
-  for (const step of result.steps) {
-    for (const toolResult of step.toolResults) {
-      if (!String(toolResult?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)) {
-        continue;
-      }
-
-      if (hasToolResultStatus(toolResult?.output, 'busy')) {
-        logger.info('KarakuriWorld tool returned busy, suppressing comment for Discord reply', {
-          toolName: toolResult?.toolName,
-        });
-        return '';
-      }
-    }
-  }
-
   for (const step of result.steps) {
     for (const toolCall of step.toolCalls) {
       if (!String(toolCall?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)) {

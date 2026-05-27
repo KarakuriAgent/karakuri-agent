@@ -21,7 +21,7 @@
 | `POST_RESPONSE_LLM_BASE_URL` |  | fallback to `LLM_BASE_URL` | ポストレスポンス evaluator / memory maintenance 専用 Base URL |
 | `POST_RESPONSE_LLM_MODEL` |  | fallback to `LLM_MODEL` | ポストレスポンス evaluator / memory maintenance 専用モデルセレクタ |
 | `BRAVE_API_KEY` |  | - | Brave Search API キー（設定時のみ `webSearch` を有効化） |
-| `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（`KARAKURI_WORLD_API_KEY` と両方あるときのみ、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーへ KW モードを有効化） |
+| `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（例: `https://karakuri.example.com/api`。`/api` なしの値は末尾へ `/api` を補完。`KARAKURI_WORLD_API_KEY` と両方あるときのみ、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーへ KW モードを有効化） |
 | `KARAKURI_WORLD_API_KEY` |  | - | karakuri-world API の Bearer token |
 | `MASTODON_INSTANCE_URL` |  | - | Mastodon instance の Base URL（`MASTODON_ACCESS_TOKEN` と両方あるとき provider 有効化） |
 | `MASTODON_ACCESS_TOKEN` |  | - | Mastodon API 用 access token |
@@ -152,7 +152,7 @@ interface Config {
 `llmModel` / `postResponseLlmModel` は常に canonical な selector 文字列を保持する。
 `postMessageChannelIds` は `ALLOWED_CHANNEL_IDS` 由来の「送信可能チャンネル」のみを保持し、
 `allowedChannelIds` は `REPORT_CHANNEL_ID` をマージした bot 全体の許可チャンネル一覧を保持する。
-`karakuriWorld` は `KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` が両方そろったときだけ含まれる。
+`karakuriWorld` は `KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` が両方そろったときだけ含まれる。`KARAKURI_WORLD_API_BASE_URL` は最新の karakuri-world と同じ `/api` 付きの REST API base URL に正規化し、未指定なら末尾へ `/api` を補完する。
 `memoryMaintenanceIntervalMinutes` は `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を空文字列なら `undefined` に正規化したうえで保持する。
 `memoryMaintenanceRecentDiaryDays` は `MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` を空文字列なら `undefined` に正規化したうえで保持し、未設定時は runner 側の既定値 30 日を使う。
 `snsList` は provider ごとの必須設定がそろった SNS credentials をすべて保持する。Mastodon は `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`（その他の X OAuth 情報は任意）、ELYTH は `ELYTH_API_KEY` + `ELYTH_API_BASE` が必要。いずれか片方だけの partial provider config は fail-fast で拒否する。旧 `sns` は legacy test fixture 用の deprecated property で、`loadConfig()` は設定しない。旧 `SNS_PROVIDER` / `SNS_*` credentials は読み込まれず、旧 `DATA_DIR/sns-activity.db` の扱いだけ `SNS_LEGACY_DB_MIGRATE_TO` に保持する。

@@ -33,6 +33,10 @@ export interface StatusReactionControllerOptions {
 type TerminalStatus = 'done' | 'error' | null;
 
 export function resolveToolEmoji(toolName: string): string | null {
+  if (toolName.startsWith('karakuri_world_')) {
+    return STATUS_EMOJI.skill;
+  }
+
   switch (toolName) {
     case 'recallDiary':
     case 'userLookup':

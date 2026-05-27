@@ -292,16 +292,16 @@ function makeGenerateTextResult(text: string, messages: ModelMessage[]) {
 
 function makeKwModeGenerateTextResult(comment?: string) {
   const toolCallId = 'kw-tool-1';
-  const toolInput = comment == null ? {} : { comment };
+  const toolInput = comment == null ? { command: 'get_map', params: {} } : { command: 'get_map', params: {}, comment };
   return {
     text: 'ignored kw mode text',
     steps: [{
       toolCalls: [{
-        toolName: 'karakuri_world_get_map',
+        toolName: 'karakuri_world_command',
         input: toolInput,
       }],
       toolResults: [{
-        toolName: 'karakuri_world_get_map',
+        toolName: 'karakuri_world_command',
         output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
       }],
     }],
@@ -316,7 +316,7 @@ function makeKwModeGenerateTextResult(comment?: string) {
             {
               type: 'tool-call',
               toolCallId,
-              toolName: 'karakuri_world_get_map',
+              toolName: 'karakuri_world_command',
               input: toolInput,
             },
           ],
@@ -327,7 +327,7 @@ function makeKwModeGenerateTextResult(comment?: string) {
             {
               type: 'tool-result',
               toolCallId,
-              toolName: 'karakuri_world_get_map',
+              toolName: 'karakuri_world_command',
               output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
             },
           ],
@@ -343,21 +343,21 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
     steps: [{
       toolCalls: [
         {
-          toolName: 'karakuri_world_get_map',
-          input: { comment: '周囲を確認します。' },
+          toolName: 'karakuri_world_command',
+          input: { command: 'get_map', params: {}, comment: '周囲を確認します。' },
         },
         {
-          toolName: 'karakuri_world_move',
-          input: { target_node_id: '1-2', comment: '門へ向かいます。' },
+          toolName: 'karakuri_world_command',
+          input: { command: 'move', params: { target_node_id: '1-2' }, comment: '門へ向かいます。' },
         },
       ],
       toolResults: [
         {
-          toolName: 'karakuri_world_get_map',
+          toolName: 'karakuri_world_command',
           output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
         },
         {
-          toolName: 'karakuri_world_move',
+          toolName: 'karakuri_world_command',
           output: { from_node_id: '1-1', to_node_id: '1-2', arrives_at: 42 },
         },
       ],
@@ -373,15 +373,16 @@ function makeInvalidMultiActionKwModeGenerateTextResult() {
 
 function makeKwModeGenerateTextResultWithOutput(comment: string, output: Record<string, unknown>) {
   const toolCallId = 'kw-tool-1';
+  const toolInput = { command: 'move', params: { target_node_id: '1-2' }, comment };
   return {
     text: 'ignored kw mode text',
     steps: [{
       toolCalls: [{
-        toolName: 'karakuri_world_move',
-        input: { target_node_id: '1-2', comment },
+        toolName: 'karakuri_world_command',
+        input: toolInput,
       }],
       toolResults: [{
-        toolName: 'karakuri_world_move',
+        toolName: 'karakuri_world_command',
         output,
       }],
     }],
@@ -396,8 +397,8 @@ function makeKwModeGenerateTextResultWithOutput(comment: string, output: Record<
             {
               type: 'tool-call',
               toolCallId,
-              toolName: 'karakuri_world_move',
-              input: { target_node_id: '1-2', comment },
+              toolName: 'karakuri_world_command',
+              input: toolInput,
             },
           ],
         },
@@ -407,7 +408,7 @@ function makeKwModeGenerateTextResultWithOutput(comment: string, output: Record<
             {
               type: 'tool-result',
               toolCallId,
-              toolName: 'karakuri_world_move',
+              toolName: 'karakuri_world_command',
               output,
             },
           ],
@@ -482,28 +483,55 @@ function createSchedulerStore(): ISchedulerStore {
 }
 
 const EXPECTED_KW_TOOL_NAMES = [
-  'karakuri_world_get_map',
-  'karakuri_world_get_world_agents',
-  'karakuri_world_get_status',
-  'karakuri_world_get_nearby_agents',
-  'karakuri_world_get_active_conversations',
-  'karakuri_world_get_event',
-  'karakuri_world_move',
-  'karakuri_world_action',
-  'karakuri_world_use_item',
-  'karakuri_world_transfer',
-  'karakuri_world_transfer_accept',
-  'karakuri_world_transfer_reject',
-  'karakuri_world_wait',
-  'karakuri_world_conversation_start',
-  'karakuri_world_conversation_accept',
-  'karakuri_world_conversation_reject',
-  'karakuri_world_conversation_join',
-  'karakuri_world_conversation_stay',
-  'karakuri_world_conversation_leave',
-  'karakuri_world_conversation_speak',
-  'karakuri_world_conversation_end',
+  'karakuri_world_command',
 ] as const;
+
+function makeKarakuriWorldNotificationResponse(overrides: Record<string, unknown> = {}) {
+  const base = {
+    ok: true,
+    notification_id: 'notif-123',
+    created_at: 1,
+    expires_at: 9_999_999,
+    stale: false,
+    notification: {
+      schema_version: 1,
+      kind: 'idle_reminder',
+      summary: '次の行動を選んでください。',
+      choices: [
+        { command: 'get_map', label: '地図を見る', params: {} },
+        { command: 'move', label: '門へ移動する', params: { target_node_id: '1-2' } },
+      ],
+      perception: {
+        nearby_nodes: [],
+        nodes_omitted_count: 0,
+        nearby_agent_count: 0,
+        nearby_npcs: [],
+        nearby_buildings: [],
+        nearby_conversation_count: 0,
+        server_event_count: 0,
+        item_count: 0,
+      },
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    notification: {
+      ...base.notification,
+      ...((overrides.notification as Record<string, unknown> | undefined) ?? {}),
+    },
+  };
+}
+
+function stubKarakuriWorldNotificationFetch(overrides: Record<string, unknown> = {}) {
+  const response = makeKarakuriWorldNotificationResponse(overrides);
+  const fetchMock = vi.fn(async () => new Response(JSON.stringify(response), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  }));
+  vi.stubGlobal('fetch', fetchMock);
+  return { fetchMock, response };
+}
 
 const FAKE_NOW = new Date('2026-03-27T06:30:00Z');
 
@@ -515,6 +543,7 @@ describe('KarakuriAgent', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     mockState.runExclusiveMemoryPersistence.mockReset();
     mockState.runExclusiveMemoryPersistence.mockImplementation(async <T>(task: () => Promise<T>) => await task());
   });
@@ -1212,7 +1241,7 @@ describe('KarakuriAgent', () => {
     expect(capturedSystem).not.toContain('karakuri-world');
     expect(capturedSystem).not.toContain('Some skills unlock additional tools');
     expect(capturedTools).not.toHaveProperty('loadSkill');
-    expect(capturedTools).not.toHaveProperty('karakuri_world_get_map');
+    expect(capturedTools).not.toHaveProperty('karakuri_world_command');
   });
 
   it('does not expose legacy karakuri-world skills without allowedTools for normal users', async () => {
@@ -1317,7 +1346,9 @@ describe('KarakuriAgent', () => {
       modelFactory: () => ({}) as LanguageModel,
     });
 
-    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' })).resolves.toBe('周囲を確認します。');
+    stubKarakuriWorldNotificationFetch();
+
+    await expect(agent.handleMessage('session-1', 'notification_id: notif-123', 'Admin', { userId: 'kw-bot-1' })).resolves.toBe('周囲を確認します。');
     await agent.drainPendingEvaluations();
 
     expect(userStore.ensureCalls).toEqual([]);
@@ -1339,8 +1370,8 @@ describe('KarakuriAgent', () => {
         {
           type: 'tool-call',
           toolCallId: 'kw-tool-1',
-          toolName: 'karakuri_world_get_map',
-          input: { comment: '周囲を確認します。' },
+          toolName: 'karakuri_world_command',
+          input: { command: 'get_map', params: {}, comment: '周囲を確認します。' },
         },
         { type: 'text', text: '周囲を確認します。' },
       ],
@@ -1351,7 +1382,7 @@ describe('KarakuriAgent', () => {
         {
           type: 'tool-result',
           toolCallId: 'kw-tool-1',
-          toolName: 'karakuri_world_get_map',
+          toolName: 'karakuri_world_command',
           output: { ok: true, message: 'Map request accepted.', command: 'get_map', data: {} },
         },
       ],
@@ -1382,10 +1413,12 @@ describe('KarakuriAgent', () => {
       modelFactory: () => ({}) as LanguageModel,
     });
 
-    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' })).resolves.toBe('(行動完了)');
+    stubKarakuriWorldNotificationFetch();
+
+    await expect(agent.handleMessage('session-1', 'notification_id: notif-123', 'Admin', { userId: 'kw-bot-1' })).resolves.toBe('(行動完了)');
   });
 
-  it('returns an empty string for Discord suppression when a karakuri-world tool result is busy', async () => {
+  it('returns the command selection comment when a karakuri-world command result is busy', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
     let evaluationPrompt = '';
@@ -1419,14 +1452,16 @@ describe('KarakuriAgent', () => {
       modelFactory: () => ({}) as LanguageModel,
     });
 
-    await expect(agent.handleMessage('session-1', '移動して', 'KWBot', { userId: 'kw-bot-1' })).resolves.toBe('');
+    stubKarakuriWorldNotificationFetch();
+
+    await expect(agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' })).resolves.toBe('門へ向かいます。');
     await agent.drainPendingEvaluations();
 
     expect(sessionManager.session.messages.length).toBeGreaterThanOrEqual(2);
-    expect(evaluationPrompt).toContain('Latest assistant response:\n');
+    expect(evaluationPrompt).toContain('Latest assistant response:\n門へ向かいます。');
   });
 
-  it('returns an empty string and persists only OK when a karakuri-world tool result is not_logged_in', async () => {
+  it('returns an empty string without notifying the agent when a karakuri-world logout notice has no notification_id', async () => {
     const memoryStore = new MemoryStoreStub();
     const sessionManager = new SessionManagerStub();
     let evaluationCalled = false;
@@ -1463,14 +1498,44 @@ describe('KarakuriAgent', () => {
     await expect(agent.handleMessage('session-1', 'からくりワールドアプリ: ログアウトしました。', 'KWBot', { userId: 'kw-bot-1' })).resolves.toBe('');
     await agent.drainPendingEvaluations();
 
-    // セッションにはユーザーメッセージ + assistant OK だけ残る（tool-call/tool-result は含まない）
-    expect(sessionManager.session.messages).toHaveLength(2);
-    expect(sessionManager.session.messages[1]).toEqual({
-      role: 'assistant',
-      content: 'OK',
-    });
-    // not_logged_in 時は post-response evaluation をスキップ
+    expect(sessionManager.session.messages).toHaveLength(0);
     expect(evaluationCalled).toBe(false);
+    expect(generateTextFn).not.toHaveBeenCalled();
+  });
+
+  it('skips karakuri-world notifications when get_notification returns an API error', async () => {
+    const memoryStore = new MemoryStoreStub();
+    const sessionManager = new SessionManagerStub();
+    const generateTextFn = vi.fn(async () =>
+      makeKwModeGenerateTextResult('呼ばれない'),
+    ) as unknown as typeof import('ai').generateText;
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: 'not_logged_in',
+      message: 'Agent is not logged in.',
+    }), {
+      status: 403,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+      },
+      memoryStore,
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+
+    await expect(agent.handleMessage('session-1', 'notification_id: notif-logout', 'KWBot', { userId: 'kw-bot-1' })).resolves.toBe('');
+
+    expect(sessionManager.session.messages).toHaveLength(0);
+    expect(generateTextFn).not.toHaveBeenCalled();
   });
 
   it('rejects multiple karakuri-world actions in a single notification', async () => {
@@ -1494,7 +1559,9 @@ describe('KarakuriAgent', () => {
       modelFactory: () => ({}) as LanguageModel,
     });
 
-    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' }))
+    stubKarakuriWorldNotificationFetch();
+
+    await expect(agent.handleMessage('session-1', 'notification_id: notif-123', 'Admin', { userId: 'kw-bot-1' }))
       .rejects.toThrow('KarakuriWorld mode expected exactly one action, but received 2.');
     expect(sessionManager.session.messages).toHaveLength(1);
   });
@@ -1520,7 +1587,9 @@ describe('KarakuriAgent', () => {
       modelFactory: () => ({}) as LanguageModel,
     });
 
-    await expect(agent.handleMessage('session-1', '状況を見て', 'Admin', { userId: 'kw-bot-1' }))
+    stubKarakuriWorldNotificationFetch();
+
+    await expect(agent.handleMessage('session-1', 'notification_id: notif-123', 'Admin', { userId: 'kw-bot-1' }))
       .rejects.toThrow('KarakuriWorld mode expected exactly one action, but received 0.');
     expect(sessionManager.session.messages).toHaveLength(1);
   });
@@ -1559,7 +1628,7 @@ describe('KarakuriAgent', () => {
 
     expect(capturedToolChoice).toBeUndefined();
     expect(capturedTools).toHaveProperty('recallDiary');
-    expect(capturedTools).not.toHaveProperty('karakuri_world_get_map');
+    expect(capturedTools).not.toHaveProperty('karakuri_world_command');
     expect(capturedSystem).not.toContain('KarakuriWorld mode is active.');
     expect(capturedSystem).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
   });

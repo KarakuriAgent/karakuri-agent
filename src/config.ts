@@ -172,7 +172,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     assertValidTimezone(parsed.timezone);
     const llmBaseUrl = normalizeBaseUrl(parsed.llmBaseUrl);
     const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
-    const karakuriWorldApiBaseUrl = normalizeBaseUrl(parsed.karakuriWorldApiBaseUrl, 'KARAKURI_WORLD_API_BASE_URL');
+    const karakuriWorldApiBaseUrl = normalizeKarakuriWorldApiBaseUrl(parsed.karakuriWorldApiBaseUrl);
     const karakuriWorldApiKey = normalizeOptionalString(parsed.karakuriWorldApiKey);
     const mastodonInstanceUrl = normalizeBaseUrl(parsed.mastodonInstanceUrl, 'MASTODON_INSTANCE_URL');
     const mastodonAccessToken = normalizeOptionalString(parsed.mastodonAccessToken);
@@ -359,6 +359,21 @@ function normalizeBaseUrl(value: string | undefined, label = 'LLM_BASE_URL'): st
   }
 
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+function normalizeKarakuriWorldApiBaseUrl(value: string | undefined): string | undefined {
+  const baseUrl = normalizeBaseUrl(value, 'KARAKURI_WORLD_API_BASE_URL');
+  if (baseUrl == null) {
+    return undefined;
+  }
+
+  const url = new URL(baseUrl);
+  const pathname = url.pathname.replace(/\/+$/, '');
+  if (pathname === '/api' || pathname.endsWith('/api')) {
+    return baseUrl;
+  }
+
+  return `${baseUrl}/api`;
 }
 
 function parseBooleanEnv(value: string | undefined, label: string, defaultValue: boolean): boolean {

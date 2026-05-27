@@ -54,7 +54,7 @@ src/bot.ts                    — Chat SDK + Discord adapter 統合、Webhook/Ga
 src/agent/core.ts             — generateText による応答生成、セッション要約判定、ツール構築、system/user turn 制御
 src/agent/prompt.ts           — システムプロンプト構築、AGENT.md / RULES.md 読み込み
 src/agent/prompt-context.ts   — trusted / untrusted 文脈の分離などプロンプト用コンテキスト構築
-src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_<provider>_*, karakuri_world_*）
+src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_<provider>_*, karakuri_world_command）
 src/session/                  — JSON ファイルベースのセッション保存。ハッシュ化ファイル名 + メモリキャッシュを使用
 src/memory/                   — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore + maintenance runner
 src/skill/                    — `data/skills/` と `data/system-skills/` を監視する frontmatter 付き SKILL.md ストア

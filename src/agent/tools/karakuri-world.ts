@@ -4,40 +4,67 @@ import { z } from 'zod';
 import type { ApiCredentials } from '../../config.js';
 import { createLogger } from '../../utils/logger.js';
 
-const nodeIdSchema = z.string().regex(/^\d+-\d+$/);
-const integerTextPattern = /^\d+$/;
-function preprocessSafeInteger(value: unknown): unknown {
-  if (typeof value !== 'string') {
-    return value;
-  }
+const logger = createLogger('KarakuriWorldApi');
 
-  const trimmed = value.trim();
-  if (!integerTextPattern.test(trimmed)) {
-    return value;
-  }
+const commandSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .describe('取得済み通知の notification.choices[] に含まれる command をそのまま指定する。');
 
-  const parsed = Number(trimmed);
-  return Number.isSafeInteger(parsed) ? parsed : value;
-}
+const paramsSchema = z
+  .record(z.string(), z.unknown())
+  .optional()
+  .default({})
+  .describe('選んだ choices[].params に、required_params / param_schema から補った値だけを merge した JSON object。');
 
-const waitDurationSchema = z
-  .preprocess(preprocessSafeInteger, z.number().int().min(1).max(6))
-  .describe('待機時間（10分単位、1=10分〜6=60分）');
-const transferQuantitySchema = z
-  .preprocess(preprocessSafeInteger, z.number().int().min(1).max(10_000))
-  .describe('譲渡するアイテム数量');
-const transferMoneySchema = z
-  .preprocess(preprocessSafeInteger, z.number().int().min(1).max(10_000_000))
-  .describe('譲渡する所持金（1 以上の正の整数）');
 const commentSchema = z
   .string()
   .trim()
   .min(1)
-  .describe('この行動に対するコメントや感想。行動の理由や観察結果の所感を記述する。');
-const okResponseSchema = z.object({ status: z.literal('ok') }).strict();
-const notificationAckResponseSchema = z
-  .object({ ok: z.literal(true), message: z.string().min(1) })
+  .describe('Discord に返す判断コメント。選んだ command とその理由を短く説明する。');
+
+export const karakuriWorldCommandInputSchema = z
+  .object({
+    command: commandSchema,
+    params: paramsSchema,
+    comment: commentSchema,
+  })
   .strict();
+
+const karakuriWorldNotificationChoiceSchema = z
+  .object({
+    command: z.string().min(1),
+    label: z.string().min(1),
+    params: z.record(z.string(), z.unknown()).optional(),
+    required_params: z.array(z.string()).optional(),
+    param_schema: z.record(z.string(), z.unknown()).optional(),
+    param_constraints: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+const karakuriWorldNotificationSchema = z
+  .object({
+    schema_version: z.literal(1),
+    kind: z.string().min(1),
+    summary: z.string(),
+    choices: z.array(karakuriWorldNotificationChoiceSchema),
+    payload: z.record(z.string(), z.unknown()).optional(),
+    perception: z.unknown().optional(),
+  })
+  .passthrough();
+
+export const karakuriWorldNotificationResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    notification_id: z.string().min(1),
+    created_at: z.number(),
+    expires_at: z.number(),
+    stale: z.boolean(),
+    notification: karakuriWorldNotificationSchema,
+  })
+  .passthrough();
+
 const errorResponseSchema = z
   .object({
     error: z.string().min(1),
@@ -46,349 +73,18 @@ const errorResponseSchema = z
   })
   .strict();
 
-const moveOperationSchema = z
-  .object({
-    operation: z.literal('move'),
-    target_node_id: nodeIdSchema.describe('移動先ノードID'),
-  })
-  .strict();
+export type KarakuriWorldCommandInput = z.infer<typeof karakuriWorldCommandInputSchema>;
+export type KarakuriWorldNotificationResponse = z.infer<typeof karakuriWorldNotificationResponseSchema>;
 
-const actionOperationSchema = z
-  .object({
-    operation: z.literal('action'),
-    action_id: z.string().min(1).describe('実行するアクションID'),
-    duration_minutes: z
-      .preprocess(preprocessSafeInteger, z.number().int().min(1).max(10080))
-      .optional()
-      .describe('可変時間アクションの所要時間（分）。通知に表示される範囲内で指定する。'),
-  })
-  .strict();
-
-const useItemOperationSchema = z
-  .object({
-    operation: z.literal('use_item'),
-    item_id: z.string().min(1).describe('使用するアイテムID'),
-  })
-  .strict();
-
-const transferItemSchema = z.object({
-  item_id: z.string().min(1),
-  quantity: transferQuantitySchema,
-}).strict();
-
-// サーバー側 transferAttachmentSchema は { item } XOR { money } の排他 union。
-// ここでは LLM 入力 / discriminatedUnion メンバーとの整合のため、両方 optional の
-// strict object + superRefine で「ちょうど一方」を強制する。
-function validateExclusiveItemOrMoney(
-  data: { item?: unknown; money?: unknown },
-  ctx: z.RefinementCtx,
-): void {
-  const hasItem = data.item != null;
-  const hasMoney = data.money != null;
-  if (hasItem && hasMoney) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'item と money は同時に指定できません。どちらか 1 つだけを渡してください。',
-    });
-  } else if (!hasItem && !hasMoney) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'item または money のいずれかを必ず指定してください。',
-    });
-  }
-}
-
-function validateExclusiveTransferAndResponse(
-  data: Record<string, unknown>,
-  ctx: z.RefinementCtx,
-): void {
-  if (data.transfer != null && data.transfer_response != null) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'transfer と transfer_response は同時に指定できません。',
-    });
-  }
-}
-
-const transferAttachmentBaseSchema = z.object({
-  item: transferItemSchema.optional(),
-  money: transferMoneySchema.optional(),
-});
-
-const transferAttachmentSchema = transferAttachmentBaseSchema
-  .strict()
-  .superRefine(validateExclusiveItemOrMoney);
-
-const transferOperationObjectSchema = transferAttachmentBaseSchema
-  .extend({
-    operation: z.literal('transfer'),
-    target_agent_id: z.string().min(1),
-  })
-  .strict();
-
-// transfer_accept / transfer_reject は引数なし。サーバー側が受信エージェントの
-// pending_transfer_id から自動解決する。pending が無ければ state_conflict (409) になる。
-const transferAcceptOperationSchema = z.object({
-  operation: z.literal('transfer_accept'),
-}).strict();
-
-const transferRejectOperationSchema = z.object({
-  operation: z.literal('transfer_reject'),
-}).strict();
-
-const waitOperationSchema = z
-  .object({
-    operation: z.literal('wait'),
-    duration: waitDurationSchema,
-  })
-  .strict();
-
-const conversationStartOperationSchema = z
-  .object({
-    operation: z.literal('conversation_start'),
-    target_agent_id: z.string().min(1).describe('会話対象エージェントID'),
-    message: z.string().min(1).describe('最初の発言'),
-  })
-  .strict();
-
-const conversationAcceptOperationSchema = z
-  .object({
-    operation: z.literal('conversation_accept'),
-    message: z.string().min(1).describe('受諾と同時に送る返答'),
-  })
-  .strict();
-
-const conversationRejectOperationSchema = z
-  .object({
-    operation: z.literal('conversation_reject'),
-  })
-  .strict();
-
-const conversationSpeakOperationObjectSchema = z
-  .object({
-    operation: z.literal('conversation_speak'),
-    message: z.string().min(1).describe('発言内容'),
-    next_speaker_agent_id: z.string().min(1).describe('次に発言すべきエージェントID'),
-    transfer: transferAttachmentSchema.optional(),
-    transfer_response: z.enum(['accept', 'reject']).optional(),
-  })
-  .strict();
-
-const conversationEndOperationSchema = z
-  .object({
-    operation: z.literal('conversation_end'),
-    message: z.string().min(1).describe('お別れのメッセージ'),
-    next_speaker_agent_id: z.string().min(1).describe('次に発言すべきエージェントID'),
-    transfer_response: z.enum(['accept', 'reject']).optional(),
-  })
-  .strict();
-
-const conversationJoinOperationSchema = z
-  .object({
-    operation: z.literal('conversation_join'),
-    conversation_id: z.string().min(1).describe('参加する会話のID'),
-  })
-  .strict();
-
-const conversationStayOperationSchema = z
-  .object({
-    operation: z.literal('conversation_stay'),
-  })
-  .strict();
-
-const conversationLeaveOperationSchema = z
-  .object({
-    operation: z.literal('conversation_leave'),
-    message: z.string().min(1).optional().describe('離脱時のメッセージ'),
-  })
-  .strict();
-
-const getMapOperationSchema = z.object({ operation: z.literal('get_map') }).strict();
-const getWorldAgentsOperationSchema = z.object({ operation: z.literal('get_world_agents') }).strict();
-const getStatusOperationSchema = z.object({ operation: z.literal('get_status') }).strict();
-const getNearbyAgentsOperationSchema = z.object({ operation: z.literal('get_nearby_agents') }).strict();
-const getActiveConversationsOperationSchema = z.object({ operation: z.literal('get_active_conversations') }).strict();
-const getEventOperationSchema = z.object({ operation: z.literal('get_event') }).strict();
-
-export const karakuriWorldInputSchema = z.discriminatedUnion('operation', [
-  moveOperationSchema,
-  actionOperationSchema,
-  useItemOperationSchema,
-  transferOperationObjectSchema,
-  transferAcceptOperationSchema,
-  transferRejectOperationSchema,
-  waitOperationSchema,
-  conversationStartOperationSchema,
-  conversationAcceptOperationSchema,
-  conversationRejectOperationSchema,
-  conversationJoinOperationSchema,
-  conversationStayOperationSchema,
-  conversationLeaveOperationSchema,
-  conversationSpeakOperationObjectSchema,
-  conversationEndOperationSchema,
-  getMapOperationSchema,
-  getWorldAgentsOperationSchema,
-  getStatusOperationSchema,
-  getNearbyAgentsOperationSchema,
-  getActiveConversationsOperationSchema,
-  getEventOperationSchema,
-]).superRefine((input, ctx) => {
-  if (input.operation === 'transfer') {
-    validateExclusiveItemOrMoney(input, ctx);
-  }
-
-  if (input.operation === 'conversation_speak') {
-    validateExclusiveTransferAndResponse(input, ctx);
-  }
-});
-
-const moveToolInputSchema = moveOperationSchema.omit({ operation: true });
-const actionToolInputSchema = actionOperationSchema.omit({ operation: true });
-const useItemToolInputSchema = useItemOperationSchema.omit({ operation: true });
-const transferToolInputSchema = transferOperationObjectSchema.omit({ operation: true });
-const transferAcceptToolInputSchema = transferAcceptOperationSchema.omit({ operation: true });
-const transferRejectToolInputSchema = transferRejectOperationSchema.omit({ operation: true });
-const waitToolInputSchema = waitOperationSchema.omit({ operation: true });
-const conversationStartToolInputSchema = conversationStartOperationSchema.omit({ operation: true });
-const conversationAcceptToolInputSchema = conversationAcceptOperationSchema.omit({ operation: true });
-const conversationRejectToolInputSchema = conversationRejectOperationSchema.omit({ operation: true });
-const conversationJoinToolInputSchema = conversationJoinOperationSchema.omit({ operation: true });
-const conversationStayToolInputSchema = conversationStayOperationSchema.omit({ operation: true });
-const conversationLeaveToolInputSchema = conversationLeaveOperationSchema.omit({ operation: true });
-const conversationSpeakToolInputSchema = conversationSpeakOperationObjectSchema.omit({ operation: true });
-const conversationEndToolInputSchema = conversationEndOperationSchema.omit({ operation: true });
-const getMapToolInputSchema = getMapOperationSchema.omit({ operation: true });
-const getWorldAgentsToolInputSchema = getWorldAgentsOperationSchema.omit({ operation: true });
-const getStatusToolInputSchema = getStatusOperationSchema.omit({ operation: true });
-const getNearbyAgentsToolInputSchema = getNearbyAgentsOperationSchema.omit({ operation: true });
-const getActiveConversationsToolInputSchema = getActiveConversationsOperationSchema.omit({ operation: true });
-const getEventToolInputSchema = getEventOperationSchema.omit({ operation: true });
-
-function withComment<TSchema extends z.AnyZodObject>(schema: TSchema) {
-  return schema.extend({ comment: commentSchema });
-}
-
-const moveResponseSchema = z
-  .object({
-    from_node_id: nodeIdSchema,
-    to_node_id: nodeIdSchema,
-    arrives_at: z.number().int(),
-  })
-  .strict();
-
-const waitResponseSchema = z
-  .object({
-    completes_at: z.number().int(),
-  })
-  .strict();
-
-const conversationStartResponseSchema = z
-  .object({
-    conversation_id: z.string().min(1),
-  })
-  .strict();
-
-// サーバー側 (karakuri-world) が将来 enum 値を追加してもクライアントを壊さないため、
-// 既知 literal の union に汎用 string fallback を足して受ける。LLM への提示用 JSON schema は
-// literal 列挙が残るので既知値の hint は維持される。
-// 既知値以外を受けた場合は warn ログを残し、サーバー側の typo / enum ドリフトを検出可能にする。
-const KNOWN_TRANSFER_STATUSES = ['pending', 'completed', 'rejected', 'failed'] as const;
-const KNOWN_TRANSFER_FAILURE_REASONS = [
-  'persist_failed',
-  'role_conflict',
-  'overflow_inventory_full',
-  'overflow_money',
-  'validation_failed',
-] as const;
-
-function warnIfUnknown<T extends string>(
-  field: 'transfer_status' | 'failure_reason',
-  knownValues: readonly T[],
-  value: string,
-): void {
-  if (!knownValues.includes(value as T)) {
-    logger.warn('Unknown enum value received from karakuri-world API', { field, value });
-  }
-}
-
-const transferStatusSchema = z
-  .union([z.enum(KNOWN_TRANSFER_STATUSES), z.string().min(1)])
-  .transform((value) => {
-    warnIfUnknown('transfer_status', KNOWN_TRANSFER_STATUSES, value);
-    return value;
-  });
-const transferFailureReasonSchema = z
-  .union([z.enum(KNOWN_TRANSFER_FAILURE_REASONS), z.string().min(1)])
-  .transform((value) => {
-    warnIfUnknown('failure_reason', KNOWN_TRANSFER_FAILURE_REASONS, value);
-    return value;
-  });
-
-// transfer 系レスポンスは forward-compat のため `.strict()` を付けない。
-// サーバーがフィールドを追加してもクライアントは壊さない。
-// `ok: z.literal(true)` で API 失敗 (`{ ok: false, error }`) との取り違えはガードされる。
-// transfer_status === 'failed' のときは failure_reason 必須 (LLM が再試行戦略を立てる材料)。
-function requireFailureReasonOnFailed(
-  data: { transfer_status?: string | undefined; failure_reason?: string | undefined },
-  ctx: z.RefinementCtx,
-): void {
-  if (data.transfer_status === 'failed' && data.failure_reason == null) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['failure_reason'],
-      message: 'transfer_status="failed" のときは failure_reason が必須です。',
-    });
-  }
-}
-
-const transferActionResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    message: z.string().min(1),
-    transfer_status: transferStatusSchema,
-    transfer_id: z.string().min(1).optional(),
-    failure_reason: transferFailureReasonSchema.optional(),
-  })
-  .superRefine(requireFailureReasonOnFailed);
-
-// turn のみの後方互換レスポンスも引き続き valid。
-const conversationSpeakResponseSchema = z
-  .object({
-    turn: z.number().int(),
-    transfer_status: transferStatusSchema.optional(),
-    transfer_id: z.string().min(1).optional(),
-    failure_reason: transferFailureReasonSchema.optional(),
-  })
-  .superRefine(requireFailureReasonOnFailed);
-
-// conversation_end は 2 人会話終了時に { turn } を返すが、
-// 3 人以上のグループから自分だけ退出する場合は { status: 'ok' } を返す可能性がある。
-const conversationEndResponseSchema = z.union([conversationSpeakResponseSchema, okResponseSchema]);
-
-export type KarakuriWorldInput = z.infer<typeof karakuriWorldInputSchema>;
-
-type KarakuriWorldOperation = KarakuriWorldInput['operation'];
-type InfoCommandOperation = Extract<
-  KarakuriWorldOperation,
-  'get_map'
-  | 'get_world_agents'
-  | 'get_status'
-  | 'get_nearby_agents'
-  | 'get_active_conversations'
-  | 'get_event'
->;
-
-const getInfoCommandResponseSchema = <C extends InfoCommandOperation>(command: C) =>
-  z
-    .object({
-      ok: z.literal(true),
-      message: z.string().min(1),
-      command: z.literal(command),
-      data: z.record(z.string(), z.unknown()),
-    })
-    .strict();
+type KarakuriWorldOperation = 'get_notification' | 'command';
 
 export interface CreateKarakuriWorldToolsOptions extends ApiCredentials {
+  notificationId: string;
+  allowedCommands?: readonly string[];
+  fetch?: typeof fetch;
+}
+
+export interface FetchKarakuriWorldNotificationOptions extends ApiCredentials {
   fetch?: typeof fetch;
 }
 
@@ -401,7 +97,7 @@ interface RequestContext {
 type JsonResponseSchema = z.ZodTypeAny;
 
 interface JsonRequestOptions<TSchema extends JsonResponseSchema> extends RequestContext {
-  operation: KarakuriWorldInput['operation'];
+  operation: KarakuriWorldOperation;
   method: 'GET' | 'POST';
   path: string;
   responseSchema: TSchema;
@@ -421,12 +117,8 @@ const TRANSIENT_FETCH_ERROR_CODES = new Set([
 ]);
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_RETRIES = 1;
-// 再送で解決し得る一時状態のみを busy として informational に丸める。
-// transfer 系 409 (transfer_role_conflict / transfer_already_settled / transfer_refund_failed) は
-// 確定的失敗のため敢えて含めず throw させる。LLM がエラーを認識して別の操作に切り替えるべき。
 const BUSY_ERROR_CODES = new Set(['state_conflict', 'not_your_turn']);
-const BUSY_INSTRUCTION = '今は同じ操作をすぐ再送しないでください。受信済みの会話依頼があればそれに対応し、それ以外は次の通知や状態変化を待ってください。';
-const logger = createLogger('KarakuriWorldApi');
+const BUSY_INSTRUCTION = '同じ通知で別 command を連続実行せず、次の通知を待ってください。';
 
 function normalizeApiBaseUrl(apiBaseUrl: string): string {
   return apiBaseUrl.replace(/\/+$/, '');
@@ -434,6 +126,35 @@ function normalizeApiBaseUrl(apiBaseUrl: string): string {
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith('/') ? value : `${value}/`;
+}
+
+function buildApiUrl(apiBaseUrl: string, path: string): string {
+  return new URL(path.replace(/^\/+/, ''), ensureTrailingSlash(normalizeApiBaseUrl(apiBaseUrl))).toString();
+}
+
+function normalizeAllowedCommands(allowedCommands: readonly string[] | undefined): string[] {
+  return [...new Set((allowedCommands ?? [])
+    .map((command) => command.trim())
+    .filter((command) => command.length > 0))];
+}
+
+function createCommandInputSchemaForChoices(allowedCommands: readonly string[]): z.ZodTypeAny {
+  const firstCommand = allowedCommands[0];
+  if (firstCommand == null) {
+    return karakuriWorldCommandInputSchema;
+  }
+
+  const commandEnumSchema = z
+    .enum([firstCommand, ...allowedCommands.slice(1)] as [string, ...string[]])
+    .describe('取得済み通知の notification.choices[] に含まれる command をそのまま指定する。');
+
+  return z
+    .object({
+      command: commandEnumSchema,
+      params: paramsSchema,
+      comment: commentSchema,
+    })
+    .strict();
 }
 
 function getErrorCode(error: unknown): string | undefined {
@@ -498,16 +219,11 @@ async function readResponseBody(response: Response): Promise<unknown> {
 }
 
 export class KarakuriWorldNetworkError extends Error {
-  readonly operation: KarakuriWorldInput['operation'];
+  readonly operation: KarakuriWorldOperation;
   readonly url: string;
   readonly attempts: number;
 
-  constructor(
-    operation: KarakuriWorldInput['operation'],
-    url: string,
-    attempts: number,
-    cause: unknown,
-  ) {
+  constructor(operation: KarakuriWorldOperation, url: string, attempts: number, cause: unknown) {
     super(
       `Failed to reach the karakuri-world API for "${operation}" at ${url} after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${formatUnknownError(cause)}`,
       { cause },
@@ -520,7 +236,7 @@ export class KarakuriWorldNetworkError extends Error {
 }
 
 export class KarakuriWorldApiError extends Error {
-  readonly operation: KarakuriWorldInput['operation'];
+  readonly operation: KarakuriWorldOperation;
   readonly url: string;
   readonly status: number;
   readonly code: string | undefined;
@@ -528,7 +244,7 @@ export class KarakuriWorldApiError extends Error {
   readonly details: unknown;
 
   constructor(
-    operation: KarakuriWorldInput['operation'],
+    operation: KarakuriWorldOperation,
     url: string,
     status: number,
     message: string,
@@ -547,13 +263,13 @@ export class KarakuriWorldApiError extends Error {
 }
 
 export class KarakuriWorldResponseError extends Error {
-  readonly operation: KarakuriWorldInput['operation'];
+  readonly operation: KarakuriWorldOperation;
   readonly url: string;
   readonly status: number;
   readonly details: unknown;
 
   constructor(
-    operation: KarakuriWorldInput['operation'],
+    operation: KarakuriWorldOperation,
     url: string,
     status: number,
     message: string,
@@ -578,8 +294,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
   apiKey,
   fetchImpl,
 }: JsonRequestOptions<TSchema>): Promise<z.infer<TSchema>> {
-  const normalizedBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
-  const url = new URL(path, ensureTrailingSlash(normalizedBaseUrl)).toString();
+  const url = buildApiUrl(apiBaseUrl, path);
   const headers: Record<string, string> = {
     Accept: 'application/json',
     Authorization: `Bearer ${apiKey}`,
@@ -600,12 +315,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     };
-    logger.debug('API request', {
-      operation,
-      method,
-      url,
-      attempt: attempts,
-    });
+    logger.debug('API request', { operation, method, url, attempt: attempts });
 
     let response: Response;
     try {
@@ -613,11 +323,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
     } catch (error) {
       lastError = error;
       if (method === 'GET' && attempts <= MAX_NETWORK_RETRIES && isRetryableFetchError(error)) {
-        logger.warn('Retrying API request', {
-          operation,
-          attempt: attempts,
-          errorCode: getErrorCode(error),
-        });
+        logger.warn('Retrying API request', { operation, attempt: attempts, errorCode: getErrorCode(error) });
         continue;
       }
 
@@ -631,10 +337,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
     } catch (error) {
       lastError = error;
       if (method === 'GET' && attempts <= MAX_NETWORK_RETRIES && isRetryableFetchError(error)) {
-        logger.warn('Retrying API request (body read failed)', {
-          operation,
-          attempt: attempts,
-        });
+        logger.warn('Retrying API request (body read failed)', { operation, attempt: attempts });
         continue;
       }
 
@@ -660,11 +363,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
         );
       }
 
-      logger.error('API error response', {
-        operation,
-        status: response.status,
-        code: undefined,
-      });
+      logger.error('API error response', { operation, status: response.status, code: undefined });
       throw new KarakuriWorldApiError(
         operation,
         url,
@@ -700,233 +399,10 @@ async function requestJson<TSchema extends JsonResponseSchema>({
   throw new KarakuriWorldNetworkError(operation, url, attempts, lastError);
 }
 
-async function executeKarakuriWorldOperation(
-  input: KarakuriWorldInput,
-  context: RequestContext,
-): Promise<unknown> {
-  logger.debug('Executing operation', { operation: input.operation });
-  const result = await (async (): Promise<unknown> => {
-    switch (input.operation) {
-      case 'move':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/move',
-          body: { target_node_id: input.target_node_id },
-          responseSchema: moveResponseSchema,
-        });
-      case 'action':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/action',
-          body: {
-            action_id: input.action_id,
-            ...(input.duration_minutes !== undefined && { duration_minutes: input.duration_minutes }),
-          },
-          responseSchema: notificationAckResponseSchema,
-        });
-      case 'use_item':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/use-item',
-          body: { item_id: input.item_id },
-          responseSchema: notificationAckResponseSchema,
-        });
-      case 'transfer':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/transfer',
-          body: {
-            target_agent_id: input.target_agent_id,
-            ...(input.item !== undefined && { item: input.item }),
-            ...(input.money !== undefined && { money: input.money }),
-          },
-          responseSchema: transferActionResponseSchema,
-        });
-      case 'transfer_accept':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/transfer/accept',
-          body: {},
-          responseSchema: transferActionResponseSchema,
-        });
-      case 'transfer_reject':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/transfer/reject',
-          body: {},
-          responseSchema: transferActionResponseSchema,
-        });
-      case 'wait':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/wait',
-          body: { duration: input.duration },
-          responseSchema: waitResponseSchema,
-        });
-      case 'conversation_start':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/start',
-          body: {
-            target_agent_id: input.target_agent_id,
-            message: input.message,
-          },
-          responseSchema: conversationStartResponseSchema,
-        });
-      case 'conversation_accept':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/accept',
-          body: { message: input.message },
-          responseSchema: okResponseSchema,
-        });
-      case 'conversation_reject':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/reject',
-          body: {},
-          responseSchema: okResponseSchema,
-        });
-      case 'conversation_join':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/join',
-          body: {
-            conversation_id: input.conversation_id,
-          },
-          responseSchema: okResponseSchema,
-        });
-      case 'conversation_stay':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/stay',
-          body: {},
-          responseSchema: okResponseSchema,
-        });
-      case 'conversation_leave':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/leave',
-          body: {
-            ...(input.message !== undefined && { message: input.message }),
-          },
-          responseSchema: okResponseSchema,
-        });
-      case 'conversation_speak':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/speak',
-          body: {
-            message: input.message,
-            next_speaker_agent_id: input.next_speaker_agent_id,
-            ...(input.transfer !== undefined && { transfer: input.transfer }),
-            ...(input.transfer_response !== undefined && { transfer_response: input.transfer_response }),
-          },
-          responseSchema: conversationSpeakResponseSchema,
-        });
-      case 'conversation_end':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'POST',
-          path: 'api/agents/conversation/end',
-          body: {
-            message: input.message,
-            next_speaker_agent_id: input.next_speaker_agent_id,
-            ...(input.transfer_response !== undefined && { transfer_response: input.transfer_response }),
-          },
-          responseSchema: conversationEndResponseSchema,
-        });
-      case 'get_map':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'GET',
-          path: 'api/agents/map',
-          responseSchema: getInfoCommandResponseSchema('get_map'),
-        });
-      case 'get_world_agents':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'GET',
-          path: 'api/agents/world-agents',
-          responseSchema: getInfoCommandResponseSchema('get_world_agents'),
-        });
-      case 'get_status':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'GET',
-          path: 'api/agents/status',
-          responseSchema: getInfoCommandResponseSchema('get_status'),
-        });
-      case 'get_nearby_agents':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'GET',
-          path: 'api/agents/nearby-agents',
-          responseSchema: getInfoCommandResponseSchema('get_nearby_agents'),
-        });
-      case 'get_active_conversations':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'GET',
-          path: 'api/agents/active-conversations',
-          responseSchema: getInfoCommandResponseSchema('get_active_conversations'),
-        });
-      case 'get_event':
-        return requestJson({
-          ...context,
-          operation: input.operation,
-          method: 'GET',
-          path: 'api/agents/event',
-          responseSchema: getInfoCommandResponseSchema('get_event'),
-        });
-      default: {
-        const _exhaustive: never = input;
-        throw new Error(`Unhandled karakuri-world operation: ${(_exhaustive as { operation: string }).operation}`);
-      }
-    }
-  })();
-
-  logger.debug('Operation completed', { operation: input.operation });
-  return result;
-}
-
 function isBusyError(error: unknown): error is KarakuriWorldApiError {
   return (
     error instanceof KarakuriWorldApiError
+    && error.operation === 'command'
     && error.status === 409
     && error.code !== undefined
     && BUSY_ERROR_CODES.has(error.code)
@@ -941,26 +417,62 @@ function isNotLoggedInError(error: unknown): error is KarakuriWorldApiError {
   );
 }
 
-async function executeKarakuriWorldTool(
-  operation: KarakuriWorldOperation,
+export function isKarakuriWorldNotificationFetchError(error: unknown): error is KarakuriWorldApiError {
+  return error instanceof KarakuriWorldApiError && error.operation === 'get_notification';
+}
+
+export async function fetchKarakuriWorldNotification({
+  apiBaseUrl,
+  apiKey,
+  fetch: fetchImpl = (...args) => globalThis.fetch(...args),
+}: FetchKarakuriWorldNotificationOptions, notificationId: string): Promise<KarakuriWorldNotificationResponse> {
+  const context: RequestContext = { apiBaseUrl, apiKey, fetchImpl };
+  return requestJson({
+    ...context,
+    operation: 'get_notification',
+    method: 'GET',
+    path: `agents/notifications/${encodeURIComponent(notificationId)}`,
+    responseSchema: karakuriWorldNotificationResponseSchema,
+  });
+}
+
+async function executeKarakuriWorldCommand(
+  notificationId: string,
   input: Record<string, unknown>,
   context: RequestContext,
+  allowedCommands: ReadonlySet<string> | null,
 ): Promise<unknown> {
   try {
-    const parsed = karakuriWorldInputSchema.parse({ operation, ...input });
-    return await executeKarakuriWorldOperation(parsed, context);
+    const parsed = karakuriWorldCommandInputSchema.parse(input);
+    if (allowedCommands != null && !allowedCommands.has(parsed.command)) {
+      logger.error('Command is not present in fetched notification choices', {
+        notificationId,
+        command: parsed.command,
+        allowedCommands: [...allowedCommands],
+      });
+      throw new Error(`karakuri-world command is not allowed by this notification: ${parsed.command}`);
+    }
+
+    return await requestJson({
+      ...context,
+      operation: 'command',
+      method: 'POST',
+      path: 'agents/command',
+      body: {
+        notification_id: notificationId,
+        command: parsed.command,
+        params: parsed.params,
+      },
+      responseSchema: z.unknown(),
+    });
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.error('Tool input validation failed', {
-        operation,
-        issues: error.issues,
-      });
+      logger.error('Tool input validation failed', { operation: 'command', issues: error.issues });
       throw error;
     }
 
     if (isBusyError(error)) {
       logger.info('Agent is busy, returning informational response', {
-        operation,
         status: error.status,
         code: error.code,
       });
@@ -973,7 +485,6 @@ async function executeKarakuriWorldTool(
 
     if (isNotLoggedInError(error)) {
       logger.warn('Agent is not logged in, returning informational response', {
-        operation,
         status: error.status,
         code: error.code,
       });
@@ -983,139 +494,33 @@ async function executeKarakuriWorldTool(
       };
     }
 
-    logger.error('Tool execution failed', { operation, error });
+    logger.error('Tool execution failed', { operation: 'command', error });
     throw error;
   }
-}
-
-async function executeKarakuriWorldToolStrippingComment(
-  operation: KarakuriWorldOperation,
-  input: Record<string, unknown>,
-  context: RequestContext,
-): Promise<unknown> {
-  const { comment: _comment, ...requestInput } = input;
-  return executeKarakuriWorldTool(operation, requestInput, context);
 }
 
 export function createKarakuriWorldTools({
   apiBaseUrl,
   apiKey,
+  notificationId,
+  allowedCommands,
   fetch: fetchImpl = (...args) => globalThis.fetch(...args),
 }: CreateKarakuriWorldToolsOptions): ToolSet {
-  const context: RequestContext = {
-    apiBaseUrl,
-    apiKey,
-    fetchImpl,
-  };
+  const context: RequestContext = { apiBaseUrl, apiKey, fetchImpl };
+  const normalizedAllowedCommands = normalizeAllowedCommands(allowedCommands);
+  const allowedCommandSet = normalizedAllowedCommands.length > 0 ? new Set(normalizedAllowedCommands) : null;
+  const allowedCommandDescription = normalizedAllowedCommands.length > 0
+    ? ` Allowed command values for this notification: ${normalizedAllowedCommands.join(', ')}.`
+    : '';
+  const inputSchema = createCommandInputSchemaForChoices(normalizedAllowedCommands);
 
   return {
-    karakuri_world_get_map: tool({
-      description: 'ワールド全体の地図情報を取得する。結果は戻り値の `data` (rows / cols / nodes / buildings / npcs) に含まれる。後続 Discord 通知は choices のみ。',
-      inputSchema: withComment(getMapToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_map', input, context),
-    }),
-    karakuri_world_get_world_agents: tool({
-      description: 'ログイン中エージェントの一覧と状態を取得する。結果は戻り値の `data.agents` に含まれる。後続 Discord 通知は choices のみ。',
-      inputSchema: withComment(getWorldAgentsToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_world_agents', input, context),
-    }),
-    karakuri_world_get_status: tool({
-      description: '自分の所持金 / 所持品 / 現在地を取得する。結果は戻り値の `data` (`node_id` / `money` / `items`) に含まれる。`use_item` の `item_id` および `transfer` の `item.item_id` ソース。後続 Discord 通知は choices のみ。',
-      inputSchema: withComment(getStatusToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_status', input, context),
-    }),
-    karakuri_world_get_nearby_agents: tool({
-      description: '隣接エージェント (`conversation_candidates` / `transfer_candidates`) を取得する。結果は戻り値の `data` に含まれる。後続 Discord 通知は choices のみ。',
-      inputSchema: withComment(getNearbyAgentsToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_nearby_agents', input, context),
-    }),
-    karakuri_world_get_active_conversations: tool({
-      description: '参加可能な進行中会話を取得する。結果は戻り値の `data.conversations` に含まれる (`conversation_id` 付き)。後続 Discord 通知は choices のみ。',
-      inputSchema: withComment(getActiveConversationsToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_active_conversations', input, context),
-    }),
-    karakuri_world_get_event: tool({
-      description: '実施中の永続サーバーイベント一覧を取得する。結果は戻り値の `data.events` に含まれる。後続 Discord 通知は choices のみ。',
-      inputSchema: withComment(getEventToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('get_event', input, context),
-    }),
-    karakuri_world_move: tool({
-      description: '目的地ノードへ移動する。`target_node_id` を渡す。',
-      inputSchema: withComment(moveToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('move', input, context),
-    }),
-    karakuri_world_action: tool({
-      description: 'アクションを実行する。`action_id` を渡す。可変時間アクションの場合は通知に表示された範囲内で `duration_minutes` も指定する。結果は通知で届く。',
-      inputSchema: withComment(actionToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('action', input, context),
-    }),
-    karakuri_world_use_item: tool({
-      description: '所持アイテムを使用する。`item_id` を渡す。結果は通知で届く。',
-      inputSchema: withComment(useItemToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('use_item', input, context),
-    }),
-    karakuri_world_transfer: tool({
-      description: '隣接または同一ノードの idle / in_action エージェントへアイテム 1 種類または所持金のいずれか 1 つを譲渡する。`target_agent_id` と `item`（{item_id, quantity}）または `money`（正の整数）のどちらか一方だけを渡す（同時指定不可）。受信側は accept/reject 通知に応答する。',
-      inputSchema: withComment(transferToolInputSchema).superRefine((data, ctx) => {
-        validateExclusiveItemOrMoney({ item: data.item, money: data.money }, ctx);
-      }),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer', input, context),
-    }),
-    karakuri_world_transfer_accept: tool({
-      description: '受信中の standalone 譲渡オファーを受諾する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は karakuri_world_conversation_speak または karakuri_world_conversation_end の transfer_response を使うこと。',
-      inputSchema: withComment(transferAcceptToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer_accept', input, context),
-    }),
-    karakuri_world_transfer_reject: tool({
-      description: '受信中の standalone 譲渡オファーを拒否する。引数は `comment` のみ。pending な譲渡が無ければ state_conflict エラーになる。会話中の譲渡は karakuri_world_conversation_speak または karakuri_world_conversation_end の transfer_response を使うこと。',
-      inputSchema: withComment(transferRejectToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('transfer_reject', input, context),
-    }),
-    karakuri_world_wait: tool({
-      description: 'その場で待機する。`duration` を渡す（10分単位、1〜6）。',
-      inputSchema: withComment(waitToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('wait', input, context),
-    }),
-    karakuri_world_conversation_start: tool({
-      description: '近くのエージェントへ話しかける。`target_agent_id` と `message` を渡す。',
-      inputSchema: withComment(conversationStartToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_start', input, context),
-    }),
-    karakuri_world_conversation_accept: tool({
-      description: '会話着信を受諾して返答する。`message` を渡す。',
-      inputSchema: withComment(conversationAcceptToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_accept', input, context),
-    }),
-    karakuri_world_conversation_reject: tool({
-      description: '会話着信を拒否する。引数不要。',
-      inputSchema: withComment(conversationRejectToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_reject', input, context),
-    }),
-    karakuri_world_conversation_join: tool({
-      description: '近くで進行中の会話に参加表明する。`conversation_id` を渡す。参加は次のターン境界で反映され、それまで発言機会は無い。',
-      inputSchema: withComment(conversationJoinToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_join', input, context),
-    }),
-    karakuri_world_conversation_stay: tool({
-      description: 'inactive_check 通知に対して会話に残ることを表明する。引数不要。',
-      inputSchema: withComment(conversationStayToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_stay', input, context),
-    }),
-    karakuri_world_conversation_leave: tool({
-      description: 'inactive_check 通知に対して会話から離脱する。任意でお別れの `message` を渡せる。',
-      inputSchema: withComment(conversationLeaveToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_leave', input, context),
-    }),
-    karakuri_world_conversation_speak: tool({
-      description: '会話中に発言する。`message` と `next_speaker_agent_id` を渡す。必要に応じて `transfer` または `transfer_response` を任意で添えられるが、同時指定はできない。',
-      inputSchema: withComment(conversationSpeakToolInputSchema)
-        .superRefine(validateExclusiveTransferAndResponse),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_speak', input, context),
-    }),
-    karakuri_world_conversation_end: tool({
-      description: '会話を終了または退出する。お別れの `message` と `next_speaker_agent_id` を渡す。必要に応じて `transfer_response` のみ任意で添えられる。2人会話では会話全体を終了する。3人以上では自分だけ退出する。',
-      inputSchema: withComment(conversationEndToolInputSchema),
-      execute: async (input) => executeKarakuriWorldToolStrippingComment('conversation_end', input, context),
+    karakuri_world_command: tool({
+      description:
+        'get_notification 済みの保存済み通知に対して、notification.choices[] から選んだ command を最大1回だけ実行する。notification_id はシステム側で固定されるため入力しない。params は JSON object にする。'
+        + allowedCommandDescription,
+      inputSchema,
+      execute: async (input) => executeKarakuriWorldCommand(notificationId, input, context, allowedCommandSet),
     }),
   };
 }
