@@ -33,6 +33,8 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('Do not expose private chain-of-thought');
     expect(normalized).toContain('idle_reminder');
     expect(instructions).toContain('Choose `wait` only');
+    expect(instructions).toContain('intended destination node directly');
+    expect(instructions).toContain('farthest reachable listed node');
     expect(instructions).toContain('get_perception');
     expect(instructions).toContain('get_available_actions');
     expect(instructions).toContain('get_map');

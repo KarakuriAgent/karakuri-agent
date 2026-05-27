@@ -25,6 +25,7 @@ export function buildKarakuriWorldModeInstructions(): string {
     '- `choices[].params` are server-provided fixed parameters; preserve them unless `param_schema` clearly asks you to fill a missing field.',
     '- `required_params` must be present in `params` and non-null.',
     '- Read `param_schema` field descriptions, types, enum values, min/max, object properties, and exactly-one constraints before filling values.',
+    '- For `move`, specify the intended destination node directly as `target_node_id`; do not move one adjacent square at a time. When a desired destination, area, or direction is known, choose the farthest reachable listed node in `notification.perception.nodes` / `nearby_nodes` that clearly makes progress toward it. Use an adjacent node only when it is the actual intended destination, no farther useful node is listed, or the notification explicitly requires adjacent-only movement.',
     '- For transfer payloads, provide either `item` or `money`, never both.',
     '- `conversation_speak` and `conversation_end` require `next_speaker_agent_id` when that appears in `required_params`.',
     '- For in-conversation transfer offers, respond with `transfer_response: "accept"` or `"reject"` on the speaking/end command when required by the notification; do not use standalone transfer accept/reject unless that command is in choices.',
