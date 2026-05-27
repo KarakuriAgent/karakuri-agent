@@ -1353,7 +1353,7 @@ describe('KarakuriAgent', () => {
 
     expect(userStore.ensureCalls).toEqual([]);
     expect(Object.keys(capturedTools).sort()).toEqual([...EXPECTED_KW_TOOL_NAMES].sort());
-    expect(capturedToolChoice).toBe('required');
+    expect(capturedToolChoice).toEqual({ type: 'tool', toolName: 'karakuri_world_command' });
     expect(capturedProviderOptions).toEqual({ openai: { reasoningEffort: 'low' } });
     expect(capturedSystem).toContain('You are custom.');
     expect(capturedSystem).toContain('Be precise.');

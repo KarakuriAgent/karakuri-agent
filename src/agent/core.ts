@@ -18,6 +18,7 @@ import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
 import {
   buildKarakuriWorldModeInstructions,
+  KARAKURI_WORLD_COMMAND_TOOL_NAME,
   KARAKURI_WORLD_TOOL_PREFIX,
   KW_MODE_MAX_STEPS,
 } from '../karakuri-world/builtin-instructions.js';
@@ -423,7 +424,7 @@ export class KarakuriAgent implements IAgent {
         messages: session.messages,
         tools,
         stopWhen: stepCountIs(isKarakuriWorldMode ? KW_MODE_MAX_STEPS : this.config.maxSteps),
-        ...(isKarakuriWorldMode ? { toolChoice: 'required' as const } : {}),
+        ...(isKarakuriWorldMode ? { toolChoice: { type: 'tool' as const, toolName: KARAKURI_WORLD_COMMAND_TOOL_NAME } } : {}),
         ...(disableThinking ? { providerOptions: noThinkingProviderOptions(this.config.llmModelSelector.api) } : {}),
         ...(lifecycle != null
           ? {
