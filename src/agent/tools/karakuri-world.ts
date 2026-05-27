@@ -22,7 +22,7 @@ const commentSchema = z
   .string()
   .trim()
   .min(1)
-  .describe('Discord に返す判断コメント。選んだ command とその理由を短く説明する。');
+  .describe('Discord に返すキャラ口調の行動コメント。現在のロール/人格に合う短い口調で、選んだ command と実用上の理由が伝わるように書く。');
 
 export const karakuriWorldCommandInputSchema = z
   .object({

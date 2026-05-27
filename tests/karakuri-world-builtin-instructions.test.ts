@@ -28,7 +28,8 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('param_constraints');
     expect(instructions).toContain('Do not put `notification_id` in tool input');
     expect(instructions).toContain('comment');
-    expect(instructions).toContain('visible decision summary');
+    expect(instructions).toContain('in-character action line');
+    expect(instructions).toContain('current role/persona');
     expect(instructions).toContain('Do not expose private chain-of-thought');
     expect(normalized).toContain('idle_reminder');
     expect(instructions).toContain('Choose `wait` only');
