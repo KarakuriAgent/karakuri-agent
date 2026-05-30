@@ -337,7 +337,20 @@ describe('loadConfig', () => {
     });
 
     expect(config.karakuriWorld).toEqual({
-      apiBaseUrl: 'https://example.com/world',
+      apiBaseUrl: 'https://example.com/world/api',
+      apiKey: 'world-key',
+    });
+  });
+
+  it('keeps karakuri-world API base URLs that already include /api', () => {
+    const config = loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://example.com/world/api/',
+      KARAKURI_WORLD_API_KEY: 'world-key',
+    });
+
+    expect(config.karakuriWorld).toEqual({
+      apiBaseUrl: 'https://example.com/world/api',
       apiKey: 'world-key',
     });
   });

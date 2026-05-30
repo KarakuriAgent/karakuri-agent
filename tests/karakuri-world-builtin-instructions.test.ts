@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildKarakuriWorldModeInstructions,
+  KARAKURI_WORLD_COMMAND_TOOL_NAME,
   KARAKURI_WORLD_TOOL_PREFIX,
   KW_MODE_MAX_STEPS,
 } from '../src/karakuri-world/builtin-instructions.js';
@@ -9,59 +10,41 @@ import {
 describe('karakuri-world builtin instructions', () => {
   it('exports stable mode constants', () => {
     expect(KARAKURI_WORLD_TOOL_PREFIX).toBe('karakuri_world_');
+    expect(KARAKURI_WORLD_COMMAND_TOOL_NAME).toBe('karakuri_world_command');
     expect(KW_MODE_MAX_STEPS).toBe(1);
   });
 
-  it('describes single-step world-action behavior and required comments', () => {
+  it('describes fetched-notification command selection behavior', () => {
     const instructions = buildKarakuriWorldModeInstructions();
     const normalized = instructions.toLowerCase();
 
     expect(instructions).toContain('KarakuriWorld mode is active.');
-    expect(normalized).toContain('you must call exactly one karakuri-world tool');
-    expect(instructions).toContain('`comment` field');
-    expect(instructions).toContain('`karakuri_world_get_map`');
-    expect(instructions).toContain('`karakuri_world_get_status`');
-    expect(instructions).toContain('`karakuri_world_get_nearby_agents`');
-    expect(instructions).toContain('`karakuri_world_get_active_conversations`');
-    expect(instructions).toContain('`karakuri_world_get_event`');
-    expect(instructions).toContain('`karakuri_world_move`');
-    expect(instructions).toContain('`karakuri_world_conversation_join`');
-    expect(instructions).toContain('`karakuri_world_conversation_stay`');
-    expect(instructions).toContain('`karakuri_world_conversation_leave`');
-    expect(instructions).toContain('`karakuri_world_transfer`');
-    expect(instructions).toContain('`karakuri_world_transfer_accept`');
-    expect(instructions).toContain('`karakuri_world_transfer_reject`');
-    expect(instructions).toContain('`karakuri_world_conversation_end`');
-    expect(instructions).toContain('next_speaker_agent_id');
+    expect(instructions).toContain('get_notification');
+    expect(instructions).toContain('`karakuri_world_command`');
+    expect(instructions).toContain('notification.choices[]');
+    expect(instructions).toContain('choices[].params');
+    expect(instructions).toContain('required_params');
+    expect(instructions).toContain('param_schema');
+    expect(instructions).toContain('param_constraints');
+    expect(instructions).toContain('Do not put `notification_id` in tool input');
+    expect(instructions).toContain('comment');
+    expect(instructions).toContain('in-character action line');
+    expect(instructions).toContain('current role/persona');
+    expect(instructions).toContain('Do not expose private chain-of-thought');
+    expect(normalized).toContain('idle_reminder');
+    expect(instructions).toContain('Choose `wait` only');
+    expect(instructions).toContain('intended destination node directly');
+    expect(instructions).toContain('farthest reachable listed node');
+    expect(instructions).toContain('get_perception');
+    expect(instructions).toContain('get_available_actions');
+    expect(instructions).toContain('get_map');
+    expect(instructions).toContain('data');
+    expect(instructions).toContain('Do not execute a second command');
     expect(instructions).toContain('transfer_response');
-    expect(instructions).toContain('in_transfer');
-    expect(instructions).toContain('所持品');
-    expect(instructions).toContain('近くの会話');
-    expect(instructions).toContain('近くのエージェント');
-    expect(instructions).toContain('return their data inline');
-    expect(instructions).toMatch(/結果は戻り値の `data/);
-    expect(instructions).not.toContain('(詳細は通知で届く)');
-    expect(instructions).toMatch(/STANDALONE|standalone/);
-    expect(instructions).toMatch(/IN-CONVERSATION|in_conversation/);
-    expect(instructions).toContain('auto-rejected');
-    expect(instructions).toContain('transfer_status: "failed"');
-    expect(instructions).toContain('failure_reason');
-    // 新仕様 (item|money 排他、in_action から開始可) の文言が含まれていること
-    expect(instructions).toContain('idle or in_action');
-    expect(instructions).toContain('idle / in_action');
-    expect(instructions).toMatch(/EITHER `item`.*OR `money`/);
-    // 旧 items 配列フィールド形式の JSON 例が残っていないこと
-    expect(instructions).not.toContain('"items":');
-    expect(instructions).not.toContain('"items":[');
-    expect(normalized).toContain('inactive_check');
-    expect(instructions).toContain('2-person conversations');
-    expect(instructions).toContain('3 or more participants');
-    expect(instructions).toContain('Do NOT pass `next_speaker_agent_id` to `karakuri_world_conversation_leave`');
-    expect(instructions).toContain('"target_node_id": "4-1"');
-    expect(instructions).toContain('"next_speaker_agent_id": "agent-xyz"');
-    expect(instructions).not.toContain('get_available_actions');
+    expect(instructions).toContain('next_speaker_agent_id');
+    expect(instructions).toContain('"command": "move"');
+    expect(instructions).not.toContain('karakuri_world_get_map');
+    expect(instructions).not.toContain('karakuri_world_move');
     expect(instructions).not.toContain('duration_ms');
-    expect(instructions).toContain('duration_minutes');
-    expect(instructions).toContain('"action_id"');
   });
 });
