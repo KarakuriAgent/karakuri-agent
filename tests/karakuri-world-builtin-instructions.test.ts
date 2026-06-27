@@ -32,6 +32,10 @@ describe('karakuri-world builtin instructions', () => {
     expect(instructions).toContain('current role/persona');
     expect(instructions).toContain('Do not expose private chain-of-thought');
     expect(normalized).toContain('idle_reminder');
+    expect(instructions).toContain('notification `summary`, `perception`, and `choices`');
+    expect(instructions).toContain('Do not select `get_*` commands');
+    expect(instructions).toContain('at most one minimal info command');
+    expect(instructions).toContain('current notification does not contain enough information');
     expect(instructions).toContain('Choose `wait` only');
     expect(instructions).toContain('intended destination node directly');
     expect(instructions).toContain('farthest reachable listed node');
