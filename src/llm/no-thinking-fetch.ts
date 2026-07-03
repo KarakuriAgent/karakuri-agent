@@ -12,6 +12,10 @@ export function noThinkingProviderOptions(api: OpenAiApiKind): ProviderOptions {
 
 export function createNoThinkingFetch(baseFetch: typeof globalThis.fetch = globalThis.fetch): typeof globalThis.fetch {
   return async (input, init) => {
+    if (isChatCompletionsRequest(input)) {
+      return baseFetch(input, init);
+    }
+
     if (init?.body != null && typeof init.body === 'string') {
       try {
         const json = JSON.parse(init.body) as Record<string, unknown>;
@@ -24,4 +28,14 @@ export function createNoThinkingFetch(baseFetch: typeof globalThis.fetch = globa
 
     return baseFetch(input, init);
   };
+}
+
+function isChatCompletionsRequest(input: string | URL | Request): boolean {
+  const url = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.toString()
+      : input.url;
+
+  return url.includes('/chat/completions');
 }
