@@ -80,6 +80,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **Admin-gated ツール**: `postMessage` と `manageCron` は管理者権限が必要。特に `manageCron` は scheduler store が存在しても admin 以外には公開されない。
 - **トークンバジェット管理**: セッションはトークン見積りで管理し、しきい値超過時は `KarakuriAgent` が要約して最近の turn を保持する。
 - **System turn の直列化**: heartbeat・cron・memory maintenance はグローバル mutex で system turn を直列実行し、共有セッションの破損や競合を防ぐ。
+- **メモリの振り分けルール**: post-response evaluator は情報を排他的に振り分ける — ユーザー個別情報（好み・属性・状況）は user profile、ユーザー非依存の長期事実・決定のみ core memory、短期的な出来事は diary（または保存しない）。memory maintenance は core memory に紛れ込んだ期限切れ項目・ユーザー個別項目を rewrite 時に除去する。
 - **メモリ永続化の直列化**: post-response evaluator と SNS 観測ユーザー評価は、core memory snapshot read と LLM 評価を lock 外で行い、append/write の apply 段階だけ共有 persistence mutex を通す。memory maintenance は同じ mutex を read → LLM → overwrite / replace / delete 全体で保持し、maintenance overwrite と background append の更新ロストを防ぎつつ、system turn が evaluator の LLM 待ちで長時間ブロックされないようにする。同一 user の後続 evaluator は agent 側 mutex で直列化される。
 - **スレッド単位排他**: Discord 側のユーザー会話処理は thread ごとに mutex で直列化する。
 - **ファイルベース state**: Chat SDK の subscription / cache / lock 状態は `data/state/chat-state.json` に保存される。
