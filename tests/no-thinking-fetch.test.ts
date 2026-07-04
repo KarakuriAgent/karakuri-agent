@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../src/llm/no-thinking-fetch.js';
 
 describe('createNoThinkingFetch', () => {
-  it('injects enable_thinking: false into JSON request bodies', async () => {
+  it('does not inject enable_thinking into chat completions request bodies', async () => {
     const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
     const fetch = createNoThinkingFetch(baseFetch);
 
@@ -15,7 +15,7 @@ describe('createNoThinkingFetch', () => {
     expect(baseFetch).toHaveBeenCalledTimes(1);
     const init = baseFetch.mock.calls[0]![1]!;
     const body = JSON.parse(init.body as string);
-    expect(body.enable_thinking).toBe(false);
+    expect(body.enable_thinking).toBeUndefined();
     expect(body.model).toBe('qwen3.5-plus');
     expect(body.messages).toEqual([]);
   });
@@ -24,7 +24,7 @@ describe('createNoThinkingFetch', () => {
     const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
     const fetch = createNoThinkingFetch(baseFetch);
 
-    await fetch('https://api.example.com/v1/chat/completions', {
+    await fetch('https://api.example.com/v1/responses', {
       method: 'POST',
       body: JSON.stringify({ model: 'test', temperature: 0.7, stream: true }),
     });
