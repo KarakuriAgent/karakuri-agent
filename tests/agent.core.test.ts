@@ -16,6 +16,8 @@ import { KeyedMutex } from '../src/utils/mutex.js';
 import type { PromptContext } from '../src/agent/prompt-context.js';
 import type { Config } from '../src/config.js';
 import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from '../src/llm/model-selector.js';
+import { LoopDetector } from '../src/life/loop-detector.js';
+import { PerceptionBuffer } from '../src/life/perception-buffer.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
 import type { ISessionManager, SessionData } from '../src/session/types.js';
@@ -38,6 +40,9 @@ const baseConfig: Config = {
   snsLoopMinIntervalMinutes: 60,
   snsLoopMaxIntervalMinutes: 180,
   llmEnableThinking: true,
+  kwPerceptionBufferEnabled: true,
+  loopWarningEnabled: true,
+  loopDetectorThreshold: 3,
 };
 
 class MemoryStoreStub implements IMemoryStore {
@@ -2750,5 +2755,150 @@ describe('KarakuriAgent', () => {
     expect(provider.chat).toHaveBeenCalledWith('gpt-4o-mini');
     expect(responsesModel).toEqual({ kind: 'responses:gpt-4o-mini' });
     expect(chatModel).toEqual({ kind: 'chat:gpt-4o-mini' });
+  });
+
+  describe('KW perception buffer and loop detector (M1)', () => {
+    function createKwAgent(overrides: {
+      perceptionBuffer?: PerceptionBuffer;
+      loopDetector?: LoopDetector;
+      config?: Partial<Config>;
+      generateTextFn?: unknown;
+      sessionManager?: SessionManagerStub;
+      onSystem?: (system: string) => void;
+    } = {}) {
+      const sessionManager = overrides.sessionManager ?? new SessionManagerStub();
+      const generateTextFn = overrides.generateTextFn ?? vi.fn(async (options: { system?: string }) => {
+        // post-response evaluator の呼び出しは除外し、KW ターンの system だけを捕捉する
+        if (options.system != null && options.system.includes('KarakuriWorld mode is active.')) {
+          overrides.onSystem?.(options.system);
+        }
+        return makeKwModeGenerateTextResult('了解した。');
+      });
+      const agent = new KarakuriAgent({
+        config: {
+          ...baseConfig,
+          karakuriWorldBotIds: ['kw-bot-1'],
+          karakuriWorld: {
+            apiBaseUrl: 'https://example.com/world',
+            apiKey: 'world-key',
+          },
+          ...overrides.config,
+        },
+        memoryStore: new MemoryStoreStub(),
+        sessionManager,
+        ...(overrides.perceptionBuffer != null ? { perceptionBuffer: overrides.perceptionBuffer } : {}),
+        ...(overrides.loopDetector != null ? { loopDetector: overrides.loopDetector } : {}),
+        generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+      return { agent, sessionManager, generateTextFn };
+    }
+
+    it('keeps state notifications out of session history and injects them via the perception section', async () => {
+      const perceptionBuffer = new PerceptionBuffer();
+      let capturedSystem = '';
+      const { agent, sessionManager } = createKwAgent({
+        perceptionBuffer,
+        onSystem: (system) => {
+          capturedSystem = system;
+        },
+      });
+      stubKarakuriWorldNotificationFetch();
+
+      await expect(
+        agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' }),
+      ).resolves.toBe('了解した。');
+      await agent.drainPendingEvaluations();
+
+      // 世界状態スナップショットはセッション履歴に積まれない
+      const userMessages = sessionManager.session.messages.filter((message) => message.role === 'user');
+      expect(userMessages).toHaveLength(1);
+      const userContent = typeof userMessages[0]!.content === 'string' ? userMessages[0]!.content : '';
+      expect(userContent).toContain('world state update');
+      expect(userContent).not.toContain('nearby_nodes');
+      expect(userContent).not.toContain('notif-123');
+
+      // 最新の世界状態はシステムプロンプトの untrusted タグで注入される
+      expect(capturedSystem).toContain('<karakuri-world-perception>');
+      expect(capturedSystem).toContain('nearby_nodes');
+      expect(perceptionBuffer.getLatest('kw:kw-bot-1')).not.toBeNull();
+    });
+
+    it('keeps conversation notifications in session history for multi-turn conversations', async () => {
+      const perceptionBuffer = new PerceptionBuffer();
+      const { agent, sessionManager } = createKwAgent({ perceptionBuffer });
+      stubKarakuriWorldNotificationFetch({
+        notification: { kind: 'conversation_message', summary: 'B さん:「映画どうだった？」' },
+      });
+
+      await agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+      await agent.drainPendingEvaluations();
+
+      const userMessages = sessionManager.session.messages.filter((message) => message.role === 'user');
+      const userContent = typeof userMessages[0]!.content === 'string' ? userMessages[0]!.content : '';
+      expect(userContent).toContain('映画どうだった');
+      // 会話系通知はバッファを置き換えない（最後の状態系通知が残る）
+      expect(perceptionBuffer.getLatest('kw:kw-bot-1')).toBeNull();
+    });
+
+    it('falls back to legacy history behavior when the buffer is disabled', async () => {
+      const perceptionBuffer = new PerceptionBuffer();
+      const { agent, sessionManager } = createKwAgent({
+        perceptionBuffer,
+        config: { kwPerceptionBufferEnabled: false },
+      });
+      stubKarakuriWorldNotificationFetch();
+
+      await agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+      await agent.drainPendingEvaluations();
+
+      const userMessages = sessionManager.session.messages.filter((message) => message.role === 'user');
+      const userContent = typeof userMessages[0]!.content === 'string' ? userMessages[0]!.content : '';
+      expect(userContent).toContain('nearby_nodes');
+    });
+
+    it('injects a trusted loop warning after repeating the same action beyond the threshold', async () => {
+      const loopDetector = new LoopDetector({ threshold: 3 });
+      const systems: string[] = [];
+      const { agent } = createKwAgent({
+        loopDetector,
+        onSystem: (system) => {
+          systems.push(system);
+        },
+      });
+      stubKarakuriWorldNotificationFetch();
+
+      for (let i = 0; i < 4; i += 1) {
+        await agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+      }
+      await agent.drainPendingEvaluations();
+
+      // 1〜3 回目のプロンプトには警告なし（streak は応答後に加算される）
+      expect(systems[0]).not.toContain('行動ループ警告');
+      expect(systems[2]).not.toContain('行動ループ警告');
+      // 3 回連続の後、4 回目のプロンプトに trusted 警告が入る
+      expect(systems[3]).toContain('行動ループ警告');
+      expect(loopDetector.getConsecutiveCount('kw:kw-bot-1')).toBe(4);
+    });
+
+    it('does not inject the loop warning when disabled by config', async () => {
+      const loopDetector = new LoopDetector({ threshold: 2 });
+      const systems: string[] = [];
+      const { agent } = createKwAgent({
+        loopDetector,
+        config: { loopWarningEnabled: false },
+        onSystem: (system) => {
+          systems.push(system);
+        },
+      });
+      stubKarakuriWorldNotificationFetch();
+
+      for (let i = 0; i < 3; i += 1) {
+        await agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+      }
+      await agent.drainPendingEvaluations();
+
+      expect(systems.every((system) => !system.includes('行動ループ警告'))).toBe(true);
+    });
   });
 });

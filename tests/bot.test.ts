@@ -87,6 +87,9 @@ const baseConfig: Config = {
   snsLoopMinIntervalMinutes: 60,
   snsLoopMaxIntervalMinutes: 180,
   llmEnableThinking: true,
+  kwPerceptionBufferEnabled: true,
+  loopWarningEnabled: true,
+  loopDetectorThreshold: 3,
 };
 
 const agentStub: IAgent = {

@@ -10,9 +10,13 @@ import { loadConfig, type Config } from './config.js';
 import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from './llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
+import { SqliteActionLedgerStore } from './life/action-ledger.js';
 import { openLifeDatabase } from './life/db.js';
 import { logLifeDbCapabilities, verifyLifeDbCapabilities } from './life/db-verification.js';
 import { SqliteExperienceLogStore } from './life/experience-log.js';
+import { LoopDetector } from './life/loop-detector.js';
+import { kwChannel } from './life/normalize.js';
+import { PerceptionBuffer } from './life/perception-buffer.js';
 import { ExperienceRecorder } from './life/recorder.js';
 import { CompositeMemoryStore } from './memory/composite-store.js';
 import { SqliteDiaryStore } from './memory/diary-store.js';
@@ -109,6 +113,15 @@ async function main(): Promise<void> {
       logger,
     );
   }
+  // M1: 知覚分離（Perception Buffer）と反復対策（action_ledger + Loop Detector）
+  const perceptionBuffer = new PerceptionBuffer();
+  const loopDetector = new LoopDetector({ threshold: config.loopDetectorThreshold });
+  const actionLedger = new SqliteActionLedgerStore({ db: lifeDb });
+  for (const botId of config.karakuriWorldBotIds ?? []) {
+    const channel = kwChannel(botId);
+    await perceptionBuffer.restoreChannel(experienceLogStore, channel);
+    await loopDetector.restore(experienceLogStore, channel);
+  }
   const snsReportError = messageSink != null && config.reportChannelId != null
     ? (message: string) => {
         void reportSafely(messageSink, config.reportChannelId, message, {
@@ -157,6 +170,9 @@ async function main(): Promise<void> {
     snsActivityStores,
     snsContextRegistry,
     experienceRecorder,
+    perceptionBuffer,
+    loopDetector,
+    actionLedger,
   });
   for (const credentials of (config.snsList ?? [])) {
     const provider = credentials.provider;

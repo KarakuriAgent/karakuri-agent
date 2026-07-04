@@ -43,6 +43,20 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       END;
     `,
   },
+  {
+    version: 2,
+    up: `
+      -- 頻度台帳（飽き・ループ検出の入力）。key は own_action 由来
+      CREATE TABLE action_ledger (
+        bucket       TEXT NOT NULL,
+        key          TEXT NOT NULL,
+        window_start TEXT NOT NULL,
+        count        INTEGER NOT NULL,
+        PRIMARY KEY (bucket, key, window_start)
+      );
+      CREATE INDEX idx_action_ledger_window ON action_ledger(bucket, window_start);
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {

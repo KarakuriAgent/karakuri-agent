@@ -55,6 +55,9 @@ const configSchema = z.object({
   adminUserIds: z.string().optional(),
   karakuriWorldBotIds: z.string().optional(),
   llmEnableThinking: z.string().trim().optional(),
+  kwPerceptionBufferEnabled: z.string().trim().optional(),
+  loopWarningEnabled: z.string().trim().optional(),
+  loopDetectorThreshold: z.coerce.number().int().min(2).default(3),
 });
 
 export interface ApiCredentials {
@@ -112,6 +115,12 @@ export interface Config {
   adminUserIds?: string[] | undefined;
   karakuriWorldBotIds?: string[] | undefined;
   llmEnableThinking: boolean;
+  /** M1: 行動選択用通知をセッション履歴に積まず Perception Buffer で扱う（切り分け・ロールバック用） */
+  kwPerceptionBufferEnabled: boolean;
+  /** M1: ループ警告の trusted 注入（切り分け・ロールバック用） */
+  loopWarningEnabled: boolean;
+  /** M1: 同一行動 × 同一対象の連続回数がこの値以上で警告を注入する */
+  loopDetectorThreshold: number;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -165,6 +174,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     adminUserIds: env.ADMIN_USER_IDS,
     karakuriWorldBotIds: env.KARAKURI_WORLD_BOT_IDS,
     llmEnableThinking: env.LLM_ENABLE_THINKING,
+    kwPerceptionBufferEnabled: env.KW_PERCEPTION_BUFFER_ENABLED,
+    loopWarningEnabled: env.LOOP_WARNING_ENABLED,
+    loopDetectorThreshold: env.LOOP_DETECTOR_THRESHOLD,
   };
 
   try {
@@ -286,6 +298,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       snsList,
       ...(parsed.snsLegacyDbMigrateTo != null ? { snsLegacyDbMigrateTo: parsed.snsLegacyDbMigrateTo } : {}),
       llmEnableThinking: parseBooleanEnv(parsed.llmEnableThinking, 'LLM_ENABLE_THINKING', true),
+      kwPerceptionBufferEnabled: parseBooleanEnv(parsed.kwPerceptionBufferEnabled, 'KW_PERCEPTION_BUFFER_ENABLED', true),
+      loopWarningEnabled: parseBooleanEnv(parsed.loopWarningEnabled, 'LOOP_WARNING_ENABLED', true),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,

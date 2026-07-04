@@ -57,7 +57,7 @@ src/agent/prompt-context.ts   — trusted / untrusted 文脈の分離などプ�
 src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_<provider>_*, karakuri_world_command）
 src/session/                  — JSON ファイルベースのセッション保存。ハッシュ化ファイル名 + メモリキャッシュを使用
 src/memory/                   — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore + maintenance runner
-src/life/                     — 生きたエージェントの記憶基盤（life.db マイグレーション、experience_log 追記専用ストア、イベント正規化、ExperienceRecorder、sqlite-vec / FTS5 検証）
+src/life/                     — 生きたエージェントの記憶基盤（life.db マイグレーション、experience_log 追記専用ストア、イベント正規化、ExperienceRecorder、Perception Buffer、Loop Detector、action_ledger、sqlite-vec / FTS5 検証）
 src/skill/                    — `data/skills/` と `data/system-skills/` を監視する frontmatter 付き SKILL.md ストア
 src/scheduler/                — HEARTBEAT.md 読み込み、CRON.md frontmatter 解釈、Heartbeat/Cron 実行、scheduler store
 src/sns/                      — Mastodon / X / ELYTH provider、provider 別 SQLite 活動ログ、SNS skill dynamic context、provider 別 SNS 専用ループ、レガシー DB 移行
@@ -88,6 +88,8 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **SNS の重複防止と専用ループ**: SNS 活動は SQLite に記録し、like / repost / reply / quote の重複防止を行う。SNS 自動実行は heartbeat から分離した専用ループで行う。
 - **SNS 投稿の 140 文字制限**: `sns_<provider>_post` の投稿本文は全プロバイダ共通で 140 文字以内に制限される（Zod スキーマ + ツール description + ビルトインスキル instructions の 3 層制御）。プラットフォーム固有の上限ではなく、エージェントの投稿スタイルとしての設計判断。
 - **Karakuri World 専用モード**: `KARAKURI_WORLD_BOT_IDS` に一致する相手では専用ツールセットのみを公開する。info 系ツールは戻り値の `data` に実データを inline 返却し、後続 Discord 通知は choices のみを扱う。
+- **知覚と記憶の分離（M1）**: KW の状態系（行動選択用）通知はセッション履歴に積まず、Perception Buffer のチャネル別最新 1 件としてシステムプロンプトの `<karakuri-world-perception>`（untrusted）で注入する。会話系・未知種別は履歴に残す。Buffer は再起動時に experience_log から復元される。`KW_PERCEPTION_BUFFER_ENABLED` で無効化可能。
+- **反復対策（M1）**: own_action から action_ledger（頻度台帳）と Loop Detector（同一行動×同一対象の連続カウント）を更新し、`LOOP_DETECTOR_THRESHOLD` 回以上の連続で trusted 側の決定論警告をプロンプトへ注入する（untrusted コンテンツは引用しない）。`LOOP_WARNING_ENABLED` で無効化可能。
 
 ### Scheduler / proactive messaging の注意点
 
