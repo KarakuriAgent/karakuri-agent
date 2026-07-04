@@ -94,6 +94,8 @@ const baseConfig: Config = {
   innerStateInjectionEnabled: true,
   embeddingDimensions: 1536,
   recallInjectionEnabled: true,
+  reflectionEnabled: true,
+  selfImageInjectionEnabled: true,
 };
 
 const agentStub: IAgent = {

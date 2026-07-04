@@ -50,9 +50,12 @@ export interface IEpisodeStore {
   getById(id: number): Promise<Episode | null>;
   listRecent(limit: number): Promise<Episode[]>;
   count(): Promise<number>;
+  listByPeriod(fromIso: string, toIso: string): Promise<Episode[]>;
   /** FTS5 trigram 検索（3 文字未満のクエリは LIKE フォールバック）。rank 昇順 */
   searchText(query: string, limit: number): Promise<Array<{ episode: Episode; rank: number }>>;
   updateBuoyancy(id: number, buoyancy: number): Promise<void>;
+  /** 忘却 = 浮力の減衰。削除はしない（一次資料は不変） */
+  decayBuoyancy(beforeIso: string, factor: number, floor?: number): Promise<number>;
   // ドラフト操作
   getDraft(channel: string, threadKey: string): Promise<EpisodeDraft | null>;
   listDrafts(): Promise<EpisodeDraft[]>;
@@ -143,6 +146,24 @@ export class SqliteEpisodeStore implements IEpisodeStore {
   async count(): Promise<number> {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM episodes').get() as { count: number };
     return Promise.resolve(row.count);
+  }
+
+  async listByPeriod(fromIso: string, toIso: string): Promise<Episode[]> {
+    const rows = this.db.prepare<[string, string], EpisodeRow>(`
+      SELECT * FROM episodes
+      WHERE occurred_at >= ? AND occurred_at <= ?
+      ORDER BY occurred_at ASC, id ASC
+    `).all(fromIso, toIso);
+    return Promise.resolve(rows.map(mapEpisodeRow));
+  }
+
+  async decayBuoyancy(beforeIso: string, factor: number, floor = 0.05): Promise<number> {
+    const result = this.db.prepare(`
+      UPDATE episodes
+      SET buoyancy = MAX(?, buoyancy * ?)
+      WHERE occurred_at < ? AND buoyancy > ?
+    `).run(floor, factor, beforeIso, floor);
+    return Promise.resolve(result.changes);
   }
 
   async searchText(query: string, limit: number): Promise<Array<{ episode: Episode; rank: number }>> {

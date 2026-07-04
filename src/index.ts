@@ -12,7 +12,12 @@ import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-think
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import { SqliteActionLedgerStore } from './life/action-ledger.js';
 import { AppraisalService, SqliteAppraisalLogStore } from './life/appraisal.js';
+import { SqliteBeliefStore } from './life/beliefs.js';
 import { openLifeDatabase } from './life/db.js';
+import { SqliteNarrativeStore } from './life/narratives.js';
+import { buildReflectionProcVersion, ReflectionEngine } from './life/reflection.js';
+import { ReflectionRunner } from './life/reflection-runner.js';
+import { importLegacyStores, importSeedMemories } from './life/seed.js';
 import { EpisodeEmbeddingIndex, OpenAiEmbeddingProvider } from './life/embeddings.js';
 import { SqliteEpisodeStore } from './life/episodes.js';
 import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
@@ -173,6 +178,58 @@ async function main(): Promise<void> {
     episodeStore,
     ...(embeddingIndex != null ? { embeddingIndex } : {}),
   });
+  // M4: 自伝的階層（narratives）・信念（beliefs）・省察エンジン・seed / 既存データ移行
+  const narrativeStore = new SqliteNarrativeStore({ db: lifeDb });
+  const beliefStore = new SqliteBeliefStore({ db: lifeDb });
+  try {
+    await importSeedMemories({
+      db: lifeDb,
+      dataDir: config.dataDir,
+      experienceLogStore,
+      beliefStore,
+      narrativeStore,
+    });
+    await importLegacyStores({
+      db: lifeDb,
+      experienceLogStore,
+      beliefStore,
+      narrativeStore,
+      memoryStore,
+      diaryStore,
+      userStore,
+    });
+  } catch (error) {
+    logger.warn('Seed / legacy import failed (continuing startup)', error);
+  }
+  const reflectionRunner = config.reflectionEnabled
+    ? (() => {
+        const reflectionSelector = config.reflectionLlmModelSelector ?? config.llmModelSelector;
+        const reflectionModelFactory = createConfiguredOpenAiModelFactory({
+          apiKey: config.reflectionLlmApiKey ?? config.llmApiKey,
+          ...((config.reflectionLlmBaseUrl ?? config.llmBaseUrl) != null
+            ? { baseURL: config.reflectionLlmBaseUrl ?? config.llmBaseUrl }
+            : {}),
+          fetch: createNoThinkingFetch(),
+        });
+        const reflectionEngine = new ReflectionEngine({
+          model: reflectionModelFactory(reflectionSelector),
+          procVersion: buildReflectionProcVersion(reflectionSelector.selector),
+          episodeStore,
+          narrativeStore,
+          beliefStore,
+          innerStateService,
+          timezone: config.timezone,
+          providerOptions: noThinkingProviderOptions(reflectionSelector.api),
+        });
+        return new ReflectionRunner({
+          engine: reflectionEngine,
+          db: lifeDb,
+          timezone: config.timezone,
+          ...(messageSink != null ? { messageSink } : {}),
+          ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
+        });
+      })()
+    : undefined;
   const appraisalService = config.appraisalEnabled
     ? (() => {
         const appraisalSelector = config.appraisalLlmModelSelector ?? config.llmModelSelector;
@@ -251,6 +308,8 @@ async function main(): Promise<void> {
     ...(appraisalService != null ? { appraisalService } : {}),
     innerStateService,
     retrievalService,
+    narrativeStore,
+    beliefStore,
   });
   for (const credentials of (config.snsList ?? [])) {
     const provider = credentials.provider;
@@ -296,6 +355,7 @@ async function main(): Promise<void> {
     runner.start();
   }
   memoryMaintenanceRunner?.start();
+  reflectionRunner?.start();
   await bot.initialize();
   logger.debug('Bot initialized');
 
@@ -325,6 +385,7 @@ async function main(): Promise<void> {
           scheduler.close(),
           ...Array.from(snsLoopRunners.values(), (runner) => runner.close()),
           memoryMaintenanceRunner?.close() ?? Promise.resolve(),
+          reflectionRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
         drainEvaluations: () => Promise.all([
@@ -340,6 +401,8 @@ async function main(): Promise<void> {
             innerStateStore.close(),
             appraisalLogStore.close(),
             episodeStore.close(),
+            narrativeStore.close(),
+            beliefStore.close(),
           ]).then(() => {
             if (lifeDb.open) {
               lifeDb.close();

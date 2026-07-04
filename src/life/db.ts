@@ -150,6 +150,52 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       );
     `,
   },
+  {
+    version: 5,
+    up: `
+      -- 自伝的階層（diary / theme / chapter を kind で共有。改訂で更新）
+      CREATE TABLE narratives (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT NOT NULL,
+        period_start TEXT NOT NULL,
+        period_end   TEXT NOT NULL,
+        body         TEXT NOT NULL,
+        revision     INTEGER NOT NULL DEFAULT 1,
+        active       INTEGER NOT NULL DEFAULT 1,
+        supersedes   INTEGER,
+        provenance   TEXT NOT NULL,
+        proc_version TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      CREATE INDEX idx_narratives_kind_period ON narratives(kind, period_start);
+      CREATE VIRTUAL TABLE narratives_fts USING fts5(body, content='narratives', content_rowid='id', tokenize='trigram');
+      CREATE TRIGGER narratives_fts_ai AFTER INSERT ON narratives BEGIN
+        INSERT INTO narratives_fts(rowid, body) VALUES (new.id, new.body);
+      END;
+      CREATE TRIGGER narratives_fts_ad AFTER DELETE ON narratives BEGIN
+        INSERT INTO narratives_fts(narratives_fts, rowid, body) VALUES ('delete', old.id, old.body);
+      END;
+      CREATE TRIGGER narratives_fts_au AFTER UPDATE OF body ON narratives BEGIN
+        INSERT INTO narratives_fts(narratives_fts, rowid, body) VALUES ('delete', old.id, old.body);
+        INSERT INTO narratives_fts(rowid, body) VALUES (new.id, new.body);
+      END;
+      -- 信念（事実 + 自己像）。上書きではなく改訂（supersedes チェーン）
+      CREATE TABLE beliefs (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT NOT NULL,
+        subject      TEXT,
+        body         TEXT NOT NULL,
+        confidence   REAL NOT NULL,
+        active       INTEGER NOT NULL DEFAULT 1,
+        supersedes   INTEGER,
+        provenance   TEXT NOT NULL,
+        proc_version TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      CREATE INDEX idx_beliefs_kind_active ON beliefs(kind, active);
+      CREATE INDEX idx_beliefs_subject ON beliefs(subject, active);
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {
@@ -197,6 +243,20 @@ export function openLifeDatabase({
     db.close();
     throw error;
   }
+}
+
+/** life_meta の読み書き（運用メタ・省察の最終実行日など） */
+export function getLifeMeta(db: Database.Database, key: string): string | null {
+  const row = db.prepare<[string], { value: string }>(
+    'SELECT value FROM life_meta WHERE key = ?',
+  ).get(key);
+  return row?.value ?? null;
+}
+
+export function setLifeMeta(db: Database.Database, key: string, value: string): void {
+  db.prepare(
+    'INSERT INTO life_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value',
+  ).run(key, value);
 }
 
 /** 未適用のマイグレーションをバージョン昇順に適用し、適用したバージョン一覧を返す。 */

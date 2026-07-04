@@ -28,6 +28,9 @@ const configSchema = z.object({
   appraisalLlmApiKey: z.string().trim().optional(),
   appraisalLlmBaseUrl: z.string().trim().optional(),
   appraisalLlmModel: z.string().trim().optional(),
+  reflectionLlmApiKey: z.string().trim().optional(),
+  reflectionLlmBaseUrl: z.string().trim().optional(),
+  reflectionLlmModel: z.string().trim().optional(),
   braveApiKey: z.string().trim().min(1).optional(),
   karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
@@ -68,6 +71,8 @@ const configSchema = z.object({
   embeddingBaseUrl: z.string().trim().optional(),
   embeddingDimensions: z.coerce.number().int().positive().default(1_536),
   recallInjectionEnabled: z.string().trim().optional(),
+  reflectionEnabled: z.string().trim().optional(),
+  selfImageInjectionEnabled: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -108,6 +113,11 @@ export interface Config {
   appraisalLlmBaseUrl?: string | undefined;
   appraisalLlmModel?: string | undefined;
   appraisalLlmModelSelector?: LlmModelSelector | undefined;
+  /** M4: 省察役割のモデル指定（信念・自己像という長く残るものを書くため品質優先。未指定は既定へ） */
+  reflectionLlmApiKey?: string | undefined;
+  reflectionLlmBaseUrl?: string | undefined;
+  reflectionLlmModel?: string | undefined;
+  reflectionLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
   karakuriWorld?: ApiCredentials | undefined;
   snsList?: SnsCredentials[] | undefined;
@@ -147,6 +157,10 @@ export interface Config {
   embeddingDimensions: number;
   /** M3: 自動想起のプロンプト注入の有効化（切り分け・ロールバック用） */
   recallInjectionEnabled: boolean;
+  /** M4: 省察エンジン（日次/週次/月次）の有効化 */
+  reflectionEnabled: boolean;
+  /** M4: 自己像（self beliefs）の自己語り注入の有効化 */
+  selfImageInjectionEnabled: boolean;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -173,6 +187,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appraisalLlmApiKey: env.LLM_APPRAISAL_API_KEY,
     appraisalLlmBaseUrl: env.LLM_APPRAISAL_BASE_URL,
     appraisalLlmModel: env.LLM_APPRAISAL_MODEL,
+    reflectionLlmApiKey: env.LLM_REFLECTION_API_KEY,
+    reflectionLlmBaseUrl: env.LLM_REFLECTION_BASE_URL,
+    reflectionLlmModel: env.LLM_REFLECTION_MODEL,
     braveApiKey: env.BRAVE_API_KEY || undefined,
     karakuriWorldApiBaseUrl: normalizeOptionalString(env.KARAKURI_WORLD_API_BASE_URL),
     karakuriWorldApiKey: normalizeOptionalString(env.KARAKURI_WORLD_API_KEY),
@@ -213,6 +230,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     embeddingBaseUrl: normalizeOptionalString(env.EMBEDDING_BASE_URL),
     embeddingDimensions: env.EMBEDDING_DIMENSIONS,
     recallInjectionEnabled: env.RECALL_INJECTION_ENABLED,
+    reflectionEnabled: env.REFLECTION_ENABLED,
+    selfImageInjectionEnabled: env.SELF_IMAGE_INJECTION_ENABLED,
   };
 
   try {
@@ -244,6 +263,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ? parseModelSelector(appraisalLlmModel)
       : undefined;
     const appraisalLlmBaseUrl = normalizeBaseUrl(parsed.appraisalLlmBaseUrl, 'LLM_APPRAISAL_BASE_URL');
+    const reflectionLlmModel = normalizeOptionalString(parsed.reflectionLlmModel);
+    const reflectionLlmModelSelector = reflectionLlmModel != null
+      ? parseModelSelector(reflectionLlmModel)
+      : undefined;
+    const reflectionLlmBaseUrl = normalizeBaseUrl(parsed.reflectionLlmBaseUrl, 'LLM_REFLECTION_BASE_URL');
     const postMessageChannelIds = parseIdList(parsed.allowedChannelIds);
     const reportChannelId = normalizeOptionalString(parsed.reportChannelId);
     const mergedAllowedChannelIds = reportChannelId != null
@@ -333,6 +357,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       appraisalLlmBaseUrl,
       appraisalLlmModel,
       appraisalLlmModelSelector,
+      reflectionLlmApiKey: normalizeOptionalString(parsed.reflectionLlmApiKey),
+      reflectionLlmBaseUrl,
+      reflectionLlmModel,
+      reflectionLlmModelSelector,
       dataDir: resolve(parsed.dataDir),
       postMessageChannelIds,
       allowedChannelIds: mergedAllowedChannelIds,
@@ -351,6 +379,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       embeddingApiKey: normalizeOptionalString(parsed.embeddingApiKey),
       embeddingBaseUrl: normalizeBaseUrl(parsed.embeddingBaseUrl, 'EMBEDDING_BASE_URL'),
       recallInjectionEnabled: parseBooleanEnv(parsed.recallInjectionEnabled, 'RECALL_INJECTION_ENABLED', true),
+      reflectionEnabled: parseBooleanEnv(parsed.reflectionEnabled, 'REFLECTION_ENABLED', true),
+      selfImageInjectionEnabled: parseBooleanEnv(parsed.selfImageInjectionEnabled, 'SELF_IMAGE_INJECTION_ENABLED', true),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,
