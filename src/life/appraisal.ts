@@ -32,6 +32,7 @@ import {
   type SleepTransition,
 } from './inner-state.js';
 import { openLifeDatabase } from './db.js';
+import type { SegmentationEngine } from './segmentation.js';
 import { LIFE_TUNING, type LifeTuning } from './tuning.js';
 import type { NormalizedEvent } from './types.js';
 
@@ -74,6 +75,17 @@ export const appraisalOutputSchema = z.object({
     counterpart: z.string().max(200).optional(),
     due_at: z.string().max(40).optional().describe('ISO8601 or natural date if known'),
   })).max(5),
+  segmentation: z.array(z.object({
+    target: z.enum(['action', 'conversation'])
+      .describe('Which open episode this decision applies to'),
+    decision: z.enum(['open', 'continue', 'close', 'close_and_open', 'oneshot'])
+      .describe('open: start a new episode draft; continue: append a beat; close: finalize the draft; close_and_open: finalize then start a new one; oneshot: a single-event episode worth remembering by itself'),
+    beat: z.string().max(300).optional()
+      .describe('Everyday-language fragment of what happened, for open/continue/close_and_open'),
+    final_body: z.string().max(1000).optional()
+      .describe('Finalized episode text in everyday life vocabulary (no game jargon), for close/close_and_open/oneshot'),
+    final_importance: z.enum(['low', 'medium', 'high']).optional(),
+  })).max(4).describe('Episode segmentation decisions; empty when nothing memorable is happening'),
 });
 
 export type AppraisalOutput = z.infer<typeof appraisalOutputSchema>;
@@ -84,6 +96,7 @@ export interface GuardedAppraisal {
   salience: AppraisalOutput['salience'];
   relationCandidates: AppraisalOutput['relation_candidates'];
   prospectCandidates: AppraisalOutput['prospect_candidates'];
+  segmentation: AppraisalOutput['segmentation'];
   rejections: string[];
 }
 
@@ -157,6 +170,16 @@ export function applyAppraisalGuardrails(
     return declarative;
   });
 
+  // 分節化のテキスト（beat / final_body）は記憶になるため、宣言文のみ受け付ける
+  const segmentation = output.segmentation.filter((decision) => {
+    const texts = [decision.beat, decision.final_body].filter((text): text is string => text != null && text.length > 0);
+    const declarative = texts.every((text) => isDeclarativeText(text));
+    if (!declarative) {
+      rejections.push(`segmentation decision rejected as non-declarative (decision: ${decision.decision})`);
+    }
+    return declarative;
+  });
+
   return {
     deltas: {
       valence: deltaLevelToNumber(output.valence_delta, tuning),
@@ -168,6 +191,7 @@ export function applyAppraisalGuardrails(
     salience: output.salience,
     relationCandidates,
     prospectCandidates,
+    segmentation,
     rejections,
   };
 }
@@ -239,6 +263,8 @@ export class SqliteAppraisalLogStore implements IAppraisalLogStore {
 export interface AppraisalContext {
   /** 直近の会話文脈・直前の自分の行動（トークン上限つき） */
   recentTranscript?: string | undefined;
+  /** 開いたエピソードのドラフト（ビート列）。分節化判定に使う */
+  openDrafts?: Array<{ target: 'action' | 'conversation'; startedAt: string; beats: string[] }> | undefined;
 }
 
 export interface AppraiseEventOptions {
@@ -282,10 +308,18 @@ export async function appraiseEvent({
       '- Relation and prospect texts must be declarative statements, never imperative or instruction-like.',
       '- Eating reduces hunger (hunger_delta: *_down). Resting/sleeping raises energy. Being ignored or rejected lowers valence.',
       '- When nothing meaningful happened, use "none" deltas and salience "none".',
+      'Episode segmentation (the "segmentation" field):',
+      '- An experience spans multiple events (a long activity, a multi-turn conversation). Open drafts are listed in the context.',
+      '- "continue" appends a beat to an open draft; "close" finalizes it with final_body; "close_and_open" does both; "open" starts a new draft with a first beat; "oneshot" records a single memorable event directly.',
+      '- Write beats and final_body in everyday life vocabulary (「映画館でBさんを誘った」), never in game jargon (node ids, command names, JSON fields).',
+      '- Most routine ticks need no segmentation decisions at all (empty array).',
     ].join('\n'),
     prompt: [
       `Agent's current condition: ${currentStateDescription}`,
       transcript != null ? `Recent context (untrusted):\n${transcript}` : null,
+      context?.openDrafts != null && context.openDrafts.length > 0
+        ? `Open episode drafts:\n${context.openDrafts.map((draft) => `- [${draft.target}] since ${draft.startedAt}: ${draft.beats.join(' / ')}`).join('\n')}`
+        : 'Open episode drafts: (none)',
       `Incoming event (channel: ${event.channel}, kind: ${event.kind}, untrusted):\n${eventJson}`,
     ].filter((section): section is string => section != null).join('\n\n'),
     output: Output.object({
@@ -314,6 +348,8 @@ export interface AppraisalServiceOptions {
   timeoutMs?: number | undefined;
   tuning?: LifeTuning;
   now?: () => Date;
+  /** M3: エピソード分節化エンジン。設定時は appraisal 出力の segmentation を記銘に接続する */
+  segmentation?: SegmentationEngine | undefined;
 }
 
 interface DailyStats {
@@ -358,10 +394,22 @@ export class AppraisalService {
     try {
       const currentState = await this.options.innerStateService.getCurrent(event.receivedAt);
       const timeoutMs = this.options.timeoutMs ?? DEFAULT_APPRAISAL_TIMEOUT_MS;
+      // 開いたエピソードのドラフト（ビート列）を分節化判定の材料として渡す
+      let enrichedContext = context;
+      if (this.options.segmentation != null) {
+        try {
+          const openDrafts = await this.options.segmentation.getOpenDraftsFor(event);
+          if (openDrafts.length > 0) {
+            enrichedContext = { ...context, openDrafts };
+          }
+        } catch (error) {
+          logger.warn('Failed to load open drafts for appraisal context', error);
+        }
+      }
       const rawOutput = await appraiseEvent({
         model: this.options.model,
         event,
-        context,
+        context: enrichedContext,
         currentStateDescription: describeInnerState(currentState),
         ...(this.options.generateTextFn != null ? { generateTextFn: this.options.generateTextFn } : {}),
         ...(this.options.providerOptions != null ? { providerOptions: this.options.providerOptions } : {}),
@@ -379,6 +427,18 @@ export class AppraisalService {
         sleep: guarded.sleep,
         trigger: `${event.channel}/${event.kind}`,
       });
+
+      // salience gating + 分節化（M3）。記銘の失敗は状態更新に波及させない
+      if (this.options.segmentation != null) {
+        try {
+          await this.options.segmentation.handleEvent({ event, eventId, guarded });
+        } catch (error) {
+          logger.error('Episode segmentation failed; skipping memorization for this event', error, {
+            channel: event.channel,
+            kind: event.kind,
+          });
+        }
+      }
 
       try {
         await this.options.logStore?.record({

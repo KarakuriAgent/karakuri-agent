@@ -59,6 +59,7 @@ function makeOutput(overrides: Partial<AppraisalOutput> = {}): AppraisalOutput {
     salience: 'none',
     relation_candidates: [],
     prospect_candidates: [],
+    segmentation: [],
     ...overrides,
   };
 }

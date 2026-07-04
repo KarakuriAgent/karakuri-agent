@@ -38,6 +38,34 @@ export const defaultKwKindMapper: KwKindMapper = (rawKind) => {
   return EVENT_KINDS.unknown;
 };
 
+/**
+ * KW 通知種別からのエピソード境界判定（M3 の分節化前段ルール）。
+ * イベント種別の判定を kind マッピングと同じ差し替え可能な写像側に置き、
+ * KW の通知種別をコードに焼き付けない。写像にない種別は null（境界ではない）。
+ */
+export type KwBoundary = 'conversation_end' | 'action_end' | null;
+
+const KW_CONVERSATION_END_PATTERN = /conversation_(end|closed|finish|timeout)|chat_end/i;
+const KW_ACTION_END_PATTERN = /action_(complete|end|finish|done)|arriv/i;
+
+export function classifyKwBoundary(rawKind: string | null | undefined): KwBoundary {
+  if (rawKind == null) {
+    return null;
+  }
+  if (KW_CONVERSATION_END_PATTERN.test(rawKind)) {
+    return 'conversation_end';
+  }
+  if (KW_ACTION_END_PATTERN.test(rawKind)) {
+    return 'action_end';
+  }
+  return null;
+}
+
+/** NormalizedEvent（KW 通知）から通知封筒の生 kind を取り出す */
+export function extractKwRawKindFromEvent(event: NormalizedEvent): string | null {
+  return extractKwRawKind(event.payload);
+}
+
 export interface NormalizeKwNotificationOptions {
   botId: string;
   /** get_notification のレスポンス封筒ごと逐語で。strict 検証はしない（未知フィールドも素通し） */

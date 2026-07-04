@@ -13,7 +13,11 @@ import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './sched
 import { SqliteActionLedgerStore } from './life/action-ledger.js';
 import { AppraisalService, SqliteAppraisalLogStore } from './life/appraisal.js';
 import { openLifeDatabase } from './life/db.js';
+import { EpisodeEmbeddingIndex, OpenAiEmbeddingProvider } from './life/embeddings.js';
+import { SqliteEpisodeStore } from './life/episodes.js';
 import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
+import { EpisodeRetrievalService } from './life/retrieval.js';
+import { SegmentationEngine } from './life/segmentation.js';
 import { buildAppraisalProcVersion } from './life/tuning.js';
 import { logLifeDbCapabilities, verifyLifeDbCapabilities } from './life/db-verification.js';
 import { SqliteExperienceLogStore } from './life/experience-log.js';
@@ -129,6 +133,46 @@ async function main(): Promise<void> {
   const innerStateStore = new SqliteInnerStateStore({ db: lifeDb });
   const innerStateService = new InnerStateService({ store: innerStateStore, timezone: config.timezone });
   const appraisalLogStore = new SqliteAppraisalLogStore({ db: lifeDb });
+  // M3: エピソード記銘（salience gating + 分節化）とハイブリッド想起
+  const episodeStore = new SqliteEpisodeStore({ db: lifeDb });
+  const embeddingIndex = config.embeddingModel != null
+    ? new EpisodeEmbeddingIndex({
+        db: lifeDb,
+        provider: new OpenAiEmbeddingProvider({
+          model: config.embeddingModel,
+          apiKey: config.embeddingApiKey ?? config.llmApiKey,
+          baseURL: config.embeddingBaseUrl ?? config.llmBaseUrl,
+        }),
+        dimensions: config.embeddingDimensions,
+      })
+    : undefined;
+  const appraisalSelectorForProc = config.appraisalLlmModelSelector ?? config.llmModelSelector;
+  const segmentationEngine = new SegmentationEngine({
+    episodeStore,
+    procVersion: buildAppraisalProcVersion(appraisalSelectorForProc.selector),
+    ...(embeddingIndex != null
+      ? {
+          onEpisodeFinalized: (episodeId: number, body: string) => {
+            // 埋め込みは非同期 backfill 可（API 失敗・未設定でエピソード確定をブロックしない）
+            void embeddingIndex.indexEpisode(episodeId, body)
+              .then(() => embeddingIndex.backfillPending())
+              .catch((error: unknown) => {
+                logger.warn('Episode embedding indexing failed', error);
+              });
+          },
+        }
+      : {}),
+  });
+  await segmentationEngine.recoverStaleDrafts(new Date());
+  if (embeddingIndex != null) {
+    void embeddingIndex.backfillPending().catch((error: unknown) => {
+      logger.warn('Episode embedding backfill failed at startup', error);
+    });
+  }
+  const retrievalService = new EpisodeRetrievalService({
+    episodeStore,
+    ...(embeddingIndex != null ? { embeddingIndex } : {}),
+  });
   const appraisalService = config.appraisalEnabled
     ? (() => {
         const appraisalSelector = config.appraisalLlmModelSelector ?? config.llmModelSelector;
@@ -147,6 +191,7 @@ async function main(): Promise<void> {
           procVersion: buildAppraisalProcVersion(appraisalSelector.selector),
           timezone: config.timezone,
           providerOptions: noThinkingProviderOptions(appraisalSelector.api),
+          segmentation: segmentationEngine,
           ...(messageSink != null ? { messageSink } : {}),
           ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
         });
@@ -205,6 +250,7 @@ async function main(): Promise<void> {
     actionLedger,
     ...(appraisalService != null ? { appraisalService } : {}),
     innerStateService,
+    retrievalService,
   });
   for (const credentials of (config.snsList ?? [])) {
     const provider = credentials.provider;
@@ -293,6 +339,7 @@ async function main(): Promise<void> {
             actionLedger.close(),
             innerStateStore.close(),
             appraisalLogStore.close(),
+            episodeStore.close(),
           ]).then(() => {
             if (lifeDb.open) {
               lifeDb.close();

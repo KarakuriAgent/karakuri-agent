@@ -92,6 +92,8 @@ const baseConfig: Config = {
   loopDetectorThreshold: 3,
   appraisalEnabled: true,
   innerStateInjectionEnabled: true,
+  embeddingDimensions: 1536,
+  recallInjectionEnabled: true,
 };
 
 const agentStub: IAgent = {

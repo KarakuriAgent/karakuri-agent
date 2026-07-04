@@ -2,6 +2,7 @@ import type { ToolSet } from 'ai';
 
 import type { SnsCredentials } from '../../config.js';
 import type { ExperienceRecorder } from '../../life/recorder.js';
+import type { EpisodeRetrievalService } from '../../life/retrieval.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
@@ -16,6 +17,7 @@ import { createLoadSkillTool } from './load-skill.js';
 import { createManageCronTool } from './manage-cron.js';
 import { createPostMessageTool } from './post-message.js';
 import { createRecallDiaryTool } from './recall-diary.js';
+import { createRecallEpisodesTool } from './recall-episodes.js';
 import { createLinkUserTool, createUnlinkUserTool } from './user-alias.js';
 import { createUserLookupTool } from './user-lookup.js';
 import { createWebFetchTool } from './web-fetch.js';
@@ -47,6 +49,7 @@ export interface CreateAgentToolsOptions {
   kwMode?: boolean | undefined;
   evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
+  retrievalService?: EpisodeRetrievalService | undefined;
 }
 
 export function createAgentTools({
@@ -72,6 +75,7 @@ export function createAgentTools({
   kwMode = false,
   evaluateUser,
   experienceRecorder,
+  retrievalService,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
@@ -83,6 +87,11 @@ export function createAgentTools({
 
   const tools: ToolSet = {
     recallDiary: createRecallDiaryTool({ memoryStore }),
+    ...(retrievalService != null
+      ? {
+          recallEpisodes: createRecallEpisodesTool({ retrievalService }),
+        }
+      : {}),
     webFetch: createWebFetchTool(),
     ...(braveApiKey != null
       ? {

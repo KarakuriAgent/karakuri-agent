@@ -63,6 +63,11 @@ const configSchema = z.object({
   loopDetectorThreshold: z.coerce.number().int().min(2).default(3),
   appraisalEnabled: z.string().trim().optional(),
   innerStateInjectionEnabled: z.string().trim().optional(),
+  embeddingModel: z.string().trim().optional(),
+  embeddingApiKey: z.string().trim().optional(),
+  embeddingBaseUrl: z.string().trim().optional(),
+  embeddingDimensions: z.coerce.number().int().positive().default(1_536),
+  recallInjectionEnabled: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -135,6 +140,13 @@ export interface Config {
   appraisalEnabled: boolean;
   /** M2: 内部状態の自然言語注入の有効化（切り分け・ロールバック用） */
   innerStateInjectionEnabled: boolean;
+  /** M3: 埋め込みモデル（OpenAI 互換で差し替え可能。未設定なら FTS のみで想起） */
+  embeddingModel?: string | undefined;
+  embeddingApiKey?: string | undefined;
+  embeddingBaseUrl?: string | undefined;
+  embeddingDimensions: number;
+  /** M3: 自動想起のプロンプト注入の有効化（切り分け・ロールバック用） */
+  recallInjectionEnabled: boolean;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -196,6 +208,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     loopDetectorThreshold: env.LOOP_DETECTOR_THRESHOLD,
     appraisalEnabled: env.APPRAISAL_ENABLED,
     innerStateInjectionEnabled: env.INNER_STATE_INJECTION_ENABLED,
+    embeddingModel: normalizeOptionalString(env.EMBEDDING_MODEL),
+    embeddingApiKey: normalizeOptionalString(env.EMBEDDING_API_KEY),
+    embeddingBaseUrl: normalizeOptionalString(env.EMBEDDING_BASE_URL),
+    embeddingDimensions: env.EMBEDDING_DIMENSIONS,
+    recallInjectionEnabled: env.RECALL_INJECTION_ENABLED,
   };
 
   try {
@@ -330,6 +347,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       loopWarningEnabled: parseBooleanEnv(parsed.loopWarningEnabled, 'LOOP_WARNING_ENABLED', true),
       appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
       innerStateInjectionEnabled: parseBooleanEnv(parsed.innerStateInjectionEnabled, 'INNER_STATE_INJECTION_ENABLED', true),
+      embeddingModel: normalizeOptionalString(parsed.embeddingModel),
+      embeddingApiKey: normalizeOptionalString(parsed.embeddingApiKey),
+      embeddingBaseUrl: normalizeBaseUrl(parsed.embeddingBaseUrl, 'EMBEDDING_BASE_URL'),
+      recallInjectionEnabled: parseBooleanEnv(parsed.recallInjectionEnabled, 'RECALL_INJECTION_ENABLED', true),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,

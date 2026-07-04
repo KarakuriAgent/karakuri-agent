@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
 
 import { createLogger } from '../utils/logger.js';
 
@@ -96,6 +97,59 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       CREATE INDEX idx_appraisal_log_time ON appraisal_log(received_at);
     `,
   },
+  {
+    version: 4,
+    up: `
+      -- エピソード（導出ビュー）。本文は生活の語彙で書く
+      CREATE TABLE episodes (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        occurred_at  TEXT NOT NULL,
+        channel      TEXT NOT NULL,
+        body         TEXT NOT NULL,
+        importance   REAL NOT NULL,
+        buoyancy     REAL NOT NULL DEFAULT 1.0,
+        emotion      TEXT,
+        participants TEXT,
+        provenance   TEXT NOT NULL,
+        proc_version TEXT NOT NULL
+      );
+      CREATE INDEX idx_episodes_time ON episodes(occurred_at);
+      -- 全文検索（external content。episodes への書き込みとトリガーで同期）
+      CREATE VIRTUAL TABLE episodes_fts USING fts5(body, content='episodes', content_rowid='id', tokenize='trigram');
+      CREATE TRIGGER episodes_fts_ai AFTER INSERT ON episodes BEGIN
+        INSERT INTO episodes_fts(rowid, body) VALUES (new.id, new.body);
+      END;
+      CREATE TRIGGER episodes_fts_ad AFTER DELETE ON episodes BEGIN
+        INSERT INTO episodes_fts(episodes_fts, rowid, body) VALUES ('delete', old.id, old.body);
+      END;
+      CREATE TRIGGER episodes_fts_au AFTER UPDATE OF body ON episodes BEGIN
+        INSERT INTO episodes_fts(episodes_fts, rowid, body) VALUES ('delete', old.id, old.body);
+        INSERT INTO episodes_fts(rowid, body) VALUES (new.id, new.body);
+      END;
+      -- 開いたエピソード（ドラフト）。クラッシュ後は「中断された体験」として close する
+      CREATE TABLE episode_drafts (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel       TEXT NOT NULL,
+        thread_key    TEXT NOT NULL,
+        started_at    TEXT NOT NULL,
+        last_event_at TEXT NOT NULL,
+        beats         TEXT NOT NULL,
+        participants  TEXT NOT NULL,
+        emotions      TEXT NOT NULL,
+        provenance    TEXT NOT NULL,
+        UNIQUE (channel, thread_key)
+      );
+      -- 埋め込み backfill 待ち（API 失敗・未設定でエピソード確定をブロックしない）
+      CREATE TABLE episode_embedding_pending (
+        episode_id INTEGER PRIMARY KEY
+      );
+      -- 埋め込みモデル・次元数などの運用メタ
+      CREATE TABLE life_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {
@@ -125,6 +179,15 @@ export function openLifeDatabase({
   try {
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
+    // sqlite-vec はベクトル検索（episodes_vec）用。ロード失敗しても記録機能は
+    // 継続する（vec テーブルは EpisodeEmbeddingIndex 側で遅延作成される）
+    try {
+      sqliteVec.load(db);
+    } catch (error) {
+      logger.warn('Failed to load sqlite-vec extension; vector search will be unavailable', {
+        error: error instanceof Error ? error.message : error,
+      });
+    }
     const appliedVersions = applyLifeDbMigrations(db, migrations);
     if (appliedVersions.length > 0) {
       logger.info('Applied life DB migrations', { versions: appliedVersions });
