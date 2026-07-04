@@ -25,6 +25,9 @@ const configSchema = z.object({
   postResponseLlmApiKey: z.string().trim().optional(),
   postResponseLlmBaseUrl: z.string().trim().optional(),
   postResponseLlmModel: z.string().trim().optional(),
+  appraisalLlmApiKey: z.string().trim().optional(),
+  appraisalLlmBaseUrl: z.string().trim().optional(),
+  appraisalLlmModel: z.string().trim().optional(),
   braveApiKey: z.string().trim().min(1).optional(),
   karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
@@ -58,6 +61,8 @@ const configSchema = z.object({
   kwPerceptionBufferEnabled: z.string().trim().optional(),
   loopWarningEnabled: z.string().trim().optional(),
   loopDetectorThreshold: z.coerce.number().int().min(2).default(3),
+  appraisalEnabled: z.string().trim().optional(),
+  innerStateInjectionEnabled: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -93,6 +98,11 @@ export interface Config {
   postResponseLlmBaseUrl?: string | undefined;
   postResponseLlmModel?: string | undefined;
   postResponseLlmModelSelector?: LlmModelSelector | undefined;
+  /** M2: appraisal 役割のモデル指定（未指定は既定モデルへフォールバック。軽量モデルを既定の想定とする） */
+  appraisalLlmApiKey?: string | undefined;
+  appraisalLlmBaseUrl?: string | undefined;
+  appraisalLlmModel?: string | undefined;
+  appraisalLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
   karakuriWorld?: ApiCredentials | undefined;
   snsList?: SnsCredentials[] | undefined;
@@ -121,6 +131,10 @@ export interface Config {
   loopWarningEnabled: boolean;
   /** M1: 同一行動 × 同一対象の連続回数がこの値以上で警告を注入する */
   loopDetectorThreshold: number;
+  /** M2: appraisal（統合判定）の有効化（切り分け・ロールバック用） */
+  appraisalEnabled: boolean;
+  /** M2: 内部状態の自然言語注入の有効化（切り分け・ロールバック用） */
+  innerStateInjectionEnabled: boolean;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -144,6 +158,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     postResponseLlmApiKey: env.POST_RESPONSE_LLM_API_KEY,
     postResponseLlmBaseUrl: env.POST_RESPONSE_LLM_BASE_URL,
     postResponseLlmModel: env.POST_RESPONSE_LLM_MODEL,
+    appraisalLlmApiKey: env.LLM_APPRAISAL_API_KEY,
+    appraisalLlmBaseUrl: env.LLM_APPRAISAL_BASE_URL,
+    appraisalLlmModel: env.LLM_APPRAISAL_MODEL,
     braveApiKey: env.BRAVE_API_KEY || undefined,
     karakuriWorldApiBaseUrl: normalizeOptionalString(env.KARAKURI_WORLD_API_BASE_URL),
     karakuriWorldApiKey: normalizeOptionalString(env.KARAKURI_WORLD_API_KEY),
@@ -177,6 +194,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     kwPerceptionBufferEnabled: env.KW_PERCEPTION_BUFFER_ENABLED,
     loopWarningEnabled: env.LOOP_WARNING_ENABLED,
     loopDetectorThreshold: env.LOOP_DETECTOR_THRESHOLD,
+    appraisalEnabled: env.APPRAISAL_ENABLED,
+    innerStateInjectionEnabled: env.INNER_STATE_INJECTION_ENABLED,
   };
 
   try {
@@ -203,6 +222,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const postResponseLlmModelSelector = postResponseLlmModel != null
       ? parseModelSelector(postResponseLlmModel)
       : undefined;
+    const appraisalLlmModel = normalizeOptionalString(parsed.appraisalLlmModel);
+    const appraisalLlmModelSelector = appraisalLlmModel != null
+      ? parseModelSelector(appraisalLlmModel)
+      : undefined;
+    const appraisalLlmBaseUrl = normalizeBaseUrl(parsed.appraisalLlmBaseUrl, 'LLM_APPRAISAL_BASE_URL');
     const postMessageChannelIds = parseIdList(parsed.allowedChannelIds);
     const reportChannelId = normalizeOptionalString(parsed.reportChannelId);
     const mergedAllowedChannelIds = reportChannelId != null
@@ -288,6 +312,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       postResponseLlmBaseUrl,
       postResponseLlmModel,
       postResponseLlmModelSelector,
+      appraisalLlmApiKey: normalizeOptionalString(parsed.appraisalLlmApiKey),
+      appraisalLlmBaseUrl,
+      appraisalLlmModel,
+      appraisalLlmModelSelector,
       dataDir: resolve(parsed.dataDir),
       postMessageChannelIds,
       allowedChannelIds: mergedAllowedChannelIds,
@@ -300,6 +328,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmEnableThinking: parseBooleanEnv(parsed.llmEnableThinking, 'LLM_ENABLE_THINKING', true),
       kwPerceptionBufferEnabled: parseBooleanEnv(parsed.kwPerceptionBufferEnabled, 'KW_PERCEPTION_BUFFER_ENABLED', true),
       loopWarningEnabled: parseBooleanEnv(parsed.loopWarningEnabled, 'LOOP_WARNING_ENABLED', true),
+      appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
+      innerStateInjectionEnabled: parseBooleanEnv(parsed.innerStateInjectionEnabled, 'INNER_STATE_INJECTION_ENABLED', true),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,

@@ -11,7 +11,10 @@ import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from '
 import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import { SqliteActionLedgerStore } from './life/action-ledger.js';
+import { AppraisalService, SqliteAppraisalLogStore } from './life/appraisal.js';
 import { openLifeDatabase } from './life/db.js';
+import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
+import { buildAppraisalProcVersion } from './life/tuning.js';
 import { logLifeDbCapabilities, verifyLifeDbCapabilities } from './life/db-verification.js';
 import { SqliteExperienceLogStore } from './life/experience-log.js';
 import { LoopDetector } from './life/loop-detector.js';
@@ -122,6 +125,33 @@ async function main(): Promise<void> {
     await perceptionBuffer.restoreChannel(experienceLogStore, channel);
     await loopDetector.restore(experienceLogStore, channel);
   }
+  // M2: 内部状態 + Appraisal Service（役割別モデル: LLM_APPRAISAL_MODEL、未指定は既定へフォールバック）
+  const innerStateStore = new SqliteInnerStateStore({ db: lifeDb });
+  const innerStateService = new InnerStateService({ store: innerStateStore, timezone: config.timezone });
+  const appraisalLogStore = new SqliteAppraisalLogStore({ db: lifeDb });
+  const appraisalService = config.appraisalEnabled
+    ? (() => {
+        const appraisalSelector = config.appraisalLlmModelSelector ?? config.llmModelSelector;
+        const appraisalModelFactory = createConfiguredOpenAiModelFactory({
+          apiKey: config.appraisalLlmApiKey ?? config.llmApiKey,
+          ...((config.appraisalLlmBaseUrl ?? config.llmBaseUrl) != null
+            ? { baseURL: config.appraisalLlmBaseUrl ?? config.llmBaseUrl }
+            : {}),
+          fetch: createNoThinkingFetch(),
+        });
+        return new AppraisalService({
+          model: appraisalModelFactory(appraisalSelector),
+          modelName: appraisalSelector.selector,
+          innerStateService,
+          logStore: appraisalLogStore,
+          procVersion: buildAppraisalProcVersion(appraisalSelector.selector),
+          timezone: config.timezone,
+          providerOptions: noThinkingProviderOptions(appraisalSelector.api),
+          ...(messageSink != null ? { messageSink } : {}),
+          ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
+        });
+      })()
+    : undefined;
   const snsReportError = messageSink != null && config.reportChannelId != null
     ? (message: string) => {
         void reportSafely(messageSink, config.reportChannelId, message, {
@@ -173,6 +203,8 @@ async function main(): Promise<void> {
     perceptionBuffer,
     loopDetector,
     actionLedger,
+    ...(appraisalService != null ? { appraisalService } : {}),
+    innerStateService,
   });
   for (const credentials of (config.snsList ?? [])) {
     const provider = credentials.provider;
@@ -256,7 +288,12 @@ async function main(): Promise<void> {
         closeStores: () => [
           memoryStore.close(),
           userStore.close(),
-          experienceLogStore.close().then(() => {
+          Promise.all([
+            experienceLogStore.close(),
+            actionLedger.close(),
+            innerStateStore.close(),
+            appraisalLogStore.close(),
+          ]).then(() => {
             if (lifeDb.open) {
               lifeDb.close();
             }

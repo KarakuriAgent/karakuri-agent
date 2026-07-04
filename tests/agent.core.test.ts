@@ -16,6 +16,8 @@ import { KeyedMutex } from '../src/utils/mutex.js';
 import type { PromptContext } from '../src/agent/prompt-context.js';
 import type { Config } from '../src/config.js';
 import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from '../src/llm/model-selector.js';
+import type { AppraisalService } from '../src/life/appraisal.js';
+import { InnerStateService, type IInnerStateStore, type InnerState } from '../src/life/inner-state.js';
 import { LoopDetector } from '../src/life/loop-detector.js';
 import { PerceptionBuffer } from '../src/life/perception-buffer.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
@@ -43,6 +45,8 @@ const baseConfig: Config = {
   kwPerceptionBufferEnabled: true,
   loopWarningEnabled: true,
   loopDetectorThreshold: 3,
+  appraisalEnabled: true,
+  innerStateInjectionEnabled: true,
 };
 
 class MemoryStoreStub implements IMemoryStore {
@@ -2900,5 +2904,111 @@ describe('KarakuriAgent', () => {
 
       expect(systems.every((system) => !system.includes('行動ループ警告'))).toBe(true);
     });
+
+    it('injects the inner-state section for KW turns and awaits appraisal before responding (M2)', async () => {
+      const innerStateService = new InnerStateService({
+        store: new InMemoryInnerStateStore(),
+        timezone: 'Asia/Tokyo',
+      });
+      const order: string[] = [];
+      const appraisalService = {
+        enqueue: vi.fn(async () => {
+          order.push('appraisal');
+        }),
+        drain: vi.fn(async () => {}),
+      } as unknown as AppraisalService;
+
+      let capturedSystem = '';
+      const generateTextFn = vi.fn(async (options: { system?: string }) => {
+        if (options.system != null && options.system.includes('KarakuriWorld mode is active.')) {
+          order.push('response');
+          capturedSystem = options.system;
+        }
+        return makeKwModeGenerateTextResult('了解した。');
+      });
+      const agent = new KarakuriAgent({
+        config: {
+          ...baseConfig,
+          karakuriWorldBotIds: ['kw-bot-1'],
+          karakuriWorld: { apiBaseUrl: 'https://example.com/world', apiKey: 'world-key' },
+        },
+        memoryStore: new MemoryStoreStub(),
+        sessionManager: new SessionManagerStub(),
+        appraisalService,
+        innerStateService,
+        generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+      stubKarakuriWorldNotificationFetch();
+
+      await agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+      await agent.drainPendingEvaluations();
+
+      // KW は appraisal 先行 → 応答
+      expect(order).toEqual(['appraisal', 'response']);
+      expect(capturedSystem).toContain('<inner-state>');
+    });
+
+    it('enqueues Discord appraisal after the response and honors the injection kill switch', async () => {
+      const innerStateService = new InnerStateService({
+        store: new InMemoryInnerStateStore(),
+        timezone: 'Asia/Tokyo',
+      });
+      const order: string[] = [];
+      const appraisalService = {
+        enqueue: vi.fn(async () => {
+          order.push('appraisal');
+        }),
+        drain: vi.fn(async () => {}),
+      } as unknown as AppraisalService;
+
+      const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+        if (options.output == null && options.system != null) {
+          order.push('response');
+        }
+        return makeGenerateTextResult('こんにちは！', [assistantMessage('こんにちは！')]);
+      });
+      const agent = new KarakuriAgent({
+        config: { ...baseConfig, innerStateInjectionEnabled: false },
+        memoryStore: new MemoryStoreStub(),
+        sessionManager: new SessionManagerStub(),
+        appraisalService,
+        innerStateService,
+        generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await agent.handleMessage('session-1', 'こんにちは', 'Alice', { userId: 'user-1' });
+      await agent.drainPendingEvaluations();
+
+      // Discord は応答先行 → appraisal 事後
+      expect(order[0]).toBe('response');
+      expect(order).toContain('appraisal');
+      // kill switch: <inner-state> は注入されない
+      const injectedSystems = generateTextFn.mock.calls
+        .map((call) => (call[0] as { system?: string }).system ?? '')
+        .filter((system) => system.includes('<inner-state>'));
+      expect(injectedSystems).toEqual([]);
+    });
   });
 });
+
+class InMemoryInnerStateStore implements IInnerStateStore {
+  private state: InnerState | null = null;
+  private readonly history: Array<InnerState & { trigger: string | null }> = [];
+
+  async get(): Promise<InnerState | null> {
+    return this.state;
+  }
+
+  async set(state: InnerState, trigger?: string): Promise<void> {
+    this.state = state;
+    this.history.push({ ...state, trigger: trigger ?? null });
+  }
+
+  async getHistory(limit: number): Promise<Array<InnerState & { trigger: string | null }>> {
+    return this.history.slice(-limit).reverse();
+  }
+
+  async close(): Promise<void> {}
+}

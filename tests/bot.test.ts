@@ -90,6 +90,8 @@ const baseConfig: Config = {
   kwPerceptionBufferEnabled: true,
   loopWarningEnabled: true,
   loopDetectorThreshold: 3,
+  appraisalEnabled: true,
+  innerStateInjectionEnabled: true,
 };
 
 const agentStub: IAgent = {

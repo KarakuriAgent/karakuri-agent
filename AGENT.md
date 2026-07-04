@@ -89,6 +89,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **SNS 投稿の 140 文字制限**: `sns_<provider>_post` の投稿本文は全プロバイダ共通で 140 文字以内に制限される（Zod スキーマ + ツール description + ビルトインスキル instructions の 3 層制御）。プラットフォーム固有の上限ではなく、エージェントの投稿スタイルとしての設計判断。
 - **Karakuri World 専用モード**: `KARAKURI_WORLD_BOT_IDS` に一致する相手では専用ツールセットのみを公開する。info 系ツールは戻り値の `data` に実データを inline 返却し、後続 Discord 通知は choices のみを扱う。
 - **知覚と記憶の分離（M1）**: KW の状態系（行動選択用）通知はセッション履歴に積まず、Perception Buffer のチャネル別最新 1 件としてシステムプロンプトの `<karakuri-world-perception>`（untrusted）で注入する。会話系・未知種別は履歴に残す。Buffer は再起動時に experience_log から復元される。`KW_PERCEPTION_BUFFER_ENABLED` で無効化可能。
+- **内部状態 + Appraisal（M2）**: 気分・元気度・空腹・社交欲求 + 睡眠フラグを life.db（inner_state / inner_state_history）で管理。時間経過はルール（遅延評価・概日リズム・睡眠中の回復下限保証）、出来事の解釈は統合 appraisal（1 イベント 1 LLM コール、`LLM_APPRAISAL_MODEL` で役割別指定）。決定論ガードレール（変化量のみ・符号チェック・クランプ・指示形テキスト棄却）を通し、判定は appraisal_log に proc_version つきで記録。KW は appraisal 先行 → 応答、Discord は応答先行 → appraisal 事後（受信順に直列適用）。失敗はスキップ + report 通知（reprocessing で回収可能）。状態は自然言語化して `<inner-state>`（untrusted）で注入。`APPRAISAL_ENABLED` / `INNER_STATE_INJECTION_ENABLED` で無効化可能。区間リプレイ CLI: `npx tsx src/life/replay-appraisal.ts`
 - **反復対策（M1）**: own_action から action_ledger（頻度台帳）と Loop Detector（同一行動×同一対象の連続カウント）を更新し、`LOOP_DETECTOR_THRESHOLD` 回以上の連続で trusted 側の決定論警告をプロンプトへ注入する（untrusted コンテンツは引用しない）。`LOOP_WARNING_ENABLED` で無効化可能。
 
 ### Scheduler / proactive messaging の注意点

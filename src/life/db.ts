@@ -57,6 +57,45 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       CREATE INDEX idx_action_ledger_window ON action_ledger(bucket, window_start);
     `,
   },
+  {
+    version: 3,
+    up: `
+      -- 内部状態の現在値（1 行のみ）
+      CREATE TABLE inner_state (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        updated_at TEXT NOT NULL,
+        valence    REAL NOT NULL,
+        energy     REAL NOT NULL,
+        hunger     REAL NOT NULL,
+        social     REAL NOT NULL,
+        sleeping   INTEGER NOT NULL
+      );
+      -- 内部状態の履歴（現在値と分けて持つ）
+      CREATE TABLE inner_state_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        recorded_at TEXT NOT NULL,
+        valence     REAL NOT NULL,
+        energy      REAL NOT NULL,
+        hunger      REAL NOT NULL,
+        social      REAL NOT NULL,
+        sleeping    INTEGER NOT NULL,
+        trigger     TEXT
+      );
+      CREATE INDEX idx_inner_state_history_time ON inner_state_history(recorded_at);
+      -- appraisal 判定ログ（可観測性 + M3 で記銘に接続する判定の記録）
+      CREATE TABLE appraisal_log (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id     INTEGER,
+        received_at  TEXT NOT NULL,
+        channel      TEXT NOT NULL,
+        output       TEXT NOT NULL,
+        rejections   TEXT,
+        proc_version TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      CREATE INDEX idx_appraisal_log_time ON appraisal_log(received_at);
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {
