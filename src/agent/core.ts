@@ -1,6 +1,13 @@
 import { generateText, stepCountIs, type LanguageModel, type ModelMessage } from 'ai';
 
 import type { Config } from '../config.js';
+import {
+  normalizeDiscordChatTurn,
+  normalizeDiscordOwnResponse,
+  normalizeKwNotification,
+  normalizeKwOwnAction,
+} from '../life/normalize.js';
+import type { ExperienceRecorder } from '../life/recorder.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
 import type { IMemoryStore } from '../memory/types.js';
@@ -86,6 +93,7 @@ export interface KarakuriAgentOptions {
   /** @deprecated Use snsActivityStores. */
   snsActivityStore?: ISnsActivityStore | undefined;
   snsContextRegistry?: SkillContextRegistry | undefined;
+  experienceRecorder?: ExperienceRecorder | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
   keepRecentTurns?: number;
@@ -103,6 +111,7 @@ export class KarakuriAgent implements IAgent {
   private readonly userStore: IUserStore | undefined;
   private readonly snsActivityStores: Map<SnsProviderType, ISnsActivityStore>;
   private readonly snsContextRegistry: SkillContextRegistry | undefined;
+  private readonly experienceRecorder: ExperienceRecorder | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly noThinkingModelFactory: (selector: LlmModelSelector) => LanguageModel;
@@ -124,6 +133,7 @@ export class KarakuriAgent implements IAgent {
     snsActivityStores,
     snsActivityStore,
     snsContextRegistry,
+    experienceRecorder,
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
@@ -139,6 +149,7 @@ export class KarakuriAgent implements IAgent {
     this.userStore = userStore;
     this.snsActivityStores = snsActivityStores ?? (snsActivityStore != null ? new Map([['mastodon', snsActivityStore]]) : new Map());
     this.snsContextRegistry = snsContextRegistry;
+    this.experienceRecorder = experienceRecorder;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
@@ -173,7 +184,8 @@ export class KarakuriAgent implements IAgent {
     options?: HandleMessageOptions,
   ): Promise<string> {
     logger.info('handleMessage', { sessionId, userMessageLength: userMessage.length });
-    const currentDateTime = formatDateTimeInTimezone(new Date(), this.config.timezone);
+    const receivedAt = new Date();
+    const currentDateTime = formatDateTimeInTimezone(receivedAt, this.config.timezone);
     const userId = options?.userId;
     const isRealUser = userId != null && userId !== 'system';
     const isKarakuriWorldBot = isRealUser && (this.config.karakuriWorldBotIds ?? []).includes(userId);
@@ -195,6 +207,25 @@ export class KarakuriAgent implements IAgent {
     const effectiveUserMessage = karakuriWorldNotification != null
       ? buildKarakuriWorldNotificationUserMessage(userMessage, karakuriWorldNotification)
       : userMessage;
+
+    // 体験ログ（一次資料）への記録。失敗してもチャネル処理は継続する（recorder 側で吸収）
+    if (karakuriWorldNotification != null && userId != null) {
+      this.experienceRecorder?.record(normalizeKwNotification({
+        botId: userId,
+        notificationResponse: karakuriWorldNotification,
+        receivedAt,
+      }));
+    }
+    const isDiscordConversation = isRealUser && !isKarakuriWorldBot;
+    if (isDiscordConversation) {
+      this.experienceRecorder?.record(normalizeDiscordChatTurn({
+        userId,
+        userName,
+        text: userMessage,
+        sessionId,
+        receivedAt,
+      }));
+    }
 
     const ephemeral = options?.ephemeral === true;
     let session = ephemeral
@@ -414,6 +445,7 @@ export class KarakuriAgent implements IAgent {
           skills: visibleSkills,
           autoLoadedSkills,
           includeSystemOnly,
+          ...(this.experienceRecorder != null ? { experienceRecorder: this.experienceRecorder } : {}),
         });
       const disableThinking = isKarakuriWorldMode || !this.config.llmEnableThinking;
       const effectiveModelFactory = disableThinking ? this.noThinkingModelFactory : this.modelFactory;
@@ -476,6 +508,28 @@ export class KarakuriAgent implements IAgent {
     } catch (error) {
       await skillContextScope?.abort();
       throw error;
+    }
+
+    if (!kwNotLoggedIn && isKarakuriWorldMode && userId != null) {
+      // 自分が発行したコマンド（own_action）も一次資料に残す
+      const commandInput = extractKarakuriWorldCommandInput(result);
+      if (commandInput != null) {
+        this.experienceRecorder?.record(normalizeKwOwnAction({
+          botId: userId,
+          command: commandInput.command,
+          params: commandInput.params,
+          ...(commandInput.comment != null ? { comment: commandInput.comment } : {}),
+          notificationId: karakuriWorldNotification!.notification_id,
+          receivedAt: new Date(),
+        }));
+      }
+    } else if (isDiscordConversation && assistantResponse.trim().length > 0) {
+      this.experienceRecorder?.record(normalizeDiscordOwnResponse({
+        text: assistantResponse,
+        sessionId,
+        inReplyToUserId: userId,
+        receivedAt: new Date(),
+      }));
     }
 
     if (!kwNotLoggedIn && isRealUser) {
@@ -845,6 +899,45 @@ function assertSingleKarakuriWorldAction(result: Awaited<ReturnType<typeof gener
     toolNames: kwToolNames,
   });
   throw new Error(`KarakuriWorld mode expected exactly one action, but received ${kwToolNames.length}.`);
+}
+
+interface KarakuriWorldCommandCallInput {
+  command: string;
+  params: unknown;
+  comment?: string | undefined;
+}
+
+/** result.steps から KW コマンドツール呼び出しの入力（command / params / comment）を取り出す。 */
+function extractKarakuriWorldCommandInput(
+  result: Awaited<ReturnType<typeof generateText>>,
+): KarakuriWorldCommandCallInput | null {
+  for (const step of result.steps) {
+    for (const toolCall of step.toolCalls) {
+      if (!String(toolCall?.toolName).startsWith(KARAKURI_WORLD_TOOL_PREFIX)) {
+        continue;
+      }
+
+      const input = toolCall?.input;
+      if (typeof input !== 'object' || input == null || !('command' in input)) {
+        continue;
+      }
+
+      const record = input as Record<string, unknown>;
+      if (typeof record.command !== 'string' || record.command.trim().length === 0) {
+        continue;
+      }
+
+      return {
+        command: record.command,
+        params: record.params ?? {},
+        comment: typeof record.comment === 'string' && record.comment.trim().length > 0
+          ? record.comment.trim()
+          : undefined,
+      };
+    }
+  }
+
+  return null;
 }
 
 function extractToolCallComment(input: unknown): string | null {

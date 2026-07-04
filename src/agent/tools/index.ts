@@ -1,6 +1,7 @@
 import type { ToolSet } from 'ai';
 
 import type { SnsCredentials } from '../../config.js';
+import type { ExperienceRecorder } from '../../life/recorder.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
@@ -45,6 +46,7 @@ export interface CreateAgentToolsOptions {
   contextScope?: SkillContextScope | undefined;
   kwMode?: boolean | undefined;
   evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
+  experienceRecorder?: ExperienceRecorder | undefined;
 }
 
 export function createAgentTools({
@@ -69,6 +71,7 @@ export function createAgentTools({
   contextScope,
   kwMode = false,
   evaluateUser,
+  experienceRecorder,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
@@ -135,6 +138,7 @@ export function createAgentTools({
     evaluateUser,
     reportError,
     evaluatedUsers,
+    experienceRecorder,
   });
   // Auto-loaded skills have their gated tools registered immediately.
   // loadSkill.execute() also mutates this tools object to dynamically register

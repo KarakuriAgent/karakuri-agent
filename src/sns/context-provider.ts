@@ -1,3 +1,5 @@
+import { normalizeSnsNotification } from '../life/normalize.js';
+import type { ExperienceRecorder } from '../life/recorder.js';
 import type { SkillContextProvider, SkillContextResult } from '../skill/context-provider.js';
 import type {
   ISnsActivityStore,
@@ -19,6 +21,7 @@ export interface SnsSkillContextProviderOptions {
   trendLimit?: number;
   recentActivityLimit?: number;
   reportError?: ((message: string) => void) | undefined;
+  experienceRecorder?: ExperienceRecorder | undefined;
 }
 
 const logger = createLogger('SnsSkillContextProvider');
@@ -52,6 +55,18 @@ export class SnsSkillContextProvider implements SkillContextProvider {
 
       if (notificationsResult.status === 'fulfilled') {
         const { notifications, complete } = notificationsResult.value;
+        // 体験ログ（一次資料）へ届いた通知を逐語記録する。turn が abort されると
+        // カーソルが戻り同じ通知を再取得しうるが、raw ログの重複は許容する
+        // （kind / actor 同様、重複解決は後段・reprocessing の仕事）。
+        if (this.options.experienceRecorder != null && this.options.provider != null) {
+          for (const notification of notifications) {
+            this.options.experienceRecorder.record(normalizeSnsNotification({
+              provider: this.options.provider,
+              notification,
+              receivedAt: new Date(),
+            }));
+          }
+        }
         latestNotificationId = complete ? notifications[0]?.id : undefined;
         if (
           latestNotificationId != null

@@ -10,6 +10,10 @@ import { loadConfig, type Config } from './config.js';
 import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from './llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
+import { openLifeDatabase } from './life/db.js';
+import { logLifeDbCapabilities, verifyLifeDbCapabilities } from './life/db-verification.js';
+import { SqliteExperienceLogStore } from './life/experience-log.js';
+import { ExperienceRecorder } from './life/recorder.js';
 import { CompositeMemoryStore } from './memory/composite-store.js';
 import { SqliteDiaryStore } from './memory/diary-store.js';
 import { MemoryMaintenanceRunner } from './memory/maintenance-runner.js';
@@ -88,6 +92,23 @@ async function main(): Promise<void> {
         reportChannelId: config.reportChannelId,
       })
     : undefined;
+  // 生きたエージェントの記憶基盤（life.db）。体験ログの蓄積は全マイルストーンの起点
+  const lifeDb = openLifeDatabase({ dataDir: config.dataDir });
+  const lifeDbHealthy = logLifeDbCapabilities(verifyLifeDbCapabilities(lifeDb));
+  const experienceLogStore = new SqliteExperienceLogStore({ db: lifeDb });
+  const experienceRecorder = new ExperienceRecorder({
+    store: experienceLogStore,
+    ...(messageSink != null ? { messageSink } : {}),
+    ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
+  });
+  if (!lifeDbHealthy) {
+    void reportSafely(
+      messageSink,
+      config.reportChannelId,
+      '⚠️ life.db の sqlite-vec / FTS5 trigram 検証に失敗しました。体験ログの記録は継続しますが、M3 の想起機能が劣化する可能性があります。',
+      logger,
+    );
+  }
   const snsReportError = messageSink != null && config.reportChannelId != null
     ? (message: string) => {
         void reportSafely(messageSink, config.reportChannelId, message, {
@@ -112,6 +133,7 @@ async function main(): Promise<void> {
       snsProvider,
       provider,
       reportError: snsReportError,
+      experienceRecorder,
     }));
   }
   const sessionManager = new FileSessionManager({
@@ -134,6 +156,7 @@ async function main(): Promise<void> {
     userStore,
     snsActivityStores,
     snsContextRegistry,
+    experienceRecorder,
   });
   for (const credentials of (config.snsList ?? [])) {
     const provider = credentials.provider;
@@ -210,10 +233,18 @@ async function main(): Promise<void> {
           memoryMaintenanceRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
-        drainEvaluations: () => agent.drainPendingEvaluations(),
+        drainEvaluations: () => Promise.all([
+          agent.drainPendingEvaluations(),
+          experienceRecorder.flush(),
+        ]).then(() => undefined),
         closeStores: () => [
           memoryStore.close(),
           userStore.close(),
+          experienceLogStore.close().then(() => {
+            if (lifeDb.open) {
+              lifeDb.close();
+            }
+          }),
           ...Array.from(snsActivityStores.values(), (store) => store.close()),
           promptContextStore.close(),
           skillStore.close(),

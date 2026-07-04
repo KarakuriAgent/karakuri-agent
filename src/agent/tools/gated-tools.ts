@@ -1,6 +1,7 @@
 import type { ToolSet } from 'ai';
 
 import type { SnsCredentials } from '../../config.js';
+import type { ExperienceRecorder } from '../../life/recorder.js';
 import { isReservedSkillName } from '../../skill/reserved.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
 import type { SkillDefinition } from '../../skill/types.js';
@@ -20,6 +21,7 @@ export interface AvailableGatedToolSources {
   evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
   reportError?: ((message: string) => void) | undefined;
   evaluatedUsers?: Set<string> | undefined;
+  experienceRecorder?: ExperienceRecorder | undefined;
 }
 
 export function buildGatedToolSets(
@@ -93,6 +95,7 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
       ...(availableToolSources.userStore != null ? { userStore: availableToolSources.userStore } : {}),
       ...(availableToolSources.evaluateUser != null ? { evaluateUser: availableToolSources.evaluateUser } : {}),
       ...(availableToolSources.reportError != null ? { reportError: availableToolSources.reportError } : {}),
+      ...(availableToolSources.experienceRecorder != null ? { experienceRecorder: availableToolSources.experienceRecorder } : {}),
       evaluatedUsers: availableToolSources.evaluatedUsers ?? new Set<string>(),
     });
     Object.assign(allGatedTools, providerTools);

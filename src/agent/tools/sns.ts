@@ -2,6 +2,8 @@ import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 
 import type { SnsCredentials } from '../../config.js';
+import { normalizeSnsOwnAction } from '../../life/normalize.js';
+import type { ExperienceRecorder } from '../../life/recorder.js';
 import { createSnsProvider } from '../../sns/index.js';
 import { buildLikeLockKey, buildQuoteLockKey, buildReplyLockKey, buildRepostLockKey, runWithSnsActionLocks } from '../../sns/action-locks.js';
 import type { ISnsActivityStore, SnsPost } from '../../sns/types.js';
@@ -55,6 +57,7 @@ export interface CreateSnsToolsOptions {
   evaluateUser?: (snsUserId: string, displayName: string, postText: string) => void;
   reportError?: (message: string) => void;
   evaluatedUsers?: Set<string> | undefined;
+  experienceRecorder?: ExperienceRecorder | undefined;
 }
 
 function formatError(error: unknown): string {
@@ -190,6 +193,15 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     logger.warn('SNS activity store is not configured; duplicate prevention is disabled');
   }
 
+  const recordOwnAction = (action: string, detail: unknown): void => {
+    options.experienceRecorder?.record(normalizeSnsOwnAction({
+      provider: snsProviderType,
+      action,
+      detail,
+      receivedAt: new Date(),
+    }));
+  };
+
   const tools: ToolSet = {
     [toolName('post')]: tool({
       description: `${snsProviderType} に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに { status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? } を返す。`,
@@ -222,6 +234,13 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
           visibility: input.visibility,
         });
         const warning = await safeRecord('sns_post', () => options.activityStore?.recordPost(result.id, input.text, input.reply_to_id, input.quote_post_id) ?? Promise.resolve(), options.reportError);
+        recordOwnAction('post', {
+          post_id: result.id,
+          text: input.text,
+          ...(input.reply_to_id != null ? { reply_to_id: input.reply_to_id } : {}),
+          ...(input.quote_post_id != null ? { quote_post_id: input.quote_post_id } : {}),
+          visibility: input.visibility,
+        });
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
@@ -245,6 +264,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
         const result = await provider.like(input.post_id);
         const warning = await safeRecord('sns_like', () => options.activityStore?.recordLike(input.post_id) ?? Promise.resolve(), options.reportError);
+        recordOwnAction('like', { post_id: input.post_id });
         trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
         return warning != null ? { ...result, _warning: warning } : result;
       })),
@@ -260,6 +280,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
         const result = await provider.repost(input.post_id);
         const warning = await safeRecord('sns_repost', () => options.activityStore?.recordRepost(input.post_id) ?? Promise.resolve(), options.reportError);
+        recordOwnAction('repost', { post_id: input.post_id });
         trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
         return warning != null ? { ...result, _warning: warning } : result;
       })),

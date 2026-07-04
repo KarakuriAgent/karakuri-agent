@@ -57,6 +57,7 @@ src/agent/prompt-context.ts   — trusted / untrusted 文脈の分離などプ�
 src/agent/tools/              — builtin ツール群（recallDiary, webFetch, webSearch, userLookup, loadSkill, postMessage, manageCron, sns_<provider>_*, karakuri_world_command）
 src/session/                  — JSON ファイルベースのセッション保存。ハッシュ化ファイル名 + メモリキャッシュを使用
 src/memory/                   — FileMemoryStore（core memory）+ SqliteDiaryStore（日記）+ CompositeMemoryStore + maintenance runner
+src/life/                     — 生きたエージェントの記憶基盤（life.db マイグレーション、experience_log 追記専用ストア、イベント正規化、ExperienceRecorder、sqlite-vec / FTS5 検証）
 src/skill/                    — `data/skills/` と `data/system-skills/` を監視する frontmatter 付き SKILL.md ストア
 src/scheduler/                — HEARTBEAT.md 読み込み、CRON.md frontmatter 解釈、Heartbeat/Cron 実行、scheduler store
 src/sns/                      — Mastodon / X / ELYTH provider、provider 別 SQLite 活動ログ、SNS skill dynamic context、provider 別 SNS 専用ループ、レガシー DB 移行
@@ -116,6 +117,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - `data/sessions/{hash}.json` — セッションファイル
 - `data/state/chat-state.json` — Chat SDK の永続 state
 - `data/diary.db` — 日記ストア
+- `data/life.db` — 生きたエージェントの記憶 DB（experience_log。追記専用の一次資料）
 - `data/users.db` — ユーザープロファイルストア
 - `data/sns-activity-{provider}.db` — provider 別 SNS 活動履歴 / 通知予約ストア（旧 `data/sns-activity.db` は `SNS_LEGACY_DB_MIGRATE_TO` で明示移行）
 
