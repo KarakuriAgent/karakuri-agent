@@ -242,3 +242,7 @@ karakuri-agent/
 - [Skill 層](skill.md)
 - [Bot 層](bot.md)
 - [設定](config.md)
+
+将来構想:
+
+- [生きたエージェント 全体設計（記憶・内部状態・動機・気質）](living-agent.md)
