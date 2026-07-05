@@ -1,4 +1,5 @@
 import type { IAgent } from '../agent/core.js';
+import { circadianEnergyDecayFactor, type InnerState, type InnerStateService } from '../life/inner-state.js';
 import { buildSnsLoopActivityInstructions } from './builtin-skill.js';
 import { formatError } from '../utils/error.js';
 import { createLogger } from '../utils/logger.js';
@@ -10,6 +11,42 @@ import type { SnsProviderType } from './types.js';
 const logger = createLogger('SnsLoopRunner');
 const MINUTE_MS = 60_000;
 
+/**
+ * SNS ループ間隔の変調係数（M6）。
+ * - 睡眠中・深夜は投稿が減る（間隔が大きく伸びる）
+ * - 元気がない日は積極性が下がる（間隔が伸びる）
+ * - 社交欲求が高いと交流が増える（間隔が縮む）
+ */
+export function snsLoopIntervalFactor(state: InnerState, now: Date, timezone: string): number {
+  if (state.sleeping) {
+    return 3;
+  }
+
+  let factor = 1;
+  if (state.energy < 0.25) {
+    factor *= 1.8;
+  } else if (state.energy < 0.45) {
+    factor *= 1.3;
+  }
+  if (state.social > 0.7) {
+    factor *= 0.7;
+  } else if (state.social < 0.2) {
+    factor *= 1.2;
+  }
+
+  // 概日リズム: 深夜・早朝は投稿が減る
+  const hour = Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    hourCycle: 'h23',
+  }).format(now));
+  if (circadianEnergyDecayFactor(hour) > 1 && (hour >= 0 && hour < 6)) {
+    factor *= 2;
+  }
+
+  return Math.min(4, Math.max(0.5, factor));
+}
+
 export interface SnsLoopRunnerOptions {
   agent: IAgent;
   provider?: SnsProviderType | undefined;
@@ -18,6 +55,9 @@ export interface SnsLoopRunnerOptions {
   messageSink?: IMessageSink;
   reportChannelId?: string;
   hasPostMessage?: boolean;
+  /** M6: 内部状態でループ頻度・積極性を変調する（元気がない日・深夜は間隔が伸びる） */
+  innerStateService?: InnerStateService | undefined;
+  timezone?: string | undefined;
   now?: () => Date;
   randomFn?: () => number;
   setTimeoutFn?: typeof setTimeout;
@@ -80,6 +120,36 @@ export class SnsLoopRunner {
       return;
     }
 
+    if (this.options.innerStateService == null) {
+      this.scheduleWithFactor(1);
+      return;
+    }
+
+    void this.resolveIntervalFactor().then((factor) => {
+      if (this.closed || this.timer != null) {
+        return;
+      }
+      this.scheduleWithFactor(factor);
+    });
+  }
+
+  /** 内部状態・概日リズムによる間隔倍率。取得失敗時は 1（変調なし） */
+  private async resolveIntervalFactor(): Promise<number> {
+    if (this.options.innerStateService == null) {
+      return 1;
+    }
+
+    try {
+      const now = this.now();
+      const state = await this.options.innerStateService.getCurrent(now);
+      return snsLoopIntervalFactor(state, now, this.options.timezone ?? 'Asia/Tokyo');
+    } catch (error) {
+      logger.warn('Failed to resolve SNS loop interval factor', error);
+      return 1;
+    }
+  }
+
+  private scheduleWithFactor(factor: number): void {
     this.timer = this.setTimeoutFn(() => {
       this.timer = null;
       void this.tick().catch(async (error) => {
@@ -94,7 +164,7 @@ export class SnsLoopRunner {
           this.scheduleNext();
         }
       });
-    }, this.nextDelayMs());
+    }, Math.max(1, Math.floor(this.nextDelayMs() * factor)));
   }
 
   private nextDelayMs(): number {

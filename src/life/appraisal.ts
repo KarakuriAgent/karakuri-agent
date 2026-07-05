@@ -33,6 +33,7 @@ import {
 } from './inner-state.js';
 import { openLifeDatabase } from './db.js';
 import type { IProspectStore } from './prospects.js';
+import type { IRelationStore } from './relations.js';
 import type { SegmentationEngine } from './segmentation.js';
 import { LIFE_TUNING, type LifeTuning } from './tuning.js';
 import type { NormalizedEvent } from './types.js';
@@ -353,6 +354,8 @@ export interface AppraisalServiceOptions {
   segmentation?: SegmentationEngine | undefined;
   /** M5: 展望記憶ストア。設定時は appraisal の prospect_candidates を登録する */
   prospectStore?: IProspectStore | undefined;
+  /** M6: 関係グラフ。設定時は appraisal の relation_candidates を観測として累積する */
+  relationStore?: IRelationStore | undefined;
 }
 
 interface DailyStats {
@@ -440,6 +443,26 @@ export class AppraisalService {
             channel: event.channel,
             kind: event.kind,
           });
+        }
+      }
+
+      // 関係グラフ（M6）: 観測されたエッジを累積する。subject/object が「自分」なら
+      // actor 規約とは別の予約 ID 'self' に正規化する
+      if (this.options.relationStore != null) {
+        for (const candidate of guarded.relationCandidates) {
+          try {
+            await this.options.relationStore.observe({
+              subjectId: normalizeSelfId(candidate.subject, event.actor),
+              relation: candidate.relation,
+              objectId: normalizeSelfId(candidate.object, event.actor),
+              affect: guarded.deltas.valence,
+              observedAt: event.receivedAt,
+              provenance: eventId != null ? [eventId] : [],
+              procVersion: this.options.procVersion,
+            });
+          } catch (error) {
+            logger.warn('Failed to record relation observation', error);
+          }
         }
       }
 
@@ -538,6 +561,21 @@ export class AppraisalService {
       logger.warn('Failed to send appraisal daily summary', error);
     }
   }
+}
+
+const SELF_LABELS = new Set(['self', 'me', 'i', '自分', 'わたし', '私', 'エージェント']);
+
+/** LLM の出す主語/目的語を正規化する。自分を指す語は 'self'、イベントの相手を指す語は actor ID を優先 */
+function normalizeSelfId(label: string, eventActor: string | undefined): string {
+  const normalized = label.trim();
+  if (SELF_LABELS.has(normalized.toLowerCase())) {
+    return 'self';
+  }
+  // 相手そのものを指しているなら規約 ID に寄せる（ID の突合は alias_of / reprocessing で改善可能）
+  if (eventActor != null && eventActor.endsWith(`:${normalized}`)) {
+    return eventActor;
+  }
+  return normalized;
 }
 
 function safeStringify(value: unknown): string {

@@ -75,6 +75,7 @@ const configSchema = z.object({
   selfImageInjectionEnabled: z.string().trim().optional(),
   drivesInjectionEnabled: z.string().trim().optional(),
   prospectsInjectionEnabled: z.string().trim().optional(),
+  postResponseEvaluatorEnabled: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -167,6 +168,11 @@ export interface Config {
   drivesInjectionEnabled: boolean;
   /** M5: 展望記憶（約束・予定・目標）注入の有効化 */
   prospectsInjectionEnabled: boolean;
+  /**
+   * 旧 post-response evaluator の並走（M6 で新パイプラインへ切り替え済みのため既定 false）。
+   * true にすると退避的に旧 user profile / core memory / diary 振り分けを再開する
+   */
+  postResponseEvaluatorEnabled: boolean;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -240,6 +246,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     selfImageInjectionEnabled: env.SELF_IMAGE_INJECTION_ENABLED,
     drivesInjectionEnabled: env.DRIVES_INJECTION_ENABLED,
     prospectsInjectionEnabled: env.PROSPECTS_INJECTION_ENABLED,
+    postResponseEvaluatorEnabled: env.POST_RESPONSE_EVALUATOR_ENABLED,
   };
 
   try {
@@ -391,6 +398,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       selfImageInjectionEnabled: parseBooleanEnv(parsed.selfImageInjectionEnabled, 'SELF_IMAGE_INJECTION_ENABLED', true),
       drivesInjectionEnabled: parseBooleanEnv(parsed.drivesInjectionEnabled, 'DRIVES_INJECTION_ENABLED', true),
       prospectsInjectionEnabled: parseBooleanEnv(parsed.prospectsInjectionEnabled, 'PROSPECTS_INJECTION_ENABLED', true),
+      postResponseEvaluatorEnabled: parseBooleanEnv(parsed.postResponseEvaluatorEnabled, 'POST_RESPONSE_EVALUATOR_ENABLED', false),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,

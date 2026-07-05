@@ -22,7 +22,10 @@ import { EpisodeEmbeddingIndex, OpenAiEmbeddingProvider } from './life/embedding
 import { SqliteEpisodeStore } from './life/episodes.js';
 import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
 import { SqliteProspectStore } from './life/prospects.js';
+import { SqliteRelationStore } from './life/relations.js';
 import { EpisodeRetrievalService } from './life/retrieval.js';
+import { applyTraitsToTuning, loadTraits, satiationThresholdFor } from './life/traits.js';
+import { getLifeMeta, setLifeMeta } from './life/db.js';
 import { SegmentationEngine } from './life/segmentation.js';
 import { buildAppraisalProcVersion } from './life/tuning.js';
 import { logLifeDbCapabilities, verifyLifeDbCapabilities } from './life/db-verification.js';
@@ -135,9 +138,12 @@ async function main(): Promise<void> {
     await perceptionBuffer.restoreChannel(experienceLogStore, channel);
     await loopDetector.restore(experienceLogStore, channel);
   }
+  // M6: 気質（traits）。減衰・欲求の係数として全層に効く
+  const traits = loadTraits(config.dataDir);
+  const lifeTuning = applyTraitsToTuning(traits);
   // M2: 内部状態 + Appraisal Service（役割別モデル: LLM_APPRAISAL_MODEL、未指定は既定へフォールバック）
   const innerStateStore = new SqliteInnerStateStore({ db: lifeDb });
-  const innerStateService = new InnerStateService({ store: innerStateStore, timezone: config.timezone });
+  const innerStateService = new InnerStateService({ store: innerStateStore, timezone: config.timezone, tuning: lifeTuning });
   const appraisalLogStore = new SqliteAppraisalLogStore({ db: lifeDb });
   // M3: エピソード記銘（salience gating + 分節化）とハイブリッド想起
   const episodeStore = new SqliteEpisodeStore({ db: lifeDb });
@@ -184,6 +190,27 @@ async function main(): Promise<void> {
   const beliefStore = new SqliteBeliefStore({ db: lifeDb });
   // M5: 展望記憶（約束・予定・目標）
   const prospectStore = new SqliteProspectStore({ db: lifeDb });
+  // M6: 関係グラフ（relations）。既存 alias 機構を alias_of エッジへ一度だけ移行する
+  const relationStore = new SqliteRelationStore({ db: lifeDb });
+  try {
+    if (getLifeMeta(lifeDb, 'alias_migrated') == null && userStore.listAliasesByPrimaryIds != null) {
+      const allUsers = await userStore.searchUsers('', { limit: 10_000 });
+      const aliasMap = await userStore.listAliasesByPrimaryIds(allUsers.map((user) => user.userId));
+      let migrated = 0;
+      for (const aliases of aliasMap.values()) {
+        for (const alias of aliases) {
+          await relationStore.linkAlias(alias.aliasUserId, alias.primaryUserId, [], 'alias-migration-v1');
+          migrated += 1;
+        }
+      }
+      setLifeMeta(lifeDb, 'alias_migrated', new Date().toISOString());
+      if (migrated > 0) {
+        logger.info('Migrated legacy user aliases into relations (alias_of)', { migrated });
+      }
+    }
+  } catch (error) {
+    logger.warn('Legacy alias migration failed (continuing startup)', error);
+  }
   try {
     await importSeedMemories({
       db: lifeDb,
@@ -254,6 +281,8 @@ async function main(): Promise<void> {
           providerOptions: noThinkingProviderOptions(appraisalSelector.api),
           segmentation: segmentationEngine,
           prospectStore,
+          relationStore,
+          tuning: lifeTuning,
           ...(messageSink != null ? { messageSink } : {}),
           ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
         });
@@ -284,6 +313,7 @@ async function main(): Promise<void> {
       provider,
       reportError: snsReportError,
       experienceRecorder,
+      appraisalService,
     }));
   }
   const sessionManager = new FileSessionManager({
@@ -316,6 +346,8 @@ async function main(): Promise<void> {
     narrativeStore,
     beliefStore,
     prospectStore,
+    relationStore,
+    satiationThreshold: satiationThresholdFor(traits),
   });
   for (const credentials of (config.snsList ?? [])) {
     const provider = credentials.provider;
@@ -324,6 +356,8 @@ async function main(): Promise<void> {
       provider,
       minIntervalMinutes: config.snsLoopMinIntervalMinutes,
       maxIntervalMinutes: config.snsLoopMaxIntervalMinutes,
+      innerStateService,
+      timezone: config.timezone,
       ...(messageSink != null ? { messageSink } : {}),
       ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
       hasPostMessage: messageSink != null

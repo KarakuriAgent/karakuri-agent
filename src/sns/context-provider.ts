@@ -1,3 +1,4 @@
+import type { AppraisalService } from '../life/appraisal.js';
 import { normalizeSnsNotification } from '../life/normalize.js';
 import type { ExperienceRecorder } from '../life/recorder.js';
 import type { SkillContextProvider, SkillContextResult } from '../skill/context-provider.js';
@@ -22,6 +23,8 @@ export interface SnsSkillContextProviderOptions {
   recentActivityLimit?: number;
   reportError?: ((message: string) => void) | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
+  /** M6: SNS 反応の appraisal 入力（応答先行 → appraisal 事後の非同期経路） */
+  appraisalService?: AppraisalService | undefined;
 }
 
 const logger = createLogger('SnsSkillContextProvider');
@@ -58,13 +61,16 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         // 体験ログ（一次資料）へ届いた通知を逐語記録する。turn が abort されると
         // カーソルが戻り同じ通知を再取得しうるが、raw ログの重複は許容する
         // （kind / actor 同様、重複解決は後段・reprocessing の仕事）。
-        if (this.options.experienceRecorder != null && this.options.provider != null) {
+        if (this.options.provider != null && (this.options.experienceRecorder != null || this.options.appraisalService != null)) {
           for (const notification of notifications) {
-            this.options.experienceRecorder.record(normalizeSnsNotification({
+            const event = normalizeSnsNotification({
               provider: this.options.provider,
               notification,
               receivedAt: new Date(),
-            }));
+            });
+            this.options.experienceRecorder?.record(event);
+            // SNS はチャットに準ずる: 応答先行 → appraisal 事後（fire-and-forget）
+            void this.options.appraisalService?.enqueue(event);
           }
         }
         latestNotificationId = complete ? notifications[0]?.id : undefined;

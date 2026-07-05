@@ -93,6 +93,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - **エピソード記銘と想起（M3）**: appraisal のサリエンス判定 + 分節化（開いたエピソード/ドラフト永続化、前段ルール・LLM 判定・後段ガードレール（最大ビート数/最大継続時間で強制 close）の 3 段）で episodes（生活の語彙、provenance / proc_version つき）を確定。想起はハイブリッド（FTS5 trigram + LIKE フォールバック + sqlite-vec + 新しさ + importance×buoyancy + 社会的文脈、RRF + MMR）。自動想起は `<episodic-memory>`（untrusted）で注入（`RECALL_INJECTION_ENABLED`）、能動想起は `recallEpisodes` ツール。埋め込みは OpenAI 互換で差し替え可能（`EMBEDDING_MODEL`、失敗時は pending → 非同期 backfill、未設定でも FTS のみで動作）。
 - **省察と自伝的階層（M4）**: 省察エンジン（`LLM_REFLECTION_MODEL`、`REFLECTION_ENABLED`）が日次（当日エピソード→日記・感情の消化・信念更新/矛盾の改訂）/ 週次（日記群→テーマ・自己像ドリフト）/ 月次（テーマ群→章 + 浮力減衰 = 忘却、削除しない）を「世界内の行為」（夜判定は差し替え可能な関数）として実行。beliefs は上書きせず supersedes チェーンで改訂し、単一出所の信念は confidence をキャップ + 省察で格下げ（汚染対策）。自己像（kind=self）は省察だけが更新し `<self-image>` で自己語り注入（`SELF_IMAGE_INJECTION_ENABLED`）。想起は章・テーマ→エピソードの階層ドリルダウン。seed 記憶は `data/seed-memories.json` から、既存 diary.db / users.db / memory.md は「移行前の記録」として experience_log 経由で一度だけインポート。
 - **動機と展望記憶（M5）**: 生理パラメータを欲求へ変換し「いま一番強い欲求」+ 飽き圧（action_ledger の偏りを「逸脱を促す向き」で）を `<drives>` で KW 行動選択に注入（`DRIVES_INJECTION_ENABLED`）。appraisal の prospect_candidates を prospects（promise/intention/goal、status は open からのみ遷移する経路依存の状態）へ登録し、KW 応答時に `<prospects>` で注入（`PROSPECTS_INJECTION_ENABLED`）。日次省察が棚卸しし、果たせなかった約束は気分へ影響。SNS / Discord 側は `scheduleProspectReminder` ツールで「prospect を時刻 T に想起する」リマインダー型 oneshot cron に限定して自己登録できる（admin-gated の `manageCron` とは別物。上限あり・登録/解除は report 通知・実行時は prospect を untrusted 注入するだけ）。
+- **SNS・チャット全面反映と気質（M6）**: SNS 通知は appraisal 入力へ接続（応答先行 → 事後）。SNS ループは内部状態・概日リズムで間隔を変調（元気がない日・深夜・睡眠中は投稿が減る）。内部状態・自己像・欲求（+ 話題偏り検出、bucket=topic）は system turn（heartbeat / cron / SNS ループ）にも注入。関係グラフ relations（life.db migration v7、エッジ + 再帰 CTE 1〜2 ホップ、strength/affect は観測の累積）に appraisal のエッジ候補を蓄積し、旧 alias 機構は alias_of エッジへ一度だけ移行、想起の社会的文脈ブーストへ接続。`userLookup` とプロンプトの user profile は新ストア（beliefs person_fact + relations）優先。旧 post-response evaluator は停止（`POST_RESPONSE_EVALUATOR_ENABLED=true` で退避的に再開可）。気質（traits）は `data/traits.json`（resilience / socialBaseline / curiosity）で減衰・欲求・飽きの係数を変調する。
 - **反復対策（M1）**: own_action から action_ledger（頻度台帳）と Loop Detector（同一行動×同一対象の連続カウント）を更新し、`LOOP_DETECTOR_THRESHOLD` 回以上の連続で trusted 側の決定論警告をプロンプトへ注入する（untrusted コンテンツは引用しない）。`LOOP_WARNING_ENABLED` で無効化可能。
 
 ### Scheduler / proactive messaging の注意点
@@ -116,6 +117,7 @@ src/config.ts                 — Zod ベースの環境変数バリデーショ
 - `data/RULES.md` — 追加ルール
 - `data/HEARTBEAT.md` — heartbeat 用 system 指示
 - `data/seed-memories.json` — 立ち上げ時の seed 記憶（beliefs / narratives。あれば一度だけ取り込み）
+- `data/traits.json` — 気質（resilience / socialBaseline / curiosity。人格定義と整合させる）
 - `data/skills/*/SKILL.md` — ユーザー向けスキル（frontmatter 必須）
 - `data/system-skills/*/SKILL.md` — system 用スキル（frontmatter 必須）
 - `data/cron/*/CRON.md` — cron ジョブ定義（frontmatter 必須）

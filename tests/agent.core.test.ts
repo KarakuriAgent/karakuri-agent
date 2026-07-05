@@ -53,6 +53,7 @@ const baseConfig: Config = {
   selfImageInjectionEnabled: true,
   drivesInjectionEnabled: true,
   prospectsInjectionEnabled: true,
+  postResponseEvaluatorEnabled: true,
 };
 
 class MemoryStoreStub implements IMemoryStore {

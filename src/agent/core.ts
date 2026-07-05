@@ -7,6 +7,7 @@ import type { IBeliefStore } from '../life/beliefs.js';
 import { buildDrivesDescription } from '../life/drives.js';
 import type { INarrativeStore } from '../life/narratives.js';
 import { formatProspectsForPrompt, type IProspectStore } from '../life/prospects.js';
+import type { IRelationStore } from '../life/relations.js';
 import { describeInnerState, type InnerStateService } from '../life/inner-state.js';
 import { buildOwnActionKey, extractOwnActionTarget, type LoopDetector } from '../life/loop-detector.js';
 import {
@@ -114,6 +115,9 @@ export interface KarakuriAgentOptions {
   narrativeStore?: INarrativeStore | undefined;
   beliefStore?: IBeliefStore | undefined;
   prospectStore?: IProspectStore | undefined;
+  relationStore?: IRelationStore | undefined;
+  /** M6: 気質（好奇心）由来の飽き閾値 */
+  satiationThreshold?: number | undefined;
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
   keepRecentTurns?: number;
@@ -141,6 +145,8 @@ export class KarakuriAgent implements IAgent {
   private readonly narrativeStore: INarrativeStore | undefined;
   private readonly beliefStore: IBeliefStore | undefined;
   private readonly prospectStore: IProspectStore | undefined;
+  private readonly relationStore: IRelationStore | undefined;
+  private readonly satiationThreshold: number | undefined;
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly noThinkingModelFactory: (selector: LlmModelSelector) => LanguageModel;
@@ -172,6 +178,8 @@ export class KarakuriAgent implements IAgent {
     narrativeStore,
     beliefStore,
     prospectStore,
+    relationStore,
+    satiationThreshold,
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
@@ -197,6 +205,8 @@ export class KarakuriAgent implements IAgent {
     this.narrativeStore = narrativeStore;
     this.beliefStore = beliefStore;
     this.prospectStore = prospectStore;
+    this.relationStore = relationStore;
+    this.satiationThreshold = satiationThreshold;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
     this.recentDiaryCount = recentDiaryCount;
@@ -334,7 +344,14 @@ export class KarakuriAgent implements IAgent {
     ]);
 
     const promptUserName = shouldIncludeUserProfile ? ensuredUserProfile?.record.displayName ?? userName : undefined;
-    const promptUserProfile = shouldIncludeUserProfile ? ensuredUserProfile?.profile.profile ?? null : undefined;
+    // M6: profile 参照は新ストア（beliefs person_fact + relations alias）を優先し、
+    // 無ければ旧 user store へフォールバックする（二重管理を作らない）
+    const beliefProfile = shouldIncludeUserProfile && this.beliefStore != null && userId != null
+      ? await this.buildUserProfileFromBeliefs(userId)
+      : null;
+    const promptUserProfile = shouldIncludeUserProfile
+      ? beliefProfile ?? ensuredUserProfile?.profile.profile ?? null
+      : undefined;
     const promptUserAliasOf = shouldIncludeUserProfile ? ensuredUserProfile?.aliasOf?.primaryUserId ?? null : undefined;
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
@@ -413,10 +430,11 @@ export class KarakuriAgent implements IAgent {
         && userId != null
         ? buildKarakuriWorldPerceptionSection(this.perceptionBuffer.getLatest(kwChannel(userId))?.payload)
         : null;
-      // 内部状態の自然言語注入（M2）: KW 行動選択・割り込み判断・Discord 応答トーン
+      // 内部状態の自然言語注入（M2 → M6 で system turn = heartbeat / cron / SNS ループへ拡大）:
+      // KW 行動選択・割り込み判断・Discord 応答トーン・SNS 投稿トーン・自発発話
       const innerStateSection = this.config.innerStateInjectionEnabled
         && this.innerStateService != null
-        && (isKarakuriWorldMode || isDiscordConversation)
+        && (isKarakuriWorldMode || isDiscordConversation || isSystemUser)
         ? await this.buildInnerStateSection(receivedAt)
         : null;
       // 自動想起（M3）: 応答生成前の文脈組み立て。「自然に思い出した」体験
@@ -433,17 +451,18 @@ export class KarakuriAgent implements IAgent {
             now: receivedAt,
           })
         : null;
-      // 自己像の自己語り注入（M4）: 経験で変化する人格。省察だけが更新できる
+      // 自己像の自己語り注入（M4 → M6 で system turn へ拡大）
       const selfImageSection = this.config.selfImageInjectionEnabled
         && this.beliefStore != null
-        && (isKarakuriWorldMode || isDiscordConversation)
+        && (isKarakuriWorldMode || isDiscordConversation || isSystemUser)
         ? await this.buildSelfImageSection()
         : null;
-      // 欲求・飽き圧の注入（M5）: 行動選択時に「いま一番強い欲求」を自然言語で
+      // 欲求・飽き圧の注入（M5）: KW 行動選択 + M6 で heartbeat / SNS ループへ拡大
+      //（system turn では話題偏り検出も含める）
       const drivesSection = this.config.drivesInjectionEnabled
         && this.innerStateService != null
-        && isKarakuriWorldMode
-        ? await this.buildDrivesSection(receivedAt)
+        && (isKarakuriWorldMode || isSystemUser)
+        ? await this.buildDrivesSection(receivedAt, { includeTopicBias: isSystemUser })
         : null;
       // 展望記憶の注入（M5・KW 通知駆動）: 近い予定・果たしていない約束を行動選択・割り込み判断の材料に
       const prospectsSection = this.config.prospectsInjectionEnabled
@@ -570,7 +589,7 @@ export class KarakuriAgent implements IAgent {
           snsActivityStores: this.snsActivityStores,
           kwMode: isKarakuriWorldMode,
           ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
-          ...(isSystemUser && this.userStore != null ? {
+          ...(isSystemUser && this.userStore != null && this.config.postResponseEvaluatorEnabled ? {
             evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
               this.enqueueSnsUserEvaluation({ userId: snsUserId, userName: displayName, postText });
             },
@@ -581,6 +600,9 @@ export class KarakuriAgent implements IAgent {
           ...(this.experienceRecorder != null ? { experienceRecorder: this.experienceRecorder } : {}),
           ...(this.retrievalService != null ? { retrievalService: this.retrievalService } : {}),
           ...(this.prospectStore != null ? { prospectStore: this.prospectStore } : {}),
+          ...(this.actionLedger != null ? { actionLedger: this.actionLedger } : {}),
+          ...(this.beliefStore != null ? { beliefStore: this.beliefStore } : {}),
+          ...(this.relationStore != null ? { relationStore: this.relationStore } : {}),
           timezone: this.config.timezone,
         });
       const disableThinking = isKarakuriWorldMode || !this.config.llmEnableThinking;
@@ -694,22 +716,26 @@ export class KarakuriAgent implements IAgent {
       });
     }
 
-    if (!kwNotLoggedIn && isRealUser) {
-      this.enqueuePostResponseEvaluation({
-        userId,
-        userName,
-        userMessage,
-        assistantResponse,
-        ...(isKarakuriWorldMode ? { skipUserStore: true } : {}),
-      });
-    } else if (!kwNotLoggedIn && isSystemUser) {
-      this.enqueuePostResponseEvaluation({
-        userId: 'system',
-        userName,
-        userMessage,
-        assistantResponse,
-        skipUserStore: true,
-      });
+    // 旧 post-response evaluator（M6 で新パイプラインへ切り替え済み。
+    // POST_RESPONSE_EVALUATOR_ENABLED=true で退避的に並走再開できる）
+    if (this.config.postResponseEvaluatorEnabled) {
+      if (!kwNotLoggedIn && isRealUser) {
+        this.enqueuePostResponseEvaluation({
+          userId,
+          userName,
+          userMessage,
+          assistantResponse,
+          ...(isKarakuriWorldMode ? { skipUserStore: true } : {}),
+        });
+      } else if (!kwNotLoggedIn && isSystemUser) {
+        this.enqueuePostResponseEvaluation({
+          userId: 'system',
+          userName,
+          userMessage,
+          assistantResponse,
+          skipUserStore: true,
+        });
+      }
     }
 
     logger.info('handleMessage complete', { sessionId, responseLength: assistantResponse.length });
@@ -855,9 +881,21 @@ export class KarakuriAgent implements IAgent {
     }
 
     try {
+      // 社会的文脈ブーストの 1〜2 ホップ展開（M6）: 相手の周辺人物・alias に紐づく記憶も引く
+      let expandedParticipants = participants;
+      if (this.relationStore != null && participants.length > 0) {
+        try {
+          const neighborSets = await Promise.all(
+            participants.map((participant) => this.relationStore!.neighbors(participant, 2, 10)),
+          );
+          expandedParticipants = [...new Set([...participants, ...neighborSets.flat()])];
+        } catch (error) {
+          logger.warn('Failed to expand participants via relations', error);
+        }
+      }
       const results = await this.retrievalService.search({
         ...(queryText != null && queryText.trim().length > 0 ? { text: queryText } : {}),
-        ...(participants.length > 0 ? { participants } : {}),
+        ...(expandedParticipants.length > 0 ? { participants: expandedParticipants } : {}),
         now,
         limit: 5,
       });
@@ -885,14 +923,20 @@ export class KarakuriAgent implements IAgent {
   }
 
   /** 欲求・飽き圧の注入セクション（M5）。失敗時はスキップ */
-  private async buildDrivesSection(receivedAt: Date): Promise<string | null> {
+  private async buildDrivesSection(
+    receivedAt: Date,
+    options: { includeTopicBias?: boolean } = {},
+  ): Promise<string | null> {
     if (this.innerStateService == null) {
       return null;
     }
 
     try {
       const state = await this.innerStateService.getCurrent(receivedAt);
-      const description = await buildDrivesDescription(state, this.actionLedger, receivedAt);
+      const description = await buildDrivesDescription(state, this.actionLedger, receivedAt, {
+        ...(this.satiationThreshold != null ? { satiationThreshold: this.satiationThreshold } : {}),
+        ...(options.includeTopicBias != null ? { includeTopicBias: options.includeTopicBias } : {}),
+      });
       if (description == null) {
         return null;
       }
@@ -927,6 +971,41 @@ export class KarakuriAgent implements IAgent {
       ].join('\n');
     } catch (error) {
       logger.warn('Failed to build prospects section', error);
+      return null;
+    }
+  }
+
+  /** 新ストア（beliefs person_fact + relations alias）からユーザープロファイルを組み立てる（M6） */
+  private async buildUserProfileFromBeliefs(userId: string): Promise<string | null> {
+    if (this.beliefStore == null) {
+      return null;
+    }
+
+    try {
+      const subjects = new Set([userId]);
+      if (this.relationStore != null) {
+        subjects.add(await this.relationStore.resolvePrimary(userId));
+      }
+      const beliefs = (await Promise.all(
+        [...subjects].map((subject) => this.beliefStore!.listActive({ kind: 'person_fact', subject, limit: 10 })),
+      )).flat();
+      if (beliefs.length === 0) {
+        return null;
+      }
+      const seen = new Set<string>();
+      const lines = beliefs
+        .filter((belief) => {
+          if (seen.has(belief.body)) {
+            return false;
+          }
+          seen.add(belief.body);
+          return true;
+        })
+        .map((belief) => `- ${belief.body}`);
+      const profile = lines.join('\n');
+      return profile.length > 1_200 ? `${profile.slice(0, 1_200)}…` : profile;
+    } catch (error) {
+      logger.warn('Failed to build user profile from beliefs', error, { userId });
       return null;
     }
   }

@@ -1,6 +1,8 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 
+import type { IBeliefStore } from '../../life/beliefs.js';
+import { ALIAS_RELATION, type IRelationStore } from '../../life/relations.js';
 import type { IUserStore, UserAlias } from '../../user/types.js';
 
 const DEFAULT_USER_LOOKUP_LIMIT = 5;
@@ -10,9 +12,13 @@ const MAX_USER_LOOKUP_PROFILE_CHARS = 600;
 
 export interface UserLookupToolOptions {
   userStore: IUserStore;
+  /** M6: 新ストア（beliefs person_fact）。設定時は profile をこちら優先で返す */
+  beliefStore?: IBeliefStore | undefined;
+  /** M6: 関係グラフ（relations）。設定時は alias_of と関係エッジもこちらから返す */
+  relationStore?: IRelationStore | undefined;
 }
 
-export function createUserLookupTool({ userStore }: UserLookupToolOptions) {
+export function createUserLookupTool({ userStore, beliefStore, relationStore }: UserLookupToolOptions) {
   return tool({
     description: 'Search for known users by name or keyword. Leave query empty to list recent known users.',
     inputSchema: z.object({
@@ -42,6 +48,37 @@ export function createUserLookupTool({ userStore }: UserLookupToolOptions) {
         .filter((entry) => entry.aliasOf != null)
         .map((entry) => [entry.aliasOf!.aliasUserId, entry.aliasOf!.primaryUserId]));
 
+      // M6: profile と関係情報は新ストア（beliefs / relations）を優先する
+      const newStoreInfo = new Map<string, { profile?: string; relations?: string[]; aliasOf?: string }>();
+      if (beliefStore != null || relationStore != null) {
+        await Promise.all(userIds.map(async (userId) => {
+          const info: { profile?: string; relations?: string[]; aliasOf?: string } = {};
+          if (beliefStore != null) {
+            const beliefs = await beliefStore.listActive({ kind: 'person_fact', subject: userId, limit: 8 })
+              .catch(() => []);
+            if (beliefs.length > 0) {
+              info.profile = beliefs.map((belief) => `- ${belief.body}`).join('\n');
+            }
+          }
+          if (relationStore != null) {
+            const edges = await relationStore.listForSubject(userId, 8).catch(() => []);
+            const aliasEdge = edges.find((edge) => edge.relation === ALIAS_RELATION && edge.subjectId === userId);
+            if (aliasEdge != null) {
+              info.aliasOf = aliasEdge.objectId;
+            }
+            const relationLines = edges
+              .filter((edge) => edge.relation !== ALIAS_RELATION)
+              .map((edge) => `${edge.subjectId} -${edge.relation}-> ${edge.objectId}`);
+            if (relationLines.length > 0) {
+              info.relations = relationLines;
+            }
+          }
+          if (Object.keys(info).length > 0) {
+            newStoreInfo.set(userId, info);
+          }
+        }));
+      }
+
       return {
         found: visibleUsers.length,
         offset,
@@ -50,10 +87,11 @@ export function createUserLookupTool({ userStore }: UserLookupToolOptions) {
         users: visibleUsers.map((user) => {
           const aliases = aliasesByPrimary.get(user.userId) ?? [];
           const aliasOf = aliasOfByUser.get(user.userId);
+          const info = newStoreInfo.get(user.userId);
           return {
             userId: user.userId,
             displayName: user.displayName,
-            profile: truncateProfile(user.profile),
+            profile: truncateProfile(info?.profile ?? user.profile),
             ...(aliases.length > 0
               ? {
                   aliases: aliases.map((alias: UserAlias) => ({
@@ -62,7 +100,10 @@ export function createUserLookupTool({ userStore }: UserLookupToolOptions) {
                   })),
                 }
               : {}),
-            ...(aliasOf != null ? { alias_of: aliasOf } : {}),
+            ...(info?.aliasOf != null
+              ? { alias_of: info.aliasOf }
+              : aliasOf != null ? { alias_of: aliasOf } : {}),
+            ...(info?.relations != null ? { relations: info.relations } : {}),
           };
         }),
       };

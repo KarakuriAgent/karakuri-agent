@@ -215,6 +215,27 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       CREATE INDEX idx_prospects_status ON prospects(status, due_at);
     `,
   },
+  {
+    version: 7,
+    up: `
+      -- 社会知識グラフ（エッジテーブル + 再帰 CTE で 1〜2 ホップ展開）
+      -- strength / affect は観測の累積で更新される経路依存の値（M7 参照）
+      CREATE TABLE relations (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        subject_id   TEXT NOT NULL,
+        relation     TEXT NOT NULL,
+        object_id    TEXT NOT NULL,
+        strength     REAL,
+        affect       REAL,
+        observed_at  TEXT NOT NULL,
+        provenance   TEXT NOT NULL,
+        proc_version TEXT NOT NULL,
+        UNIQUE (subject_id, relation, object_id)
+      );
+      CREATE INDEX idx_relations_subject ON relations(subject_id);
+      CREATE INDEX idx_relations_object ON relations(object_id);
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {

@@ -8,7 +8,20 @@
 
 export const LIFE_TUNING_VERSION = 'tuning-v1';
 
-export const LIFE_TUNING = {
+export interface LifeTuning {
+  valenceHalfLifeHours: number;
+  energyDecayPerHour: number;
+  hungerIncreasePerHour: number;
+  sleepingHungerFactor: number;
+  socialIncreasePerHour: number;
+  sleepEnergyRecoveryPerHour: number;
+  maxDeltaPerEvent: number;
+  maxLazyElapsedHours: number;
+  circadianLateNightFactor: number;
+  circadianMorningFactor: number;
+}
+
+export const LIFE_TUNING: LifeTuning = {
   /** 気分（valence）がベースライン 0 へ戻る半減期（時間） */
   valenceHalfLifeHours: 8,
   /** 覚醒中の元気度の自然減衰（1 時間あたり） */
@@ -33,9 +46,7 @@ export const LIFE_TUNING = {
   circadianLateNightFactor: 1.6,
   /** 概日リズム: 朝（6-9 時）の元気度減衰倍率（調子が出ない） */
   circadianMorningFactor: 1.2,
-} as const;
-
-export type LifeTuning = typeof LIFE_TUNING;
+};
 
 /** appraisal 処理系バージョン。プロンプト版 + モデル + チューニングセット */
 export const APPRAISAL_PROMPT_VERSION = 'appraisal-v1';

@@ -1,6 +1,7 @@
 import type { ToolSet } from 'ai';
 
 import type { SnsCredentials } from '../../config.js';
+import type { IActionLedgerStore } from '../../life/action-ledger.js';
 import type { ExperienceRecorder } from '../../life/recorder.js';
 import { isReservedSkillName } from '../../skill/reserved.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
@@ -22,6 +23,7 @@ export interface AvailableGatedToolSources {
   reportError?: ((message: string) => void) | undefined;
   evaluatedUsers?: Set<string> | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
+  actionLedger?: IActionLedgerStore | undefined;
 }
 
 export function buildGatedToolSets(
@@ -96,6 +98,7 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
       ...(availableToolSources.evaluateUser != null ? { evaluateUser: availableToolSources.evaluateUser } : {}),
       ...(availableToolSources.reportError != null ? { reportError: availableToolSources.reportError } : {}),
       ...(availableToolSources.experienceRecorder != null ? { experienceRecorder: availableToolSources.experienceRecorder } : {}),
+      ...(availableToolSources.actionLedger != null ? { actionLedger: availableToolSources.actionLedger } : {}),
       evaluatedUsers: availableToolSources.evaluatedUsers ?? new Set<string>(),
     });
     Object.assign(allGatedTools, providerTools);

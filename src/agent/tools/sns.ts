@@ -2,6 +2,7 @@ import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 
 import type { SnsCredentials } from '../../config.js';
+import type { IActionLedgerStore } from '../../life/action-ledger.js';
 import { normalizeSnsOwnAction } from '../../life/normalize.js';
 import type { ExperienceRecorder } from '../../life/recorder.js';
 import { createSnsProvider } from '../../sns/index.js';
@@ -58,6 +59,8 @@ export interface CreateSnsToolsOptions {
   reportError?: (message: string) => void;
   evaluatedUsers?: Set<string> | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
+  /** M6: 話題偏り検出用の頻度台帳（bucket=topic に投稿話題を記録） */
+  actionLedger?: IActionLedgerStore | undefined;
 }
 
 function formatError(error: unknown): string {
@@ -152,6 +155,22 @@ function trackThread(
   }
 }
 
+/**
+ * 投稿本文から話題キーを決定論で抽出する（LLM 不要）。
+ * ハッシュタグを優先し、無ければ本文冒頭を丸めたキーを使う。
+ */
+export function extractPostTopics(text: string): string[] {
+  const hashtags = [...text.matchAll(/#([^\s#]{1,30})/gu)].map((match) => match[1]!.toLowerCase());
+  if (hashtags.length > 0) {
+    return [...new Set(hashtags)].slice(0, 3);
+  }
+  const normalized = text.replace(/https?:\/\/\S+/g, '').replace(/\s+/g, '').trim();
+  if (normalized.length === 0) {
+    return [];
+  }
+  return [[...normalized].slice(0, 12).join('')];
+}
+
 function assertSupportedVisibility(provider: SnsCredentials['provider'], visibility: z.infer<typeof visibilitySchema>): void {
   if (provider === 'x' && visibility !== 'public') {
     throw new Error('X only supports public visibility');
@@ -201,6 +220,17 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       receivedAt: new Date(),
     }));
   };
+  const recordPostTopics = (text: string): void => {
+    if (options.actionLedger == null) {
+      return;
+    }
+    const occurredAt = new Date();
+    for (const topic of extractPostTopics(text)) {
+      void options.actionLedger.increment('topic', topic, occurredAt).catch((error: unknown) => {
+        logger.warn('Failed to record SNS post topic', { error });
+      });
+    }
+  };
 
   const tools: ToolSet = {
     [toolName('post')]: tool({
@@ -234,6 +264,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
           visibility: input.visibility,
         });
         const warning = await safeRecord('sns_post', () => options.activityStore?.recordPost(result.id, input.text, input.reply_to_id, input.quote_post_id) ?? Promise.resolve(), options.reportError);
+        recordPostTopics(input.text);
         recordOwnAction('post', {
           post_id: result.id,
           text: input.text,

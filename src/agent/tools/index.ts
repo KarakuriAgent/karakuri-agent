@@ -53,6 +53,9 @@ export interface CreateAgentToolsOptions {
   experienceRecorder?: ExperienceRecorder | undefined;
   retrievalService?: EpisodeRetrievalService | undefined;
   prospectStore?: IProspectStore | undefined;
+  actionLedger?: import('../../life/action-ledger.js').IActionLedgerStore | undefined;
+  beliefStore?: import('../../life/beliefs.js').IBeliefStore | undefined;
+  relationStore?: import('../../life/relations.js').IRelationStore | undefined;
   timezone?: string | undefined;
 }
 
@@ -81,6 +84,9 @@ export function createAgentTools({
   experienceRecorder,
   retrievalService,
   prospectStore,
+  actionLedger,
+  beliefStore,
+  relationStore,
   timezone,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
@@ -106,7 +112,7 @@ export function createAgentTools({
       : {}),
     ...(userStore != null
       ? {
-          userLookup: createUserLookupTool({ userStore }),
+          userLookup: createUserLookupTool({ userStore, beliefStore, relationStore }),
         }
       : {}),
     ...(shouldExposePostMessage && messageSink != null
@@ -167,6 +173,7 @@ export function createAgentTools({
     reportError,
     evaluatedUsers,
     experienceRecorder,
+    actionLedger,
   });
   // Auto-loaded skills have their gated tools registered immediately.
   // loadSkill.execute() also mutates this tools object to dynamically register
