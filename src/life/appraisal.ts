@@ -32,6 +32,7 @@ import {
   type SleepTransition,
 } from './inner-state.js';
 import { openLifeDatabase } from './db.js';
+import type { IProspectStore } from './prospects.js';
 import type { SegmentationEngine } from './segmentation.js';
 import { LIFE_TUNING, type LifeTuning } from './tuning.js';
 import type { NormalizedEvent } from './types.js';
@@ -350,6 +351,8 @@ export interface AppraisalServiceOptions {
   now?: () => Date;
   /** M3: エピソード分節化エンジン。設定時は appraisal 出力の segmentation を記銘に接続する */
   segmentation?: SegmentationEngine | undefined;
+  /** M5: 展望記憶ストア。設定時は appraisal の prospect_candidates を登録する */
+  prospectStore?: IProspectStore | undefined;
 }
 
 interface DailyStats {
@@ -437,6 +440,28 @@ export class AppraisalService {
             channel: event.channel,
             kind: event.kind,
           });
+        }
+      }
+
+      // 展望記憶（M5）: 約束・予定・目標の登録。失敗は状態更新に波及させない
+      if (this.options.prospectStore != null) {
+        for (const candidate of guarded.prospectCandidates) {
+          try {
+            const body = candidate.body.trim();
+            if (body.length === 0 || await this.options.prospectStore.hasOpenWithBody(body)) {
+              continue;
+            }
+            await this.options.prospectStore.insert({
+              kind: candidate.kind,
+              body,
+              ...(candidate.counterpart != null ? { counterpart: candidate.counterpart } : {}),
+              ...(candidate.due_at != null ? { dueAt: candidate.due_at } : {}),
+              provenance: eventId != null ? [eventId] : [],
+              procVersion: this.options.procVersion,
+            });
+          } catch (error) {
+            logger.warn('Failed to record prospect candidate', error);
+          }
         }
       }
 

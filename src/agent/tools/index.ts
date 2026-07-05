@@ -2,6 +2,7 @@ import type { ToolSet } from 'ai';
 
 import type { SnsCredentials } from '../../config.js';
 import type { ExperienceRecorder } from '../../life/recorder.js';
+import type { IProspectStore } from '../../life/prospects.js';
 import type { EpisodeRetrievalService } from '../../life/retrieval.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
@@ -16,6 +17,7 @@ import { buildGatedToolSets } from './gated-tools.js';
 import { createLoadSkillTool } from './load-skill.js';
 import { createManageCronTool } from './manage-cron.js';
 import { createPostMessageTool } from './post-message.js';
+import { createProspectReminderTool } from './prospect-reminder.js';
 import { createRecallDiaryTool } from './recall-diary.js';
 import { createRecallEpisodesTool } from './recall-episodes.js';
 import { createLinkUserTool, createUnlinkUserTool } from './user-alias.js';
@@ -50,6 +52,8 @@ export interface CreateAgentToolsOptions {
   evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
   retrievalService?: EpisodeRetrievalService | undefined;
+  prospectStore?: IProspectStore | undefined;
+  timezone?: string | undefined;
 }
 
 export function createAgentTools({
@@ -76,6 +80,8 @@ export function createAgentTools({
   evaluateUser,
   experienceRecorder,
   retrievalService,
+  prospectStore,
+  timezone,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
@@ -128,6 +134,19 @@ export function createAgentTools({
       ? {
           linkUser: createLinkUserTool({ userStore: userStore!, adminUserIds, userId }),
           unlinkUser: createUnlinkUserTool({ userStore: userStore!, adminUserIds, userId }),
+        }
+      : {}),
+    // 展望記憶のリマインダー型自己登録（M5）。manageCron と違い admin-gated ではないが、
+    // 「prospect を時刻 T に想起する」形に限定される（prospect-reminder.ts 参照）
+    ...(!kwMode && schedulerStore != null && prospectStore != null
+      ? {
+          scheduleProspectReminder: createProspectReminderTool({
+            schedulerStore,
+            prospectStore,
+            timezone: timezone ?? 'Asia/Tokyo',
+            messageSink,
+            reportChannelId,
+          }),
         }
       : {}),
   };

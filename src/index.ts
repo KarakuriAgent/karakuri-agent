@@ -21,6 +21,7 @@ import { importLegacyStores, importSeedMemories } from './life/seed.js';
 import { EpisodeEmbeddingIndex, OpenAiEmbeddingProvider } from './life/embeddings.js';
 import { SqliteEpisodeStore } from './life/episodes.js';
 import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
+import { SqliteProspectStore } from './life/prospects.js';
 import { EpisodeRetrievalService } from './life/retrieval.js';
 import { SegmentationEngine } from './life/segmentation.js';
 import { buildAppraisalProcVersion } from './life/tuning.js';
@@ -181,6 +182,8 @@ async function main(): Promise<void> {
   // M4: 自伝的階層（narratives）・信念（beliefs）・省察エンジン・seed / 既存データ移行
   const narrativeStore = new SqliteNarrativeStore({ db: lifeDb });
   const beliefStore = new SqliteBeliefStore({ db: lifeDb });
+  // M5: 展望記憶（約束・予定・目標）
+  const prospectStore = new SqliteProspectStore({ db: lifeDb });
   try {
     await importSeedMemories({
       db: lifeDb,
@@ -218,6 +221,7 @@ async function main(): Promise<void> {
           narrativeStore,
           beliefStore,
           innerStateService,
+          prospectStore,
           timezone: config.timezone,
           providerOptions: noThinkingProviderOptions(reflectionSelector.api),
         });
@@ -249,6 +253,7 @@ async function main(): Promise<void> {
           timezone: config.timezone,
           providerOptions: noThinkingProviderOptions(appraisalSelector.api),
           segmentation: segmentationEngine,
+          prospectStore,
           ...(messageSink != null ? { messageSink } : {}),
           ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
         });
@@ -310,6 +315,7 @@ async function main(): Promise<void> {
     retrievalService,
     narrativeStore,
     beliefStore,
+    prospectStore,
   });
   for (const credentials of (config.snsList ?? [])) {
     const provider = credentials.provider;
@@ -403,6 +409,7 @@ async function main(): Promise<void> {
             episodeStore.close(),
             narrativeStore.close(),
             beliefStore.close(),
+            prospectStore.close(),
           ]).then(() => {
             if (lifeDb.open) {
               lifeDb.close();

@@ -73,6 +73,8 @@ const configSchema = z.object({
   recallInjectionEnabled: z.string().trim().optional(),
   reflectionEnabled: z.string().trim().optional(),
   selfImageInjectionEnabled: z.string().trim().optional(),
+  drivesInjectionEnabled: z.string().trim().optional(),
+  prospectsInjectionEnabled: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -161,6 +163,10 @@ export interface Config {
   reflectionEnabled: boolean;
   /** M4: 自己像（self beliefs）の自己語り注入の有効化 */
   selfImageInjectionEnabled: boolean;
+  /** M5: 欲求・飽き圧注入の有効化 */
+  drivesInjectionEnabled: boolean;
+  /** M5: 展望記憶（約束・予定・目標）注入の有効化 */
+  prospectsInjectionEnabled: boolean;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -232,6 +238,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     recallInjectionEnabled: env.RECALL_INJECTION_ENABLED,
     reflectionEnabled: env.REFLECTION_ENABLED,
     selfImageInjectionEnabled: env.SELF_IMAGE_INJECTION_ENABLED,
+    drivesInjectionEnabled: env.DRIVES_INJECTION_ENABLED,
+    prospectsInjectionEnabled: env.PROSPECTS_INJECTION_ENABLED,
   };
 
   try {
@@ -381,6 +389,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       recallInjectionEnabled: parseBooleanEnv(parsed.recallInjectionEnabled, 'RECALL_INJECTION_ENABLED', true),
       reflectionEnabled: parseBooleanEnv(parsed.reflectionEnabled, 'REFLECTION_ENABLED', true),
       selfImageInjectionEnabled: parseBooleanEnv(parsed.selfImageInjectionEnabled, 'SELF_IMAGE_INJECTION_ENABLED', true),
+      drivesInjectionEnabled: parseBooleanEnv(parsed.drivesInjectionEnabled, 'DRIVES_INJECTION_ENABLED', true),
+      prospectsInjectionEnabled: parseBooleanEnv(parsed.prospectsInjectionEnabled, 'PROSPECTS_INJECTION_ENABLED', true),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,

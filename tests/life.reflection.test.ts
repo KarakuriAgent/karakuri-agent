@@ -73,6 +73,7 @@ function makeDailyOutput(overrides: Partial<DailyReflectionOutput> = {}): DailyR
     new_beliefs: [],
     revisions: [],
     deactivations: [],
+    prospect_updates: [],
     ...overrides,
   };
 }
@@ -178,6 +179,52 @@ describe('ReflectionEngine.runDaily', () => {
     expect(result?.demotedSingleSource).toBe(1);
     const active = await env.beliefStore.listActive({ kind: 'world_fact' });
     expect(active[0]!.confidence).toBeLessThanOrEqual(SINGLE_SOURCE_CONFIDENCE_CAP);
+  });
+
+  it('takes stock of prospects and lowers mood for abandoned promises (M5)', async () => {
+    const env = await createEnv();
+    const { SqliteProspectStore } = await import('../src/life/prospects.js');
+    const prospectStore = new SqliteProspectStore({ db: env.db });
+    const fulfilledId = await prospectStore.insert({ kind: 'promise', body: 'Bさんと映画を観る', provenance: [1], procVersion: 'test' });
+    const abandonedId = await prospectStore.insert({ kind: 'intention', body: '観光に行く', provenance: [2], procVersion: 'test' });
+    await env.episodeStore.insert({
+      occurredAt: '2026-07-05T10:00:00.000Z',
+      channel: 'kw:bot-1',
+      body: 'Bさんと映画を観た。',
+      importance: 0.6,
+      participants: [],
+      provenance: [1],
+      procVersion: 'test',
+    });
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      innerStateService: env.innerStateService,
+      prospectStore,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: stubGenerateTextFn(makeDailyOutput({
+        mood_repair: 'none',
+        prospect_updates: [
+          { prospect_id: fulfilledId, status: 'fulfilled' },
+          { prospect_id: abandonedId, status: 'abandoned' },
+        ],
+      })),
+    });
+
+    const now = new Date('2026-07-05T14:00:00.000Z');
+    const result = await engine.runDaily('2026-07-05', now);
+
+    expect(result?.prospectsFulfilled).toBe(1);
+    expect(result?.prospectsAbandoned).toBe(1);
+    expect((await prospectStore.getById(fulfilledId))?.status).toBe('fulfilled');
+    expect((await prospectStore.getById(abandonedId))?.status).toBe('abandoned');
+    // 果たせなかった約束は気分へ影響する（マイナス）
+    const state = await env.innerStateService.getCurrent(now);
+    expect(state.valence).toBeLessThan(0);
   });
 
   it('rejects non-declarative reflection outputs', async () => {

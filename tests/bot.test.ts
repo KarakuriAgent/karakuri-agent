@@ -96,6 +96,8 @@ const baseConfig: Config = {
   recallInjectionEnabled: true,
   reflectionEnabled: true,
   selfImageInjectionEnabled: true,
+  drivesInjectionEnabled: true,
+  prospectsInjectionEnabled: true,
 };
 
 const agentStub: IAgent = {

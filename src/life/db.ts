@@ -196,6 +196,25 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       CREATE INDEX idx_beliefs_subject ON beliefs(subject, active);
     `,
   },
+  {
+    version: 6,
+    up: `
+      -- 展望記憶（約束・意図・目標）。status は省察の棚卸しによる状態遷移（経路依存）
+      CREATE TABLE prospects (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT NOT NULL,
+        body         TEXT NOT NULL,
+        counterpart  TEXT,
+        due_at       TEXT,
+        status       TEXT NOT NULL DEFAULT 'open',
+        provenance   TEXT NOT NULL,
+        proc_version TEXT NOT NULL,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+      CREATE INDEX idx_prospects_status ON prospects(status, due_at);
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {
