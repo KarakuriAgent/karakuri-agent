@@ -56,6 +56,13 @@ export interface IEpisodeStore {
   updateBuoyancy(id: number, buoyancy: number): Promise<void>;
   /** 忘却 = 浮力の減衰。削除はしない（一次資料は不変） */
   decayBuoyancy(beforeIso: string, factor: number, floor?: number): Promise<number>;
+  /**
+   * M7 reprocessing 用: 期間内の導出エピソードを破棄する（episodes は導出ビューであり
+   * 一次資料ではないため削除できる）。削除した id を返す
+   */
+  deleteByPeriod(fromIso: string, toIso: string): Promise<number[]>;
+  /** M7 reprocessing 用: 全ドラフトを破棄する（リプレイで再構築される） */
+  clearDrafts(): Promise<number>;
   // ドラフト操作
   getDraft(channel: string, threadKey: string): Promise<EpisodeDraft | null>;
   listDrafts(): Promise<EpisodeDraft[]>;
@@ -155,6 +162,38 @@ export class SqliteEpisodeStore implements IEpisodeStore {
       ORDER BY occurred_at ASC, id ASC
     `).all(fromIso, toIso);
     return Promise.resolve(rows.map(mapEpisodeRow));
+  }
+
+  async deleteByPeriod(fromIso: string, toIso: string): Promise<number[]> {
+    const rows = this.db.prepare<[string, string], { id: number }>(
+      'SELECT id FROM episodes WHERE occurred_at >= ? AND occurred_at <= ?',
+    ).all(fromIso, toIso);
+    const ids = rows.map((row) => row.id);
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const remove = this.db.transaction(() => {
+      const deleteEpisode = this.db.prepare('DELETE FROM episodes WHERE id = ?');
+      const deletePending = this.db.prepare('DELETE FROM episode_embedding_pending WHERE episode_id = ?');
+      for (const id of ids) {
+        deleteEpisode.run(id);
+        deletePending.run(id);
+        // episodes_vec は拡張未ロード環境では存在しないことがある
+        try {
+          this.db.prepare('DELETE FROM episodes_vec WHERE episode_id = ?').run(BigInt(id));
+        } catch {
+          // vec テーブルなし: 何もしない
+        }
+      }
+    });
+    remove();
+    return ids;
+  }
+
+  async clearDrafts(): Promise<number> {
+    const result = this.db.prepare('DELETE FROM episode_drafts').run();
+    return Promise.resolve(result.changes);
   }
 
   async decayBuoyancy(beforeIso: string, factor: number, floor = 0.05): Promise<number> {

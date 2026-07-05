@@ -109,6 +109,25 @@ export class SqliteExperienceLogStore implements IExperienceLogStore {
     }));
   }
 
+  async listBetween(fromIso: string, toIso: string, limit = 10_000): Promise<ExperienceLogRecord[]> {
+    const rows = this.db.prepare<[string, string, number], ExperienceLogRow>(`
+      SELECT id, received_at, channel, kind, actor, payload
+      FROM experience_log
+      WHERE received_at >= ? AND received_at <= ?
+      ORDER BY id ASC
+      LIMIT ?
+    `).all(fromIso, toIso, Math.max(0, limit));
+
+    return rows.map((row) => ({
+      id: row.id,
+      receivedAt: row.received_at,
+      channel: row.channel,
+      kind: row.kind,
+      actor: row.actor,
+      payload: row.payload,
+    }));
+  }
+
   async count(): Promise<number> {
     return Promise.resolve(this.countStatement.get()?.count ?? 0);
   }

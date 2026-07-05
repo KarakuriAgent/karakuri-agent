@@ -63,6 +63,8 @@ export interface IExperienceLogStore {
   append(event: NormalizedEvent): Promise<number>;
   /** 新しい順。M1 の Perception Buffer 復元・テスト用の最小読み出し */
   getRecent(limit: number, filter?: ExperienceLogFilter): Promise<ExperienceLogRecord[]>;
+  /** 古い順の区間読み出し（M7 reprocessing / 区間リプレイ用） */
+  listBetween(fromIso: string, toIso: string, limit?: number): Promise<ExperienceLogRecord[]>;
   count(): Promise<number>;
   close(): Promise<void>;
 }

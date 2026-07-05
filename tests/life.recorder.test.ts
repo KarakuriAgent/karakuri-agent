@@ -17,6 +17,7 @@ function createStore(overrides: Partial<IExperienceLogStore> = {}): IExperienceL
   return {
     append: vi.fn().mockResolvedValue(1),
     getRecent: vi.fn().mockResolvedValue([]),
+    listBetween: vi.fn().mockResolvedValue([]),
     count: vi.fn().mockResolvedValue(0),
     close: vi.fn().mockResolvedValue(undefined),
     ...overrides,
