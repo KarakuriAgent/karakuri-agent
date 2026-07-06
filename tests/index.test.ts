@@ -48,6 +48,7 @@ describe('handleRequest', () => {
       llmApiKey: 'main-key',
       llmBaseUrl: 'https://main.example/v1',
       llmModelSelector: parseModelSelector('openai/chat/gpt-4o'),
+      llmDisableThinkingRequestParam: true,
       postResponseLlmApiKey: 'post-key',
       postResponseLlmBaseUrl: 'https://post.example/v1',
       postResponseLlmModelSelector: parseModelSelector('openai/gpt-4.1'),

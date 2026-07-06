@@ -28,7 +28,18 @@ export interface SnsRepostActivity {
 
 export type SnsActivity = SnsPostActivity | SnsLikeActivity | SnsRepostActivity;
 
-export interface ISnsActivityStore {
+/** M8: レート制限の集計対象となる書き込みアクション種別（reply は type='post' + reply_to_id で判別） */
+export type SnsWriteActionKind = 'post' | 'reply' | 'like' | 'repost';
+
+/** M8: 書き込みアクションの sliding window 集計（レート制限のカウンタ。状態は活動ログが持つ） */
+export interface ISnsWriteActivityCounter {
+  /** since 以降の件数と、ウィンドウ内最古の実行時刻（次回可能時刻の計算用） */
+  countWriteActionsSince(kind: SnsWriteActionKind, since: Date): Promise<{ count: number; earliestAt: string | null }>;
+  /** 同種アクションの直近実行時刻（最小間隔の判定用） */
+  getLastWriteActionAt(kind: SnsWriteActionKind): Promise<string | null>;
+}
+
+export interface ISnsActivityStore extends Partial<ISnsWriteActivityCounter> {
   recordPost(postId: string, text: string, replyToId?: string, quotePostId?: string): Promise<void>;
   recordLike(postId: string): Promise<void>;
   recordRepost(postId: string): Promise<void>;

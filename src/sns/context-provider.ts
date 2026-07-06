@@ -2,6 +2,7 @@ import type { AppraisalService } from '../life/appraisal.js';
 import { normalizeSnsNotification } from '../life/normalize.js';
 import type { ExperienceRecorder } from '../life/recorder.js';
 import type { SkillContextProvider, SkillContextResult } from '../skill/context-provider.js';
+import type { SnsRateLimiter } from './rate-limiter.js';
 import type {
   ISnsActivityStore,
   NotificationFetchResult,
@@ -25,6 +26,8 @@ export interface SnsSkillContextProviderOptions {
   experienceRecorder?: ExperienceRecorder | undefined;
   /** M6: SNS 反応の appraisal 入力（応答先行 → appraisal 事後の非同期経路） */
   appraisalService?: AppraisalService | undefined;
+  /** M8: 読み取り系フェッチの最小間隔（間隔内は再フェッチせず「確認済み」を返す） */
+  rateLimiter?: SnsRateLimiter | undefined;
 }
 
 const logger = createLogger('SnsSkillContextProvider');
@@ -45,9 +48,15 @@ export class SnsSkillContextProvider implements SkillContextProvider {
   async getContext(): Promise<SkillContextResult> {
     return this.mutex.runExclusive('sns-skill-context', async () => {
       const sinceId = await this.options.activityStore.getLastNotificationId();
+      // M8: 読み取り系フェッチのスロットル。最小間隔内は再フェッチせず、
+      // 通知は「確認済み」扱い（体験記録・カーソル操作もスキップ）、トレンドはキャッシュ表示
       const [notificationsResult, trendsResult, activitiesResult] = await Promise.allSettled([
-        this.loadNotifications(sinceId),
-        this.options.snsProvider.getTrends(this.trendLimit),
+        this.options.rateLimiter != null
+          ? this.options.rateLimiter.throttleFetch('notifications', () => this.loadNotifications(sinceId))
+          : this.loadNotifications(sinceId).then((value) => ({ value, cached: false as const, fetchedAt: new Date() })),
+        this.options.rateLimiter != null
+          ? this.options.rateLimiter.throttleFetch('trends', () => this.options.snsProvider.getTrends(this.trendLimit))
+          : this.options.snsProvider.getTrends(this.trendLimit).then((value) => ({ value, cached: false as const, fetchedAt: new Date() })),
         this.options.activityStore.getRecentActivities(this.recentActivityLimit),
       ]);
 
@@ -56,8 +65,11 @@ export class SnsSkillContextProvider implements SkillContextProvider {
       let latestNotificationId: string | undefined;
       let notificationReservationToken: string | undefined;
 
-      if (notificationsResult.status === 'fulfilled') {
-        const { notifications, complete } = notificationsResult.value;
+      if (notificationsResult.status === 'fulfilled' && notificationsResult.value.cached) {
+        // 間隔内の再確認: 前回取得分は既に記録・提示済みなので「確認済み」だけ伝える
+        sections.push(`## 新着通知\n- （${formatMinutesAgo(notificationsResult.value.fetchedAt)}に確認済み。新しい確認はもう少し時間をおいてから）`);
+      } else if (notificationsResult.status === 'fulfilled') {
+        const { notifications, complete } = notificationsResult.value.value;
         // 体験ログ（一次資料）へ届いた通知を逐語記録する。turn が abort されると
         // カーソルが戻り同じ通知を再取得しうるが、raw ログの重複は許容する
         // （kind / actor 同様、重複解決は後段・reprocessing の仕事）。
@@ -94,7 +106,7 @@ export class SnsSkillContextProvider implements SkillContextProvider {
       }
 
       if (trendsResult.status === 'fulfilled') {
-        sections.push(formatTrends(trendsResult.value));
+        sections.push(formatTrends(trendsResult.value.value));
       } else {
         logger.error('Failed to load SNS trends for context', trendsResult.reason);
         sections.push(`## トレンド\n[ERROR: トレンドの取得に失敗しました: ${formatContextError(trendsResult.reason)}]`);
@@ -194,6 +206,11 @@ export class SnsSkillContextProvider implements SkillContextProvider {
 
     return result;
   }
+}
+
+function formatMinutesAgo(fetchedAt: Date): string {
+  const minutes = Math.max(0, Math.round((Date.now() - fetchedAt.getTime()) / 60_000));
+  return minutes <= 0 ? 'たった今' : `${minutes} 分前`;
 }
 
 function formatContextError(error: unknown): string {

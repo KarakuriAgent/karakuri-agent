@@ -6,8 +6,9 @@ import type { IActionLedgerStore } from '../../life/action-ledger.js';
 import { normalizeSnsOwnAction } from '../../life/normalize.js';
 import type { ExperienceRecorder } from '../../life/recorder.js';
 import { createSnsProvider } from '../../sns/index.js';
-import { buildLikeLockKey, buildQuoteLockKey, buildReplyLockKey, buildRepostLockKey, runWithSnsActionLocks } from '../../sns/action-locks.js';
-import type { ISnsActivityStore, SnsPost } from '../../sns/types.js';
+import { buildLikeLockKey, buildQuoteLockKey, buildReplyLockKey, buildRepostLockKey, buildWriteGateLockKey, runWithSnsActionLocks } from '../../sns/action-locks.js';
+import type { SnsRateLimiter } from '../../sns/rate-limiter.js';
+import type { ISnsActivityStore, SnsPost, SnsWriteActionKind } from '../../sns/types.js';
 import type { IUserStore } from '../../user/types.js';
 import { createLogger } from '../../utils/logger.js';
 import { httpUrlSchema, type LookupFn } from '../../utils/safe-fetch.js';
@@ -61,6 +62,8 @@ export interface CreateSnsToolsOptions {
   experienceRecorder?: ExperienceRecorder | undefined;
   /** M6: 話題偏り検出用の頻度台帳（bucket=topic に投稿話題を記録） */
   actionLedger?: IActionLedgerStore | undefined;
+  /** M8: 書き込みアクションの決定論レート制限（未設定なら制限なし） */
+  rateLimiter?: SnsRateLimiter | undefined;
 }
 
 function formatError(error: unknown): string {
@@ -212,6 +215,20 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     logger.warn('SNS activity store is not configured; duplicate prevention is disabled');
   }
 
+  // M8: 書き込みレート制限のハードゲート。拒否は「プラットフォームの仕様」として
+  // 事実だけ返す（エージェントの内発的感情を捏造しない）。null なら実行可
+  const checkRateLimit = async (kind: SnsWriteActionKind): Promise<{ status: 'rate_limited'; message: string } | null> => {
+    if (options.rateLimiter == null) {
+      return null;
+    }
+    const gate = await options.rateLimiter.checkWrite(kind);
+    if (gate.allowed) {
+      return null;
+    }
+    logger.info('SNS write action rate-limited', { provider: snsProviderType, kind });
+    return { status: 'rate_limited' as const, message: gate.message };
+  };
+
   const recordOwnAction = (action: string, detail: unknown): void => {
     options.experienceRecorder?.record(normalizeSnsOwnAction({
       provider: snsProviderType,
@@ -234,15 +251,21 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
   const tools: ToolSet = {
     [toolName('post')]: tool({
-      description: `${snsProviderType} に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに { status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? } を返す。`,
+      description: `${snsProviderType} に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに { status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? } を返す。プラットフォームのレート制限中は { status: "rate_limited", message } を返す。`,
       inputSchema: snsPostInputSchema,
       execute: async (input) => executeSafely(toolName('post'), async () => runWithSnsActionLocks([
         input.reply_to_id != null ? buildReplyLockKey(snsProviderType, input.reply_to_id) : '',
         input.quote_post_id != null ? buildQuoteLockKey(snsProviderType, input.quote_post_id) : '',
+        // レート制限のゲート判定〜活動ログ記録を provider 単位で直列化（並列ツール呼び出し対策）
+        options.rateLimiter != null ? buildWriteGateLockKey(snsProviderType) : '',
       ], async () => {
         assertSupportedVisibility(snsProviderType, input.visibility);
         assertProviderSupportsMedia(snsProviderType, input.media_ids);
         assertProviderSupportsQuote(snsProviderType, input.quote_post_id);
+        const rateLimited = await checkRateLimit(input.reply_to_id != null ? 'reply' : 'post');
+        if (rateLimited != null) {
+          return rateLimited;
+        }
         if (input.reply_to_id != null) {
           const alreadyReplied = await safeCheck('hasReplied', () => options.activityStore?.hasReplied(input.reply_to_id!) ?? Promise.resolve(false));
           if (alreadyReplied) {
@@ -285,9 +308,13 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       }),
     }),
     [toolName('like')]: tool({
-      description: `${snsProviderType} の指定した投稿にいいねする。重複防止で既に処理済みなら投稿オブジェクトの代わりに { status: "skipped", reason: "already_liked", post_id } を返す。`,
+      description: `${snsProviderType} の指定した投稿にいいねする。重複防止で既に処理済みなら投稿オブジェクトの代わりに { status: "skipped", reason: "already_liked", post_id } を返す。プラットフォームのレート制限中は { status: "rate_limited", message } を返す。`,
       inputSchema: snsLikeInputSchema,
-      execute: async (input) => executeSafely(toolName('like'), async () => runWithSnsActionLocks([buildLikeLockKey(snsProviderType, input.post_id)], async () => {
+      execute: async (input) => executeSafely(toolName('like'), async () => runWithSnsActionLocks([buildLikeLockKey(snsProviderType, input.post_id), options.rateLimiter != null ? buildWriteGateLockKey(snsProviderType) : ''], async () => {
+        const rateLimited = await checkRateLimit('like');
+        if (rateLimited != null) {
+          return rateLimited;
+        }
         const alreadyLiked = await safeCheck('hasLiked', () => options.activityStore?.hasLiked(input.post_id) ?? Promise.resolve(false));
         if (alreadyLiked) {
           return { status: 'skipped' as const, reason: 'already_liked' as const, post_id: input.post_id };
@@ -301,9 +328,13 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       })),
     }),
     [toolName('repost')]: tool({
-      description: `${snsProviderType} の指定した投稿をリポストする。重複防止で既に処理済みなら投稿オブジェクトの代わりに { status: "skipped", reason: "already_reposted", post_id } を返す。`,
+      description: `${snsProviderType} の指定した投稿をリポストする。重複防止で既に処理済みなら投稿オブジェクトの代わりに { status: "skipped", reason: "already_reposted", post_id } を返す。プラットフォームのレート制限中は { status: "rate_limited", message } を返す。`,
       inputSchema: snsRepostInputSchema,
-      execute: async (input) => executeSafely(toolName('repost'), async () => runWithSnsActionLocks([buildRepostLockKey(snsProviderType, input.post_id)], async () => {
+      execute: async (input) => executeSafely(toolName('repost'), async () => runWithSnsActionLocks([buildRepostLockKey(snsProviderType, input.post_id), options.rateLimiter != null ? buildWriteGateLockKey(snsProviderType) : ''], async () => {
+        const rateLimited = await checkRateLimit('repost');
+        if (rateLimited != null) {
+          return rateLimited;
+        }
         const alreadyReposted = await safeCheck('hasReposted', () => options.activityStore?.hasReposted(input.post_id) ?? Promise.resolve(false));
         if (alreadyReposted) {
           return { status: 'skipped' as const, reason: 'already_reposted' as const, post_id: input.post_id };

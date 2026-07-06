@@ -43,13 +43,25 @@
 | `HEARTBEAT_INTERVAL_MINUTES` |  | `120` | Heartbeat scheduler の実行間隔（API コスト削減のため長めの既定値） |
 | `MEMORY_MAINTENANCE_INTERVAL_MINUTES` |  | - | メモリメンテナンス専用ループの実行間隔（分）。設定時のみ有効 |
 | `MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` |  | `30` | メモリメンテナンスが diary 本文を読み込む日数。全 diary 日付一覧は常に参照しつつ、より古い本文も見せたい場合に広げる |
-| `SNS_LOOP_MIN_INTERVAL_MINUTES` |  | `60` | SNS 専用ループの最短実行間隔（分） |
-| `SNS_LOOP_MAX_INTERVAL_MINUTES` |  | `180` | SNS 専用ループの最長実行間隔（分）。`MIN` 以上である必要がある |
+| `KW_COMMAND_CHECK_PHONE` |  | - | M8: KW カスタムコマンド名（スマホを見て返事をする）。設定時にチャット未読キュー化が有効になる |
+| `KW_COMMAND_BROWSE_SNS` |  | - | M8: KW カスタムコマンド名（SNS を眺める） |
+| `KW_COMMAND_POST_SNS` |  | - | M8: KW カスタムコマンド名（近況を投稿する） |
+| `SNS_RATE_LIMIT_POST_PER_HOUR` |  | `3` | M8: 投稿の 1 時間上限（共通既定。0 で禁止） |
+| `SNS_RATE_LIMIT_POST_PER_DAY` |  | `20` | M8: 投稿の 24 時間上限 |
+| `SNS_RATE_LIMIT_POST_MIN_INTERVAL_MINUTES` |  | `15` | M8: 投稿の最小間隔（分。ウィンドウ境界バースト防止） |
+| `SNS_RATE_LIMIT_REPLY_PER_HOUR` |  | `10` | M8: リプライの 1 時間上限 |
+| `SNS_RATE_LIMIT_LIKE_PER_HOUR` |  | `30` | M8: いいねの 1 時間上限 |
+| `SNS_RATE_LIMIT_REPOST_PER_HOUR` |  | `10` | M8: リポストの 1 時間上限 |
+| `<PROVIDER>_RATE_LIMIT_*` |  | - | M8: provider 別上書き（`X_RATE_LIMIT_POST_PER_DAY` 等。prefix は `MASTODON` / `X` / `ELYTH`） |
+| `SNS_FETCH_MIN_INTERVAL_NOTIFICATIONS_MINUTES` |  | `10` | M8: 通知フェッチの最小間隔（分。間隔内はキャッシュ返却） |
+| `SNS_FETCH_MIN_INTERVAL_TIMELINE_MINUTES` |  | `30` | M8: タイムラインフェッチの最小間隔（分） |
+| `SNS_FETCH_MIN_INTERVAL_TRENDS_MINUTES` |  | `60` | M8: トレンドフェッチの最小間隔（分） |
 | `ALLOWED_CHANNEL_IDS` |  | - | `postMessage` で送信可能なチャンネル ID 一覧（`,` 区切り） |
-| `REPORT_CHANNEL_ID` |  | - | Heartbeat / Cron / memory maintenance / SNS ループの実行レポートや各種診断通知向けの専用チャンネル ID。`allowedChannelIds` には含まれるが `postMessageChannelIds` には自動追加しない |
+| `REPORT_CHANNEL_ID` |  | - | Heartbeat / Cron / memory maintenance / 世界内行為（M8）の実行レポートや各種診断通知向けの専用チャンネル ID。`allowedChannelIds` には含まれるが `postMessageChannelIds` には自動追加しない |
 | `ADMIN_USER_IDS` |  | - | admin-only tool を使えるユーザー ID 一覧（`,` 区切り） |
 | `KARAKURI_WORLD_BOT_IDS` |  | - | KW モード専用の bot ユーザー ID 一覧（`,` 区切り。`ADMIN_USER_IDS` とは独立） |
 | `LLM_ENABLE_THINKING` |  | `true` | `false` / `0` / `no` なら OpenAI 互換 LLM 呼び出しで no-thinking fetch + provider options を使う。通常応答・要約・post-response evaluator に反映される。memory maintenance はこの設定に関係なく常に no-thinking |
+| `LLM_DISABLE_THINKING_REQUEST_PARAM` |  | `false` | `true` / `1` / `yes` なら no-thinking fetch が JSON body に OpenAI 非標準の `enable_thinking: false` を追加する。DashScope/Qwen など必要な互換サーバー向けの opt-in |
 
 ## モデルセレクタ
 
@@ -156,7 +168,7 @@ interface Config {
 `memoryMaintenanceIntervalMinutes` は `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を空文字列なら `undefined` に正規化したうえで保持する。
 `memoryMaintenanceRecentDiaryDays` は `MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` を空文字列なら `undefined` に正規化したうえで保持し、未設定時は runner 側の既定値 30 日を使う。
 `snsList` は provider ごとの必須設定がそろった SNS credentials をすべて保持する。Mastodon は `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`（その他の X OAuth 情報は任意）、ELYTH は `ELYTH_API_KEY` + `ELYTH_API_BASE` が必要。いずれか片方だけの partial provider config は fail-fast で拒否する。旧 `sns` は legacy test fixture 用の deprecated property で、`loadConfig()` は設定しない。旧 `SNS_PROVIDER` / `SNS_*` credentials は読み込まれず、旧 `DATA_DIR/sns-activity.db` の扱いだけ `SNS_LEGACY_DB_MIGRATE_TO` に保持する。
-`llmEnableThinking` は `LLM_ENABLE_THINKING` を boolean に正規化した値で、`false` のときは通常応答・要約・post-response evaluator が no-thinking 設定を使う。memory maintenance は別途常時 no-thinking で実行される。
+`llmEnableThinking` は `LLM_ENABLE_THINKING` を boolean に正規化した値で、`false` のときは通常応答・要約・post-response evaluator が no-thinking 設定を使う。memory maintenance は別途常時 no-thinking で実行される。`llmDisableThinkingRequestParam` は `LLM_DISABLE_THINKING_REQUEST_PARAM` を boolean に正規化した値で、`true` のときだけ OpenAI 非標準の `enable_thinking: false` を送る。
 
 ## `loadConfig()` の動作
 
@@ -168,7 +180,8 @@ function loadConfig(): Config {
   // LLM selector を parse して canonical 形式へ正規化する
   // post-response evaluator 用 selector / endpoint も同様に解決する
   // KARAKURI_WORLD_* は 2 変数の部分設定を fail-fast で拒否する
-  // SNS_LOOP_MIN_INTERVAL_MINUTES <= SNS_LOOP_MAX_INTERVAL_MINUTES を検証する
+  // KW_COMMAND_* は karakuri-world 設定なし・コマンド名重複を fail-fast で拒否する
+  // SNS_RATE_LIMIT_* / <PROVIDER>_RATE_LIMIT_* / SNS_FETCH_MIN_INTERVAL_* は非負数として検証する
   // MEMORY_MAINTENANCE_INTERVAL_MINUTES は空文字列を undefined に正規化して optional number として扱う
   // MEMORY_MAINTENANCE_RECENT_DIARY_DAYS は空文字列を undefined に正規化して optional number として扱う
   // MASTODON_* / X_* / ELYTH_* は provider ごとの部分設定を検出して検証し、完全な provider を snsList に追加する

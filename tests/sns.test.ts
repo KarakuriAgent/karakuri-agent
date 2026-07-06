@@ -86,6 +86,72 @@ describe('sns tools', () => {
     expect(Object.keys(tools)).toEqual(EXPECTED_TOOL_NAMES);
   });
 
+  it('returns rate_limited from the deterministic gate without calling the provider (M8)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const checkWrite = vi.fn(async (kind: string) => ({ allowed: false as const, message: `limited:${kind}`, retryAt: null }));
+    const tools = createSnsTools({
+      ...SNS_OPTIONS,
+      fetch,
+      rateLimiter: { checkWrite } as never,
+    });
+
+    await expect(tools.sns_post!.execute!({ text: 'hi' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:post' });
+    await expect(tools.sns_post!.execute!({ text: 'hi', reply_to_id: 'p1' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:reply' });
+    await expect(tools.sns_like!.execute!({ post_id: 'p1' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:like' });
+    await expect(tools.sns_repost!.execute!({ post_id: 'p1' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:repost' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('serializes the rate-limit gate across parallel write calls (M8 review fix)', async () => {
+    // 残枠 1 の like を 2 件同時に実行しても 1 件しか通らないこと（check-then-act の原子化）
+    const likedAt: string[] = [];
+    const activityStore: ISnsActivityStore = {
+      recordPost: vi.fn(async () => {}),
+      recordLike: vi.fn(async () => {
+        likedAt.push(new Date().toISOString());
+      }),
+      recordRepost: vi.fn(async () => {}),
+      hasLiked: vi.fn(async () => false),
+      hasReposted: vi.fn(async () => false),
+      hasReplied: vi.fn(async () => false),
+      hasQuoted: vi.fn(async () => false),
+      getRecentActivities: vi.fn(async () => []),
+      getLastNotificationId: vi.fn(async () => null),
+      setLastNotificationId: vi.fn(async () => {}),
+      countWriteActionsSince: vi.fn(async () => ({ count: likedAt.length, earliestAt: likedAt[0] ?? null })),
+      getLastWriteActionAt: vi.fn(async () => likedAt.at(-1) ?? null),
+      close: vi.fn(async () => {}),
+    };
+    const { SnsRateLimiter } = await import('../src/sns/rate-limiter.js');
+    const rateLimiter = new SnsRateLimiter({
+      limits: { postPerHour: 5, postPerDay: 5, postMinIntervalMinutes: 0, replyPerHour: 5, likePerHour: 1, repostPerHour: 5 },
+      fetchIntervals: { notificationsMinutes: 0, timelineMinutes: 0, trendsMinutes: 0 },
+      counter: activityStore as never,
+      timezone: 'Asia/Tokyo',
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify(createStatus()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore, rateLimiter });
+
+    const [first, second] = await Promise.all([
+      tools.sns_like!.execute!({ post_id: 'post-a' }, DEFAULT_OPTIONS),
+      tools.sns_like!.execute!({ post_id: 'post-b' }, DEFAULT_OPTIONS),
+    ]);
+
+    const results = [first, second] as Array<Record<string, unknown>>;
+    const limited = results.filter((result) => result.status === 'rate_limited');
+    expect(limited).toHaveLength(1);
+    expect(likedAt).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('posts statuses with reply, quote, media, and visibility parameters', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       new Response(JSON.stringify(createStatus()), {

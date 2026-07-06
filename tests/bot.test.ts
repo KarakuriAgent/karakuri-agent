@@ -84,9 +84,14 @@ const baseConfig: Config = {
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,
-  snsLoopMinIntervalMinutes: 60,
-  snsLoopMaxIntervalMinutes: 180,
+  worldActionCommands: {},
+  snsRateLimits: {
+    defaults: { postPerHour: 3, postPerDay: 20, postMinIntervalMinutes: 15, replyPerHour: 10, likePerHour: 30, repostPerHour: 10 },
+    perProvider: {},
+    fetchIntervals: { notificationsMinutes: 10, timelineMinutes: 30, trendsMinutes: 60 },
+  },
   llmEnableThinking: true,
+  llmDisableThinkingRequestParam: false,
   kwPerceptionBufferEnabled: true,
   loopWarningEnabled: true,
   loopDetectorThreshold: 3,
@@ -514,6 +519,66 @@ describe('createBot', () => {
       'User',
       expect.objectContaining({ userId: 'admin-1' }),
     );
+  });
+
+  it('diverts messages to the unread queue without invoking the agent (M8)', async () => {
+    const handleMessage = vi.fn(async () => 'reply');
+    const agent: IAgent = {
+      handleMessage,
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+    const enqueue = vi.fn(async () => undefined);
+    const bot = createBot(baseConfig, agent, {
+      unreadDiversion: {
+        shouldDivert: (message) => message.author.userId !== 'admin-1',
+        enqueue,
+      },
+    });
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread } = createMockThread();
+
+    // 一般ユーザー → 未読キューへ（即応答なし・投稿なし）
+    await handler(thread, createMessage({ author: { fullName: 'User', userId: 'user-1' } }));
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(handleMessage).not.toHaveBeenCalled();
+    expect(thread.post).not.toHaveBeenCalled();
+
+    // admin → 従来どおり即応答
+    await handler(thread, createMessage({ id: 'message-2', author: { fullName: 'Admin', userId: 'admin-1' } }));
+    expect(handleMessage).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to immediate handling when the unread enqueue fails (M8 review fix)', async () => {
+    const handleMessage = vi.fn(async () => 'reply');
+    const agent: IAgent = {
+      handleMessage,
+      async summarizeSession(): Promise<string> {
+        return 'summary';
+      },
+    };
+    const enqueue = vi.fn(async () => {
+      throw new Error('life.db locked');
+    });
+    const bot = createBot(baseConfig, agent, {
+      unreadDiversion: { shouldDivert: () => true, enqueue },
+    });
+    const chat = bot.chat as unknown as {
+      _getSubscribedMessageHandlers(): ((thread: unknown, message: unknown) => Promise<void>)[];
+    };
+    const handler = chat._getSubscribedMessageHandlers()[0]!;
+    const { thread } = createMockThread();
+
+    await handler(thread, createMessage({ author: { fullName: 'User', userId: 'user-1' } }));
+
+    // キュー登録に失敗してもメッセージは失われず、即時処理へフォールバックする
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(handleMessage).toHaveBeenCalledTimes(1);
   });
 
   it('reports new-message handler errors to the report channel', async () => {

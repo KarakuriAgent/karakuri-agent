@@ -126,6 +126,40 @@ describe('SqliteSnsActivityStore', () => {
 
 
 
+  it('counts write actions per kind for rate limiting (M8)', async () => {
+    const dataDir = createDataDir('rate-counter');
+    await mkdir(dataDir, { recursive: true });
+    let nowIso = '2026-07-06T10:00:00.000Z';
+    const store = new SqliteSnsActivityStore({ dataDir, now: () => new Date(nowIso) });
+
+    await store.recordPost('post-1', 'new post');
+    nowIso = '2026-07-06T10:10:00.000Z';
+    await store.recordPost('post-2', 'reply text', 'target-1');
+    nowIso = '2026-07-06T10:20:00.000Z';
+    await store.recordLike('post-3');
+
+    const since = new Date('2026-07-06T09:30:00.000Z');
+    await expect(store.countWriteActionsSince('post', since)).resolves.toEqual({
+      count: 1,
+      earliestAt: '2026-07-06T10:00:00.000Z',
+    });
+    await expect(store.countWriteActionsSince('reply', since)).resolves.toEqual({
+      count: 1,
+      earliestAt: '2026-07-06T10:10:00.000Z',
+    });
+    await expect(store.countWriteActionsSince('like', since)).resolves.toEqual({
+      count: 1,
+      earliestAt: '2026-07-06T10:20:00.000Z',
+    });
+    await expect(store.countWriteActionsSince('repost', since)).resolves.toEqual({ count: 0, earliestAt: null });
+    // ウィンドウ外は数えない
+    await expect(store.countWriteActionsSince('post', new Date('2026-07-06T10:05:00.000Z'))).resolves.toEqual({ count: 0, earliestAt: null });
+    await expect(store.getLastWriteActionAt('post')).resolves.toBe('2026-07-06T10:00:00.000Z');
+    await expect(store.getLastWriteActionAt('reply')).resolves.toBe('2026-07-06T10:10:00.000Z');
+
+    await store.close();
+  });
+
   it('close is idempotent', async () => {
     const dataDir = createDataDir('close-idem');
     await mkdir(dataDir, { recursive: true });

@@ -54,13 +54,24 @@ const configSchema = z.object({
   heartbeatIntervalMinutes: z.coerce.number().positive().default(120),
   memoryMaintenanceIntervalMinutes: z.coerce.number().positive().optional(),
   memoryMaintenanceRecentDiaryDays: z.coerce.number().int().positive().optional(),
-  snsLoopMinIntervalMinutes: z.coerce.number().positive().default(60),
-  snsLoopMaxIntervalMinutes: z.coerce.number().positive().default(180),
+  kwCommandCheckPhone: z.string().trim().min(1).optional(),
+  kwCommandBrowseSns: z.string().trim().min(1).optional(),
+  kwCommandPostSns: z.string().trim().min(1).optional(),
+  snsRateLimitPostPerHour: z.coerce.number().int().min(0).default(3),
+  snsRateLimitPostPerDay: z.coerce.number().int().min(0).default(20),
+  snsRateLimitPostMinIntervalMinutes: z.coerce.number().min(0).default(15),
+  snsRateLimitReplyPerHour: z.coerce.number().int().min(0).default(10),
+  snsRateLimitLikePerHour: z.coerce.number().int().min(0).default(30),
+  snsRateLimitRepostPerHour: z.coerce.number().int().min(0).default(10),
+  snsFetchMinIntervalNotificationsMinutes: z.coerce.number().min(0).default(10),
+  snsFetchMinIntervalTimelineMinutes: z.coerce.number().min(0).default(30),
+  snsFetchMinIntervalTrendsMinutes: z.coerce.number().min(0).default(60),
   allowedChannelIds: z.string().optional(),
   reportChannelId: z.string().trim().min(1).optional(),
   adminUserIds: z.string().optional(),
   karakuriWorldBotIds: z.string().optional(),
   llmEnableThinking: z.string().trim().optional(),
+  llmDisableThinkingRequestParam: z.string().trim().optional(),
   kwPerceptionBufferEnabled: z.string().trim().optional(),
   loopWarningEnabled: z.string().trim().optional(),
   loopDetectorThreshold: z.coerce.number().int().min(2).default(3),
@@ -99,6 +110,46 @@ export type SnsCredentials =
 
 export type SnsProviderType = SnsCredentials['provider'];
 
+/** M8: 書き込み系 SNS アクションの決定論レート制限（0 は「そのアクションを行わない」） */
+export interface SnsWriteRateLimits {
+  postPerHour: number;
+  postPerDay: number;
+  /** 同種アクションの最小間隔（ウィンドウ境界バースト防止） */
+  postMinIntervalMinutes: number;
+  replyPerHour: number;
+  likePerHour: number;
+  repostPerHour: number;
+}
+
+/** M8: 読み取り系フェッチの最小間隔（API 保護。間隔内はキャッシュ返却） */
+export interface SnsFetchIntervals {
+  notificationsMinutes: number;
+  timelineMinutes: number;
+  trendsMinutes: number;
+}
+
+export interface SnsRateLimitConfig {
+  /** 共通既定（SNS_RATE_LIMIT_*） */
+  defaults: SnsWriteRateLimits;
+  /** provider 別上書き（X_RATE_LIMIT_* / MASTODON_RATE_LIMIT_* / ELYTH_RATE_LIMIT_*） */
+  perProvider: Partial<Record<SnsProviderType, Partial<SnsWriteRateLimits>>>;
+  fetchIntervals: SnsFetchIntervals;
+}
+
+export function resolveWriteRateLimits(config: SnsRateLimitConfig, provider: SnsProviderType): SnsWriteRateLimits {
+  return { ...config.defaults, ...config.perProvider[provider] };
+}
+
+/**
+ * M8: KW カスタムコマンド名 → 世界内行為ハンドラのマッピング。
+ * KW コンソール側で登録した command 名を指定する。設定されたものだけ有効。
+ */
+export interface WorldActionCommands {
+  checkPhone?: string | undefined;
+  browseSns?: string | undefined;
+  postSns?: string | undefined;
+}
+
 export interface Config {
   discordApplicationId: string;
   discordBotToken: string;
@@ -135,14 +186,18 @@ export interface Config {
   heartbeatIntervalMinutes?: number | undefined;
   memoryMaintenanceIntervalMinutes?: number | undefined;
   memoryMaintenanceRecentDiaryDays?: number | undefined;
-  snsLoopMinIntervalMinutes: number;
-  snsLoopMaxIntervalMinutes: number;
+  /** M8: KW カスタムコマンド統合（設定されたコマンドだけ有効。checkPhone 設定でチャット未読キュー化が有効になる） */
+  worldActionCommands: WorldActionCommands;
+  /** M8: SNS 書き込み・読み取りの決定論レート制限 */
+  snsRateLimits: SnsRateLimitConfig;
   postMessageChannelIds?: string[] | undefined;
   allowedChannelIds?: string[] | undefined;
   reportChannelId?: string | undefined;
   adminUserIds?: string[] | undefined;
   karakuriWorldBotIds?: string[] | undefined;
   llmEnableThinking: boolean;
+  /** OpenAI 互換サーバー固有の `enable_thinking: false` リクエストパラメータを送る */
+  llmDisableThinkingRequestParam: boolean;
   /** M1: 行動選択用通知をセッション履歴に積まず Perception Buffer で扱う（切り分け・ロールバック用） */
   kwPerceptionBufferEnabled: boolean;
   /** M1: ループ警告の trusted 注入（切り分け・ロールバック用） */
@@ -225,13 +280,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES,
     memoryMaintenanceIntervalMinutes: normalizeOptionalString(env.MEMORY_MAINTENANCE_INTERVAL_MINUTES),
     memoryMaintenanceRecentDiaryDays: normalizeOptionalString(env.MEMORY_MAINTENANCE_RECENT_DIARY_DAYS),
-    snsLoopMinIntervalMinutes: env.SNS_LOOP_MIN_INTERVAL_MINUTES,
-    snsLoopMaxIntervalMinutes: env.SNS_LOOP_MAX_INTERVAL_MINUTES,
+    kwCommandCheckPhone: normalizeOptionalString(env.KW_COMMAND_CHECK_PHONE),
+    kwCommandBrowseSns: normalizeOptionalString(env.KW_COMMAND_BROWSE_SNS),
+    kwCommandPostSns: normalizeOptionalString(env.KW_COMMAND_POST_SNS),
+    snsRateLimitPostPerHour: env.SNS_RATE_LIMIT_POST_PER_HOUR,
+    snsRateLimitPostPerDay: env.SNS_RATE_LIMIT_POST_PER_DAY,
+    snsRateLimitPostMinIntervalMinutes: env.SNS_RATE_LIMIT_POST_MIN_INTERVAL_MINUTES,
+    snsRateLimitReplyPerHour: env.SNS_RATE_LIMIT_REPLY_PER_HOUR,
+    snsRateLimitLikePerHour: env.SNS_RATE_LIMIT_LIKE_PER_HOUR,
+    snsRateLimitRepostPerHour: env.SNS_RATE_LIMIT_REPOST_PER_HOUR,
+    snsFetchMinIntervalNotificationsMinutes: env.SNS_FETCH_MIN_INTERVAL_NOTIFICATIONS_MINUTES,
+    snsFetchMinIntervalTimelineMinutes: env.SNS_FETCH_MIN_INTERVAL_TIMELINE_MINUTES,
+    snsFetchMinIntervalTrendsMinutes: env.SNS_FETCH_MIN_INTERVAL_TRENDS_MINUTES,
     allowedChannelIds: env.ALLOWED_CHANNEL_IDS,
     reportChannelId: normalizeOptionalString(env.REPORT_CHANNEL_ID),
     adminUserIds: env.ADMIN_USER_IDS,
     karakuriWorldBotIds: env.KARAKURI_WORLD_BOT_IDS,
     llmEnableThinking: env.LLM_ENABLE_THINKING,
+    llmDisableThinkingRequestParam: env.LLM_DISABLE_THINKING_REQUEST_PARAM,
     kwPerceptionBufferEnabled: env.KW_PERCEPTION_BUFFER_ENABLED,
     loopWarningEnabled: env.LOOP_WARNING_ENABLED,
     loopDetectorThreshold: env.LOOP_DETECTOR_THRESHOLD,
@@ -288,9 +354,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const mergedAllowedChannelIds = reportChannelId != null
       ? [...new Set([...(postMessageChannelIds ?? []), reportChannelId])]
       : postMessageChannelIds;
-    if (parsed.snsLoopMinIntervalMinutes > parsed.snsLoopMaxIntervalMinutes) {
-      throw new Error('SNS_LOOP_MIN_INTERVAL_MINUTES must be less than or equal to SNS_LOOP_MAX_INTERVAL_MINUTES');
-    }
     if ((karakuriWorldApiBaseUrl != null) !== (karakuriWorldApiKey != null)) {
       throw new Error(
         'Partial karakuri-world configuration: both KARAKURI_WORLD_API_BASE_URL and KARAKURI_WORLD_API_KEY must be set. '
@@ -359,6 +422,47 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       snsList.push({ provider: 'elyth', apiKey: elythApiKey, apiBase: elythApiBase });
     }
 
+    const worldActionCommands: WorldActionCommands = {
+      ...(parsed.kwCommandCheckPhone != null ? { checkPhone: parsed.kwCommandCheckPhone } : {}),
+      ...(parsed.kwCommandBrowseSns != null ? { browseSns: parsed.kwCommandBrowseSns } : {}),
+      ...(parsed.kwCommandPostSns != null ? { postSns: parsed.kwCommandPostSns } : {}),
+    };
+    const configuredWorldCommands = Object.values(worldActionCommands).filter((value) => value != null);
+    if (configuredWorldCommands.length > 0 && karakuriWorld == null) {
+      throw new Error(
+        'KW_COMMAND_* is set, but KARAKURI_WORLD_API_BASE_URL / KARAKURI_WORLD_API_KEY are not configured. '
+        + 'World action commands require karakuri-world integration.',
+      );
+    }
+    if (new Set(configuredWorldCommands).size !== configuredWorldCommands.length) {
+      throw new Error('KW_COMMAND_CHECK_PHONE / KW_COMMAND_BROWSE_SNS / KW_COMMAND_POST_SNS must be distinct command names.');
+    }
+    // check_phone は未読を消費して返信を投稿する。投稿経路（Discord REST sink）が無い構成で
+    // 迂回だけ有効になると、全ユーザーメッセージが応答されないまま消費される
+    if (worldActionCommands.checkPhone != null && (mergedAllowedChannelIds == null || mergedAllowedChannelIds.length === 0)) {
+      throw new Error(
+        'KW_COMMAND_CHECK_PHONE requires a Discord message sink: set ALLOWED_CHANNEL_IDS or REPORT_CHANNEL_ID '
+        + '(otherwise diverted chat messages could never be replied to).',
+      );
+    }
+
+    const snsRateLimits: SnsRateLimitConfig = {
+      defaults: {
+        postPerHour: parsed.snsRateLimitPostPerHour,
+        postPerDay: parsed.snsRateLimitPostPerDay,
+        postMinIntervalMinutes: parsed.snsRateLimitPostMinIntervalMinutes,
+        replyPerHour: parsed.snsRateLimitReplyPerHour,
+        likePerHour: parsed.snsRateLimitLikePerHour,
+        repostPerHour: parsed.snsRateLimitRepostPerHour,
+      },
+      perProvider: parseProviderRateLimitOverrides(env),
+      fetchIntervals: {
+        notificationsMinutes: parsed.snsFetchMinIntervalNotificationsMinutes,
+        timelineMinutes: parsed.snsFetchMinIntervalTimelineMinutes,
+        trendsMinutes: parsed.snsFetchMinIntervalTrendsMinutes,
+      },
+    };
+
     const config = {
       ...parsed,
       llmBaseUrl,
@@ -383,9 +487,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       adminUserIds: parseIdList(parsed.adminUserIds),
       karakuriWorldBotIds,
       ...(karakuriWorld != null ? { karakuriWorld } : {}),
+      worldActionCommands,
+      snsRateLimits,
       snsList,
       ...(parsed.snsLegacyDbMigrateTo != null ? { snsLegacyDbMigrateTo: parsed.snsLegacyDbMigrateTo } : {}),
       llmEnableThinking: parseBooleanEnv(parsed.llmEnableThinking, 'LLM_ENABLE_THINKING', true),
+      llmDisableThinkingRequestParam: parseBooleanEnv(parsed.llmDisableThinkingRequestParam, 'LLM_DISABLE_THINKING_REQUEST_PARAM', false),
       kwPerceptionBufferEnabled: parseBooleanEnv(parsed.kwPerceptionBufferEnabled, 'KW_PERCEPTION_BUFFER_ENABLED', true),
       loopWarningEnabled: parseBooleanEnv(parsed.loopWarningEnabled, 'LOOP_WARNING_ENABLED', true),
       appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
@@ -418,6 +525,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       hasKarakuriWorldBots: (config.karakuriWorldBotIds?.length ?? 0) > 0,
       hasReportChannel: config.reportChannelId != null,
       llmEnableThinking: config.llmEnableThinking,
+      llmDisableThinkingRequestParam: config.llmDisableThinkingRequestParam,
     });
     return config;
   } catch (error) {
@@ -428,6 +536,45 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
     throw error;
   }
+}
+
+const RATE_LIMIT_PROVIDER_PREFIXES: Record<SnsProviderType, string> = {
+  mastodon: 'MASTODON',
+  x: 'X',
+  elyth: 'ELYTH',
+};
+
+const RATE_LIMIT_ENV_KEYS: Record<keyof SnsWriteRateLimits, { suffix: string; integer: boolean }> = {
+  postPerHour: { suffix: 'POST_PER_HOUR', integer: true },
+  postPerDay: { suffix: 'POST_PER_DAY', integer: true },
+  postMinIntervalMinutes: { suffix: 'POST_MIN_INTERVAL_MINUTES', integer: false },
+  replyPerHour: { suffix: 'REPLY_PER_HOUR', integer: true },
+  likePerHour: { suffix: 'LIKE_PER_HOUR', integer: true },
+  repostPerHour: { suffix: 'REPOST_PER_HOUR', integer: true },
+};
+
+/** provider 別レート制限上書き（`X_RATE_LIMIT_POST_PER_DAY` 等）を読む */
+function parseProviderRateLimitOverrides(env: NodeJS.ProcessEnv): Partial<Record<SnsProviderType, Partial<SnsWriteRateLimits>>> {
+  const result: Partial<Record<SnsProviderType, Partial<SnsWriteRateLimits>>> = {};
+  for (const [provider, prefix] of Object.entries(RATE_LIMIT_PROVIDER_PREFIXES) as Array<[SnsProviderType, string]>) {
+    const overrides: Partial<SnsWriteRateLimits> = {};
+    for (const [field, { suffix, integer }] of Object.entries(RATE_LIMIT_ENV_KEYS) as Array<[keyof SnsWriteRateLimits, { suffix: string; integer: boolean }]>) {
+      const envName = `${prefix}_RATE_LIMIT_${suffix}`;
+      const raw = normalizeOptionalString(env[envName]);
+      if (raw == null) {
+        continue;
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
+        throw new Error(`Invalid ${envName} value: "${raw}" (expected a non-negative ${integer ? 'integer' : 'number'})`);
+      }
+      overrides[field] = value;
+    }
+    if (Object.keys(overrides).length > 0) {
+      result[provider] = overrides;
+    }
+  }
+  return result;
 }
 
 function parseIdList(value: string | undefined): string[] | undefined {

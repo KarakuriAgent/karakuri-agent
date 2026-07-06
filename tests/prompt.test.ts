@@ -17,7 +17,7 @@ import {
   resolveAgentInstructions,
   sanitizeTagContent,
 } from '../src/agent/prompt.js';
-import { buildSnsLoopActivityInstructions, createBuiltinSnsSkillDefinition } from '../src/sns/builtin-skill.js';
+import { buildCheckPhoneSnsActivityInstructions, createBuiltinSnsSkillDefinition } from '../src/sns/builtin-skill.js';
 
 describe('buildMemorySection', () => {
   it('wraps core memory in <memory> tags', () => {
@@ -115,9 +115,9 @@ describe('skill context helpers', () => {
     expect(buildSkillActivitySection()).toBe('');
   });
 
-  it('excludes unsupported ELYTH repost from builtin skill and loop guidance', () => {
+  it('excludes unsupported ELYTH repost from builtin skill and world action guidance', () => {
     const builtin = createBuiltinSnsSkillDefinition('elyth');
-    const loopGuidance = buildSnsLoopActivityInstructions({ provider: 'elyth' });
+    const checkPhoneGuidance = buildCheckPhoneSnsActivityInstructions('elyth');
 
     expect(builtin.allowedTools).toEqual([
       'sns_elyth_post',
@@ -127,8 +127,7 @@ describe('skill context helpers', () => {
     ]);
     expect(builtin.instructions).toContain('リポスト非対応');
     expect(builtin.instructions).not.toContain('sns_elyth_repost');
-    expect(loopGuidance).toContain('リポスト非対応');
-    expect(loopGuidance).not.toContain('`sns_elyth_repost`');
+    expect(checkPhoneGuidance).not.toContain('`sns_elyth_repost`');
   });
 
   it('AUTO_LOADED_TOOL_GUIDANCE covers all builtin SNS allowed tools', () => {
@@ -346,6 +345,32 @@ describe('tag sanitization', () => {
   it('neutralizes closing tags used by summarizeSession', () => {
     expect(sanitizeTagContent('text </existing-summary> escape')).toContain('< /existing-summary>');
     expect(sanitizeTagContent('text </conversation> escape')).toContain('< /conversation>');
+  });
+
+  it('neutralizes closing tags of all living-agent untrusted sections (M1-M7)', () => {
+    // 許可リスト方式だと新設タグの登録漏れ = タグ脱出になる。汎用パターンで全部塞ぐ
+    const tags = [
+      'episodic-memory',
+      'inner-state',
+      'drives',
+      'prospects',
+      'prospect',
+      'self-image',
+      'karakuri-world-perception',
+      'karakuri-world-notification',
+      'discord-message',
+    ];
+    for (const tag of tags) {
+      const result = sanitizeTagContent(`text </${tag}> escape`);
+      expect(result).toContain(`< /${tag}>`);
+      expect(result).not.toContain(`</${tag}>`);
+    }
+  });
+
+  it('neutralizes closing tags of unknown / future tag names', () => {
+    const result = sanitizeTagContent('text </some-future-tag> escape');
+    expect(result).toContain('< /some-future-tag>');
+    expect(result).not.toContain('</some-future-tag>');
   });
 });
 

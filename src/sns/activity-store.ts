@@ -10,7 +10,22 @@ import type {
   SnsActivity,
   SnsActivityType,
   SnsProviderType,
+  SnsWriteActionKind,
 } from './types.js';
+
+/** 書き込みアクション種別 → sns_activities の判別述語（値は固定文字列のみで組む） */
+function writeActionKindPredicate(kind: SnsWriteActionKind): string {
+  switch (kind) {
+    case 'post':
+      return "type = 'post' AND reply_to_id IS NULL";
+    case 'reply':
+      return "type = 'post' AND reply_to_id IS NOT NULL";
+    case 'like':
+      return "type = 'like'";
+    case 'repost':
+      return "type = 'repost'";
+  }
+}
 
 const logger = createLogger('SnsActivityStore');
 const RECENT_ACTIVITY_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
@@ -181,6 +196,26 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
   async recordRepost(postId: string): Promise<void> {
     this.insertActivity('repost', postId, null, null, null, this.now().toISOString());
     return Promise.resolve();
+  }
+
+  /** M8: レート制限用の sliding window 集計。reply は type='post' + reply_to_id で判別する */
+  async countWriteActionsSince(kind: SnsWriteActionKind, since: Date): Promise<{ count: number; earliestAt: string | null }> {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count, MIN(created_at) AS earliest
+      FROM sns_activities
+      WHERE ${writeActionKindPredicate(kind)} AND created_at >= ?
+    `).get(since.toISOString()) as { count: number; earliest: string | null };
+    return Promise.resolve({ count: row.count, earliestAt: row.earliest });
+  }
+
+  /** M8: 同種アクションの直近実行時刻（最小間隔の判定用） */
+  async getLastWriteActionAt(kind: SnsWriteActionKind): Promise<string | null> {
+    const row = this.db.prepare(`
+      SELECT MAX(created_at) AS latest
+      FROM sns_activities
+      WHERE ${writeActionKindPredicate(kind)}
+    `).get() as { latest: string | null };
+    return Promise.resolve(row.latest);
   }
 
   async hasLiked(postId: string): Promise<boolean> {

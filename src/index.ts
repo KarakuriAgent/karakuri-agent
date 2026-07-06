@@ -6,7 +6,7 @@ import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { KarakuriAgent } from './agent/core.js';
 import { FilePromptContextStore } from './agent/prompt-context.js';
 import { createBot, type BotRuntime } from './bot.js';
-import { loadConfig, type Config } from './config.js';
+import { loadConfig, resolveWriteRateLimits, type Config } from './config.js';
 import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from './llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
@@ -38,17 +38,20 @@ import { CompositeMemoryStore } from './memory/composite-store.js';
 import { SqliteDiaryStore } from './memory/diary-store.js';
 import { MemoryMaintenanceRunner } from './memory/maintenance-runner.js';
 import { FileMemoryStore } from './memory/store.js';
+import { PhoneService } from './phone/service.js';
+import { SqlitePhoneUnreadStore } from './phone/unread-store.js';
 import { FileSessionManager } from './session/manager.js';
 import { createSnsProvider } from './sns/index.js';
+import { SnsRateLimiter } from './sns/rate-limiter.js';
 import { SnsSkillContextProvider } from './sns/context-provider.js';
 import { SqliteSnsActivityStore } from './sns/activity-store.js';
-import { SnsLoopRunner } from './sns/loop-runner.js';
 import { migrateLegacySnsActivityDb } from './sns/legacy-migration.js';
 import type { SnsProviderType } from './sns/types.js';
 import { SkillContextRegistry } from './skill/context-provider.js';
 import { FileSkillStore } from './skill/store.js';
 import { performGracefulShutdown } from './shutdown.js';
 import { SqliteUserStore } from './user/store.js';
+import { KeyedMutex } from './utils/mutex.js';
 import { createLogger } from './utils/logger.js';
 import { reportSafely } from './utils/report.js';
 
@@ -67,6 +70,7 @@ export function createMemoryMaintenanceModelConfig(config: Pick<
   'llmApiKey'
   | 'llmBaseUrl'
   | 'llmModelSelector'
+  | 'llmDisableThinkingRequestParam'
   | 'postResponseLlmApiKey'
   | 'postResponseLlmBaseUrl'
   | 'postResponseLlmModelSelector'
@@ -80,7 +84,9 @@ export function createMemoryMaintenanceModelConfig(config: Pick<
       ...((config.postResponseLlmBaseUrl ?? config.llmBaseUrl) != null
         ? { baseURL: config.postResponseLlmBaseUrl ?? config.llmBaseUrl }
         : {}),
-      fetch: createNoThinkingFetch(),
+      fetch: createNoThinkingFetch({
+        disableThinkingRequestParam: config.llmDisableThinkingRequestParam,
+      }),
     },
     providerOptions: noThinkingProviderOptions(maintenanceModelSelector.api),
   };
@@ -104,7 +110,6 @@ async function main(): Promise<void> {
   const userStore = new SqliteUserStore({ dataDir: config.dataDir });
   migrateLegacySnsActivityDb({ dataDir: config.dataDir, snsProviders: (config.snsList ?? []).map((sns) => sns.provider), migrateTo: config.snsLegacyDbMigrateTo });
   const snsActivityStores = new Map<SnsProviderType, SqliteSnsActivityStore>();
-  const snsLoopRunners = new Map<SnsProviderType, SnsLoopRunner>();
   const messageSink = config.allowedChannelIds != null && config.allowedChannelIds.length > 0
     ? new DiscordMessageSink({
         botToken: config.discordBotToken,
@@ -239,7 +244,9 @@ async function main(): Promise<void> {
           ...((config.reflectionLlmBaseUrl ?? config.llmBaseUrl) != null
             ? { baseURL: config.reflectionLlmBaseUrl ?? config.llmBaseUrl }
             : {}),
-          fetch: createNoThinkingFetch(),
+          fetch: createNoThinkingFetch({
+            disableThinkingRequestParam: config.llmDisableThinkingRequestParam,
+          }),
         });
         const reflectionEngine = new ReflectionEngine({
           model: reflectionModelFactory(reflectionSelector),
@@ -269,7 +276,9 @@ async function main(): Promise<void> {
           ...((config.appraisalLlmBaseUrl ?? config.llmBaseUrl) != null
             ? { baseURL: config.appraisalLlmBaseUrl ?? config.llmBaseUrl }
             : {}),
-          fetch: createNoThinkingFetch(),
+          fetch: createNoThinkingFetch({
+            disableThinkingRequestParam: config.llmDisableThinkingRequestParam,
+          }),
         });
         return new AppraisalService({
           model: appraisalModelFactory(appraisalSelector),
@@ -298,6 +307,7 @@ async function main(): Promise<void> {
       }
     : undefined;
   const snsProviders = new Map<SnsProviderType, ReturnType<typeof createSnsProvider>>();
+  const snsRateLimiters = new Map<SnsProviderType, SnsRateLimiter>();
   const snsContextRegistry = (config.snsList ?? []).length > 0
     ? new SkillContextRegistry()
     : undefined;
@@ -305,8 +315,16 @@ async function main(): Promise<void> {
     const provider = credentials.provider;
     const activityStore = new SqliteSnsActivityStore({ dataDir: config.dataDir, provider });
     const snsProvider = createSnsProvider({ ...credentials, dataDir: config.dataDir });
+    // M8: 決定論レート制限。書き込みはツール層ゲート、読み取りはフェッチ間隔 + キャッシュ
+    const rateLimiter = new SnsRateLimiter({
+      limits: resolveWriteRateLimits(config.snsRateLimits, provider),
+      fetchIntervals: config.snsRateLimits.fetchIntervals,
+      counter: activityStore,
+      timezone: config.timezone,
+    });
     snsActivityStores.set(provider, activityStore);
     snsProviders.set(provider, snsProvider);
+    snsRateLimiters.set(provider, rateLimiter);
     snsContextRegistry?.register(`sns-${provider}`, new SnsSkillContextProvider({
       activityStore,
       snsProvider,
@@ -314,6 +332,7 @@ async function main(): Promise<void> {
       reportError: snsReportError,
       experienceRecorder,
       appraisalService,
+      rateLimiter,
     }));
   }
   const sessionManager = new FileSessionManager({
@@ -335,6 +354,7 @@ async function main(): Promise<void> {
     messageSink,
     userStore,
     snsActivityStores,
+    snsRateLimiters,
     snsContextRegistry,
     experienceRecorder,
     perceptionBuffer,
@@ -349,22 +369,50 @@ async function main(): Promise<void> {
     relationStore,
     satiationThreshold: satiationThresholdFor(traits),
   });
-  for (const credentials of (config.snsList ?? [])) {
-    const provider = credentials.provider;
-    snsLoopRunners.set(provider, new SnsLoopRunner({
-      agent,
-      provider,
-      minIntervalMinutes: config.snsLoopMinIntervalMinutes,
-      maxIntervalMinutes: config.snsLoopMaxIntervalMinutes,
-      innerStateService,
-      timezone: config.timezone,
-      ...(messageSink != null ? { messageSink } : {}),
-      ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
-      hasPostMessage: messageSink != null
-        && config.reportChannelId != null
-        && (config.postMessageChannelIds ?? []).includes(config.reportChannelId),
-    }));
-  }
+  // M8: 世界内行為としてのチャット・SNS。KW カスタムコマンド（check_phone / browse_sns /
+  // post_sns）の実行開始をフックし、実行時間の窓内で未読返信・SNS 活動を行う
+  const phoneUnreadStore = new SqlitePhoneUnreadStore({ db: lifeDb });
+  // bot の即時処理（admin 等）と check_phone 返信で共有するスレッド単位 mutex
+  const chatThreadMutex = new KeyedMutex();
+  const phoneService = new PhoneService({
+    agent,
+    commands: config.worldActionCommands,
+    unreadStore: phoneUnreadStore,
+    ...(messageSink != null
+      ? { postReply: (threadId: string, text: string) => messageSink.postReply(threadId, text) }
+      : {}),
+    ...(messageSink != null ? { messageSink } : {}),
+    ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
+    snsProviders,
+    rateLimiters: snsRateLimiters,
+    perceptionBuffer,
+    ...(config.karakuriWorldBotIds != null ? { karakuriWorldBotIds: config.karakuriWorldBotIds } : {}),
+    threadMutex: chatThreadMutex,
+  });
+  agent.setPhoneIntegration(phoneService);
+  // check_phone が設定されているときだけチャットを未読キュー化する（admin と KW bot は対象外）
+  const unreadDiversion = config.worldActionCommands.checkPhone != null && config.karakuriWorld != null
+    ? {
+        shouldDivert: (message: { author: { userId: string } }): boolean => {
+          const authorId = message.author.userId;
+          if ((config.karakuriWorldBotIds ?? []).includes(authorId)) {
+            return false;
+          }
+          return !(config.adminUserIds ?? []).includes(authorId);
+        },
+        enqueue: async (message: { threadId: string; id: string; text: string; author: { userId: string; fullName: string } }): Promise<void> => {
+          await phoneUnreadStore.enqueue({
+            source: 'discord',
+            threadId: message.threadId,
+            messageId: message.id,
+            authorId: message.author.userId,
+            authorName: message.author.fullName,
+            body: message.text,
+            receivedAt: new Date(),
+          });
+        },
+      }
+    : undefined;
   const memoryMaintenanceRunner = config.memoryMaintenanceIntervalMinutes != null
     ? (() => {
         const maintenanceModelConfig = createMemoryMaintenanceModelConfig(config);
@@ -389,11 +437,8 @@ async function main(): Promise<void> {
     messageSink,
     store: schedulerStore,
   });
-  const bot = createBot(config, agent, { messageSink });
+  const bot = createBot(config, agent, { messageSink, threadMutex: chatThreadMutex, ...(unreadDiversion != null ? { unreadDiversion } : {}) });
 
-  for (const runner of snsLoopRunners.values()) {
-    runner.start();
-  }
   memoryMaintenanceRunner?.start();
   reflectionRunner?.start();
   await bot.initialize();
@@ -423,13 +468,13 @@ async function main(): Promise<void> {
         closeServer: () => closeServer(server),
         closeScheduler: () => Promise.all([
           scheduler.close(),
-          ...Array.from(snsLoopRunners.values(), (runner) => runner.close()),
           memoryMaintenanceRunner?.close() ?? Promise.resolve(),
           reflectionRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
         drainEvaluations: () => Promise.all([
           agent.drainPendingEvaluations(),
+          phoneService.drain(),
           experienceRecorder.flush(),
         ]).then(() => undefined),
         closeStores: () => [

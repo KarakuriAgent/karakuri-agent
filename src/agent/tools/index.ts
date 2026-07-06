@@ -6,6 +6,7 @@ import type { IProspectStore } from '../../life/prospects.js';
 import type { EpisodeRetrievalService } from '../../life/retrieval.js';
 import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
+import type { SnsRateLimiter } from '../../sns/rate-limiter.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
 import type { SkillContextScope } from '../../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
@@ -35,6 +36,8 @@ export interface CreateAgentToolsOptions {
   /** @deprecated Use snsList. */
   sns?: SnsCredentials | undefined;
   snsActivityStores?: Map<SnsCredentials['provider'], ISnsActivityStore> | undefined;
+  /** M8: provider 別の書き込みレート制限 */
+  snsRateLimiters?: Map<SnsCredentials['provider'], SnsRateLimiter> | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   autoLoadedSkills?: SkillDefinition[] | undefined;
@@ -66,6 +69,7 @@ export function createAgentTools({
   snsList,
   sns,
   snsActivityStores,
+  snsRateLimiters,
   skillStore,
   skills = [],
   autoLoadedSkills = [],
@@ -101,7 +105,7 @@ export function createAgentTools({
     recallDiary: createRecallDiaryTool({ memoryStore }),
     ...(retrievalService != null
       ? {
-          recallEpisodes: createRecallEpisodesTool({ retrievalService }),
+          recallEpisodes: createRecallEpisodesTool({ retrievalService, timezone: timezone ?? 'Asia/Tokyo' }),
         }
       : {}),
     webFetch: createWebFetchTool(),
@@ -168,6 +172,7 @@ export function createAgentTools({
     snsList,
     dataDir,
     snsActivityStores,
+    snsRateLimiters,
     userStore,
     evaluateUser,
     reportError,

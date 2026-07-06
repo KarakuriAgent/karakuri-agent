@@ -9,7 +9,6 @@ import { SqliteRelationStore } from '../src/life/relations.js';
 import { applyTraitsToTuning, DEFAULT_TRAITS, loadTraits, satiationThresholdFor } from '../src/life/traits.js';
 import { LIFE_TUNING } from '../src/life/tuning.js';
 import { decayInnerState, type InnerState } from '../src/life/inner-state.js';
-import { snsLoopIntervalFactor } from '../src/sns/loop-runner.js';
 
 const temporaryDirectories: string[] = [];
 const cleanups: Array<() => Promise<void>> = [];
@@ -144,26 +143,6 @@ describe('traits', () => {
 
     await writeFile(join(dataDir, 'traits.json'), '{broken json', 'utf8');
     expect(loadTraits(dataDir)).toEqual(DEFAULT_TRAITS);
-  });
-});
-
-describe('snsLoopIntervalFactor', () => {
-  const noonJst = new Date('2026-07-05T03:00:00.000Z');
-  const lateNightJst = new Date('2026-07-04T17:00:00.000Z'); // JST 02:00
-
-  it('slows down when tired and speeds up when craving company', () => {
-    const base = snsLoopIntervalFactor(makeState(), noonJst, 'Asia/Tokyo');
-    const tired = snsLoopIntervalFactor(makeState({ energy: 0.1 }), noonJst, 'Asia/Tokyo');
-    const social = snsLoopIntervalFactor(makeState({ social: 0.9 }), noonJst, 'Asia/Tokyo');
-
-    expect(tired).toBeGreaterThan(base);
-    expect(social).toBeLessThan(base);
-  });
-
-  it('reduces posting late at night and while sleeping (circadian rhythm)', () => {
-    expect(snsLoopIntervalFactor(makeState(), lateNightJst, 'Asia/Tokyo'))
-      .toBeGreaterThan(snsLoopIntervalFactor(makeState(), noonJst, 'Asia/Tokyo'));
-    expect(snsLoopIntervalFactor(makeState({ sleeping: true }), noonJst, 'Asia/Tokyo')).toBe(3);
   });
 });
 

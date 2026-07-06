@@ -59,6 +59,17 @@ export class DiscordMessageSink implements IMessageSink {
     }
   }
 
+  /**
+   * M8: 未読スレッドへの返信投稿。返信先はユーザーが実際に書き込んだスレッド
+   * そのものなので allowlist（能動的な postMessage の送信先制限）の対象外とする。
+   */
+  async postReply(channelId: string, text: string): Promise<void> {
+    const chunks = splitMessageForDiscord(text.trim());
+    for (const chunk of chunks) {
+      await this.postChunk(channelId, chunk);
+    }
+  }
+
   private async postChunk(channelId: string, chunk: string): Promise<void> {
     const url = `${this.apiBaseUrl}/channels/${encodeURIComponent(channelId)}/messages`;
 

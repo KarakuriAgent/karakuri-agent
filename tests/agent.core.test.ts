@@ -39,9 +39,14 @@ const baseConfig: Config = {
   maxSteps: 4,
   tokenBudget: 200,
   port: 3000,
-  snsLoopMinIntervalMinutes: 60,
-  snsLoopMaxIntervalMinutes: 180,
+  worldActionCommands: {},
+  snsRateLimits: {
+    defaults: { postPerHour: 3, postPerDay: 20, postMinIntervalMinutes: 15, replyPerHour: 10, likePerHour: 30, repostPerHour: 10 },
+    perProvider: {},
+    fetchIntervals: { notificationsMinutes: 10, timelineMinutes: 30, trendsMinutes: 60 },
+  },
   llmEnableThinking: true,
+  llmDisableThinkingRequestParam: false,
   kwPerceptionBufferEnabled: true,
   loopWarningEnabled: true,
   loopDetectorThreshold: 3,
@@ -1406,6 +1411,111 @@ describe('KarakuriAgent', () => {
     expect(evaluationPrompt).toContain('Latest assistant response:\n周囲を確認します。');
     expect(userStore.profileUpdates).toEqual([]);
     expect(userStore.displayNameUpdates).toEqual([]);
+  });
+
+  it('notifies phone integration on custom commands and injects phone status (M8)', async () => {
+    const sessionManager = new SessionManagerStub();
+    let capturedSystem = '';
+    const toolInput = { command: 'check_phone', params: {}, comment: 'スマホを見ます。' };
+    const generateTextFn = vi.fn(async (options: { system?: string; output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'skip',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      capturedSystem = options.system ?? '';
+      return {
+        text: 'ignored kw mode text',
+        steps: [{
+          toolCalls: [{ toolName: 'karakuri_world_command', input: toolInput }],
+          toolResults: [{ toolName: 'karakuri_world_command', output: { ok: true, status: 'started', action_id: 'check_phone' } }],
+        }],
+        response: { id: 'response-id', modelId: 'gpt-4o', timestamp: new Date(), messages: [] },
+      } as const;
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+        worldActionCommands: { checkPhone: 'check_phone' },
+      },
+      memoryStore: new MemoryStoreStub(),
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+    const onWorldCommand = vi.fn();
+    agent.setPhoneIntegration({
+      onWorldCommand,
+      buildStatusSection: async () => '<phone-status>\nチャット未読: 2 件\n</phone-status>',
+    });
+
+    stubKarakuriWorldNotificationFetch();
+
+    await agent.handleMessage('session-1', 'notification_id: notif-123', 'Admin', { userId: 'kw-bot-1' });
+    await agent.drainPendingEvaluations();
+
+    expect(onWorldCommand).toHaveBeenCalledWith('check_phone');
+    expect(capturedSystem).toContain('<phone-status>');
+    expect(capturedSystem).toContain('チャット未読: 2 件');
+  });
+
+  it('does not fire phone integration when the world command was rejected (busy) (M8 review fix)', async () => {
+    const sessionManager = new SessionManagerStub();
+    const toolInput = { command: 'check_phone', params: {}, comment: 'スマホを見ます。' };
+    const generateTextFn = vi.fn(async (options: { output?: unknown }) => {
+      if (options.output != null) {
+        return makeStructuredEvaluationResult({
+          profileAction: 'skip',
+          profile: '',
+          displayName: '',
+          coreMemoryAppend: '',
+          diaryEntry: '',
+        });
+      }
+      return {
+        text: 'ignored kw mode text',
+        steps: [{
+          toolCalls: [{ toolName: 'karakuri_world_command', input: toolInput }],
+          toolResults: [{ toolName: 'karakuri_world_command', output: { status: 'busy', message: 'state_conflict' } }],
+        }],
+        response: { id: 'response-id', modelId: 'gpt-4o', timestamp: new Date(), messages: [] },
+      } as const;
+    }) as unknown as typeof import('ai').generateText;
+
+    const agent = new KarakuriAgent({
+      config: {
+        ...baseConfig,
+        karakuriWorldBotIds: ['kw-bot-1'],
+        karakuriWorld: {
+          apiBaseUrl: 'https://example.com/world',
+          apiKey: 'world-key',
+        },
+        worldActionCommands: { checkPhone: 'check_phone' },
+      },
+      memoryStore: new MemoryStoreStub(),
+      sessionManager,
+      generateTextFn,
+      modelFactory: () => ({}) as LanguageModel,
+    });
+    const onWorldCommand = vi.fn();
+    agent.setPhoneIntegration({ onWorldCommand, buildStatusSection: async () => null });
+
+    stubKarakuriWorldNotificationFetch();
+
+    await agent.handleMessage('session-1', 'notification_id: notif-123', 'Admin', { userId: 'kw-bot-1' });
+    await agent.drainPendingEvaluations();
+
+    expect(onWorldCommand).not.toHaveBeenCalled();
   });
 
   it('falls back to a default completion reply when a karakuri-world tool call input has no comment', async () => {

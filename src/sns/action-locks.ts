@@ -28,6 +28,15 @@ export function buildRepostLockKey(providerOrId: SnsProviderType | string, postI
   return postId == null ? `repost:${providerOrId}` : `${providerOrId}:repost:${postId}`;
 }
 
+/**
+ * M8: レート制限ゲート用の provider 単位ロック。checkWrite（読み）→ 実行 → 活動ログ記録
+ * （書き）の check-then-act を原子化する。AI SDK は 1 ステップ内の複数ツール呼び出しを
+ * 並列実行するため、これがないと残枠 1 で 2 件が同時に通過しうる。
+ */
+export function buildWriteGateLockKey(provider: SnsProviderType): string {
+  return `${provider}:write-gate`;
+}
+
 export async function runWithSnsActionLocks<T>(keys: string[], task: () => Promise<T>): Promise<T> {
   const uniqueKeys = [...new Set(keys.filter((key) => key.length > 0))].sort();
 

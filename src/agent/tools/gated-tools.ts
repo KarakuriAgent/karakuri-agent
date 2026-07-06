@@ -4,6 +4,7 @@ import type { SnsCredentials } from '../../config.js';
 import type { IActionLedgerStore } from '../../life/action-ledger.js';
 import type { ExperienceRecorder } from '../../life/recorder.js';
 import { isReservedSkillName } from '../../skill/reserved.js';
+import type { SnsRateLimiter } from '../../sns/rate-limiter.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
 import type { SkillDefinition } from '../../skill/types.js';
 import type { IUserStore } from '../../user/types.js';
@@ -24,6 +25,8 @@ export interface AvailableGatedToolSources {
   evaluatedUsers?: Set<string> | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
   actionLedger?: IActionLedgerStore | undefined;
+  /** M8: provider 別の書き込みレート制限 */
+  snsRateLimiters?: Map<SnsCredentials['provider'], SnsRateLimiter> | undefined;
 }
 
 export function buildGatedToolSets(
@@ -99,6 +102,9 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
       ...(availableToolSources.reportError != null ? { reportError: availableToolSources.reportError } : {}),
       ...(availableToolSources.experienceRecorder != null ? { experienceRecorder: availableToolSources.experienceRecorder } : {}),
       ...(availableToolSources.actionLedger != null ? { actionLedger: availableToolSources.actionLedger } : {}),
+      ...(availableToolSources.snsRateLimiters?.get(sns.provider) != null
+        ? { rateLimiter: availableToolSources.snsRateLimiters.get(sns.provider)! }
+        : {}),
       evaluatedUsers: availableToolSources.evaluatedUsers ?? new Set<string>(),
     });
     Object.assign(allGatedTools, providerTools);
