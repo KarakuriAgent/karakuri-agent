@@ -390,16 +390,13 @@ async function main(): Promise<void> {
     threadMutex: chatThreadMutex,
   });
   agent.setPhoneIntegration(phoneService);
-  // check_phone が設定されているときだけチャットを未読キュー化する（admin と KW bot は対象外）
+  // check_phone が設定されているときだけチャットを未読キュー化する。
+  // KW bot（通知）は即時処理が必須なので対象外。admin も含め人間のメッセージはすべて
+  // 未読に積む（admin ツールの権限判定は check_phone 処理時の userId で従来どおり効く）
   const unreadDiversion = config.worldActionCommands.checkPhone != null && config.karakuriWorld != null
     ? {
-        shouldDivert: (message: { author: { userId: string } }): boolean => {
-          const authorId = message.author.userId;
-          if ((config.karakuriWorldBotIds ?? []).includes(authorId)) {
-            return false;
-          }
-          return !(config.adminUserIds ?? []).includes(authorId);
-        },
+        shouldDivert: (message: { author: { userId: string } }): boolean =>
+          !(config.karakuriWorldBotIds ?? []).includes(message.author.userId),
         enqueue: async (message: { threadId: string; id: string; text: string; author: { userId: string; fullName: string } }): Promise<void> => {
           await phoneUnreadStore.enqueue({
             source: 'discord',
