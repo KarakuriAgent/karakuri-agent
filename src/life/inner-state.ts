@@ -9,6 +9,7 @@
 
 import type Database from 'better-sqlite3';
 
+import { getHourInTimezone } from '../utils/date.js';
 import { KeyedMutex } from '../utils/mutex.js';
 import { createLogger } from '../utils/logger.js';
 import { openLifeDatabase } from './db.js';
@@ -172,16 +173,6 @@ export function circadianEnergyDecayFactor(hourOfDay: number, tuning: LifeTuning
   return 1;
 }
 
-function hourOfDayInTimezone(date: Date, timezone: string): number {
-  const formatted = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    hour: 'numeric',
-    hourCycle: 'h23',
-  }).format(date);
-  const hour = Number(formatted);
-  return Number.isFinite(hour) ? hour : date.getUTCHours();
-}
-
 export function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
@@ -218,7 +209,7 @@ export function decayInnerState(
   let cursor = from.getTime();
   while (remaining > 0) {
     const stepHours = Math.min(1, remaining);
-    const hour = hourOfDayInTimezone(new Date(cursor), timezone);
+    const hour = getHourInTimezone(new Date(cursor), timezone);
     if (state.sleeping) {
       energy += tuning.sleepEnergyRecoveryPerHour * stepHours;
       hunger += tuning.hungerIncreasePerHour * tuning.sleepingHungerFactor * stepHours;

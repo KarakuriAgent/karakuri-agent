@@ -2,14 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { LanguageModel } from 'ai';
+import { NoObjectGeneratedError, type LanguageModel } from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applyAppraisalGuardrails,
   AppraisalService,
+  appraiseEvent,
   deltaLevelToNumber,
   isDeclarativeText,
+  salvageAppraisalOutput,
   SqliteAppraisalLogStore,
   type AppraisalOutput,
 } from '../src/life/appraisal.js';
@@ -143,6 +145,127 @@ describe('applyAppraisalGuardrails', () => {
     expect(guarded.relationCandidates).toHaveLength(1);
     expect(guarded.prospectCandidates).toHaveLength(1);
     expect(guarded.rejections.length).toBe(2);
+  });
+});
+
+function makeNoObjectError(text: string | undefined): NoObjectGeneratedError {
+  return new NoObjectGeneratedError({
+    message: 'No object generated: response did not match schema.',
+    ...(text != null ? { text } : {}),
+    response: { id: 'r-1', timestamp: new Date('2026-07-05T03:00:00.000Z'), modelId: 'test-model' },
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+      outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+    },
+    finishReason: 'stop',
+  });
+}
+
+describe('salvageAppraisalOutput', () => {
+  it('salvages fenced JSON with a preamble and missing optional fields', () => {
+    const text = [
+      'Here is the appraisal:',
+      '```json',
+      JSON.stringify({
+        valence_delta: 'small_up',
+        energy_delta: 'none',
+        hunger_delta: 'none',
+        social_delta: 'small_down',
+      }),
+      '```',
+    ].join('\n');
+    const salvaged = salvageAppraisalOutput(text);
+    expect(salvaged).not.toBeNull();
+    expect(salvaged!.valence_delta).toBe('small_up');
+    expect(salvaged!.sleep).toBe('no_change');
+    expect(salvaged!.salience).toBe('none');
+    expect(salvaged!.segmentation).toEqual([]);
+  });
+
+  it('returns null when core deltas are missing or the text has no JSON', () => {
+    expect(salvageAppraisalOutput('{"salience":"high"}')).toBeNull();
+    expect(salvageAppraisalOutput('just prose, no json')).toBeNull();
+    expect(salvageAppraisalOutput(undefined)).toBeNull();
+  });
+});
+
+describe('appraiseEvent schema-mismatch recovery', () => {
+  const baseOptions = {
+    model: {} as LanguageModel,
+    event: makeEvent(),
+    currentStateDescription: 'ふつう',
+  };
+
+  it('salvages from the raw text without a second LLM call', async () => {
+    const raw = JSON.stringify({
+      valence_delta: 'up',
+      energy_delta: 'none',
+      hunger_delta: 'none',
+      social_delta: 'none',
+    });
+    const generateTextFn = vi.fn(async () => {
+      throw makeNoObjectError('```json\n' + raw + '\n```');
+    });
+
+    const output = await appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+    });
+
+    expect(output?.valence_delta).toBe('up');
+    expect(generateTextFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries with validation feedback when the raw text is unsalvageable', async () => {
+    const expected = makeOutput({ valence_delta: 'small_up' });
+    let calls = 0;
+    const prompts: string[] = [];
+    const generateTextFn = vi.fn(async (options: { prompt: string }) => {
+      calls += 1;
+      prompts.push(options.prompt);
+      if (calls === 1) {
+        throw makeNoObjectError('sorry, I cannot produce JSON');
+      }
+      return { text: JSON.stringify(expected), output: expected, steps: [], response: { messages: [] } };
+    });
+
+    const output = await appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+    });
+
+    expect(output?.valence_delta).toBe('small_up');
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+    expect(prompts[0]).not.toContain('failed schema validation');
+    expect(prompts[1]).toContain('failed schema validation');
+  });
+
+  it('throws after exhausting schema attempts', async () => {
+    const generateTextFn = vi.fn(async () => {
+      throw makeNoObjectError(undefined);
+    });
+
+    await expect(appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      maxSchemaAttempts: 2,
+    })).rejects.toSatisfy((error) => NoObjectGeneratedError.isInstance(error));
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry non-schema errors', async () => {
+    const generateTextFn = vi.fn(async () => {
+      throw new Error('llm down');
+    });
+
+    await expect(appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+    })).rejects.toThrow('llm down');
+    expect(generateTextFn).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -63,8 +63,21 @@ export interface IExperienceLogStore {
   append(event: NormalizedEvent): Promise<number>;
   /** 新しい順。M1 の Perception Buffer 復元・テスト用の最小読み出し */
   getRecent(limit: number, filter?: ExperienceLogFilter): Promise<ExperienceLogRecord[]>;
-  /** 古い順の区間読み出し（M7 reprocessing / 区間リプレイ用） */
-  listBetween(fromIso: string, toIso: string, limit?: number): Promise<ExperienceLogRecord[]>;
+  /**
+   * 古い順の区間読み出し（M7 reprocessing / 区間リプレイ用）。
+   * limit を超える範囲は afterId（前バッチ末尾の id）を渡してページングする。
+   */
+  listBetween(fromIso: string, toIso: string, limit?: number, afterId?: number): Promise<ExperienceLogRecord[]>;
+  /** 区間内の総件数（reprocessing のレポート・取りこぼし検知用） */
+  countBetween(fromIso: string, toIso: string): Promise<number>;
+  /** 区間内に登場するチャネルの一覧（reprocessing のスコープ決定用） */
+  listChannelsBetween(fromIso: string, toIso: string): Promise<string[]>;
+  /**
+   * 指定 id 群の中で最も遅い received_at（M7 reprocessing 用）。
+   * エピソード provenance からそのエピソードの実際の時間的な広がりを求め、
+   * リプレイ範囲を跨ぐエピソードを判定する。空配列・未知 id のみなら null
+   */
+  maxReceivedAt(ids: number[]): Promise<string | null>;
   count(): Promise<number>;
   close(): Promise<void>;
 }

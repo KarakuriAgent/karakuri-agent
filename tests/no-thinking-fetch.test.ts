@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../src/llm/no-thinking-fetch.js';
 
 describe('createNoThinkingFetch', () => {
-  it('does not inject enable_thinking into chat completions request bodies', async () => {
+  it('does not inject enable_thinking by default', async () => {
     const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
-    const fetch = createNoThinkingFetch(baseFetch);
+    const fetch = createNoThinkingFetch({ baseFetch });
 
     await fetch('https://api.example.com/v1/chat/completions', {
       method: 'POST',
@@ -20,26 +20,42 @@ describe('createNoThinkingFetch', () => {
     expect(body.messages).toEqual([]);
   });
 
-  it('preserves existing fields in the JSON body', async () => {
+  it('injects enable_thinking=false when the request param is enabled', async () => {
     const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
-    const fetch = createNoThinkingFetch(baseFetch);
+    const fetch = createNoThinkingFetch({ baseFetch, disableThinkingRequestParam: true });
 
-    await fetch('https://api.example.com/v1/responses', {
+    await fetch('https://api.example.com/v1/chat/completions', {
       method: 'POST',
-      body: JSON.stringify({ model: 'test', temperature: 0.7, stream: true }),
+      body: JSON.stringify({ model: 'qwen3.5-plus', messages: [], temperature: 0.7, stream: true }),
     });
 
     const init = baseFetch.mock.calls[0]![1]!;
     const body = JSON.parse(init.body as string);
-    expect(body.model).toBe('test');
+    expect(body.model).toBe('qwen3.5-plus');
+    expect(body.messages).toEqual([]);
     expect(body.temperature).toBe(0.7);
     expect(body.stream).toBe(true);
     expect(body.enable_thinking).toBe(false);
   });
 
+  it('also injects enable_thinking=false into responses requests when enabled', async () => {
+    const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
+    const fetch = createNoThinkingFetch({ baseFetch, disableThinkingRequestParam: true });
+
+    await fetch('https://api.example.com/v1/responses', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'test' }),
+    });
+
+    const init = baseFetch.mock.calls[0]![1]!;
+    const body = JSON.parse(init.body as string);
+    expect(body.model).toBe('test');
+    expect(body.enable_thinking).toBe(false);
+  });
+
   it('passes non-JSON bodies through unchanged', async () => {
     const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
-    const fetch = createNoThinkingFetch(baseFetch);
+    const fetch = createNoThinkingFetch({ baseFetch, disableThinkingRequestParam: true });
 
     const rawBody = 'not-json-content';
     await fetch('https://api.example.com/v1/chat/completions', {
@@ -53,7 +69,7 @@ describe('createNoThinkingFetch', () => {
 
   it('passes requests without body through unchanged', async () => {
     const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
-    const fetch = createNoThinkingFetch(baseFetch);
+    const fetch = createNoThinkingFetch({ baseFetch, disableThinkingRequestParam: true });
 
     await fetch('https://api.example.com/v1/models');
 

@@ -81,7 +81,10 @@ export interface BuildSystemPromptOptions {
   includeSkillActivity?: boolean | undefined;
 }
 
-const CLOSING_TAG_PATTERN = /<\/(memory|user-profile|diary|skill-context|skill-dynamic-context|summary|existing-summary|conversation|core-memory|recent-diaries|all-diary-dates)>/gi;
+// 特定タグ名の許可リストではなく XML ライクな閉じタグ全般を無害化する。
+// タグ名の列挙だと untrusted セクション（<inner-state> や <episodic-memory> 等）を
+// 追加するたびに登録漏れ = タグ脱出経路になるため、封じ込めを優先する。
+const CLOSING_TAG_PATTERN = /<\/[a-z][a-z0-9-]*>/gi;
 
 export function sanitizeTagContent(content: string): string {
   return content.replace(CLOSING_TAG_PATTERN, (match) => match.replace('</', '< /'));

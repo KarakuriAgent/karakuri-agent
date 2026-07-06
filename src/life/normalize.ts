@@ -81,7 +81,7 @@ export function normalizeKwNotification({
   kindMapper = defaultKwKindMapper,
 }: NormalizeKwNotificationOptions): NormalizedEvent {
   const rawKind = extractKwRawKind(notificationResponse);
-  const actor = extractKwActor(notificationResponse);
+  const actor = extractKwActorFromPayload(notificationResponse);
   return {
     receivedAt,
     channel: kwChannel(botId),
@@ -220,11 +220,11 @@ function extractKwRawKind(notificationResponse: unknown): string | null {
 }
 
 /**
- * KW payload からの best-effort な actor 抽出。
+ * KW payload からの best-effort な actor 抽出（reprocessing の遡及再導出でも使う）。
  * 規約: kw:agent:{id} / kw:npc:{id|name} / 型不明の文字列は kw:actor:{value}。
  * 同一性の統合（alias）は M6 の relations の仕事であり、ここでは行わない。
  */
-function extractKwActor(notificationResponse: unknown): string | undefined {
+export function extractKwActorFromPayload(notificationResponse: unknown): string | undefined {
   const notification = extractObjectField(notificationResponse, 'notification');
   const payload = extractObjectField(notification, 'payload')
     ?? extractObjectField(notificationResponse, 'payload');

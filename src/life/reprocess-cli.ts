@@ -5,7 +5,7 @@
  *   npx tsx src/life/reprocess-cli.ts --from 2026-06-01T00:00:00Z --to 2026-07-01T00:00:00Z [--target episodes] [--rederive] [--reembed] [--dry-run]
  *
  * - --target episodes: 期間内の episodes を破棄して experience_log からリプレイ再構築
- * - --rederive:        KW イベントの kind 索引を現行の写像で遡及再導出
+ * - --rederive:        KW イベントの kind / actor 索引を現行の写像・抽出ルールで遡及再導出
  * - --reembed:         全 episodes を現行の埋め込みモデルで再埋め込み（vec テーブル作り直し）
  * - --dry-run:         件数レポートのみ（書き込みなし）
  *
@@ -23,8 +23,9 @@ import { openLifeDatabase } from './db.js';
 import { OpenAiEmbeddingProvider } from './embeddings.js';
 import { SqliteEpisodeStore } from './episodes.js';
 import { SqliteExperienceLogStore } from './experience-log.js';
+import { toUtcIso } from '../utils/date.js';
 import { defaultInnerState, describeInnerState } from './inner-state.js';
-import { reembedAllEpisodes, rederiveKwEventKinds, Reprocessor } from './reprocess.js';
+import { reembedAllEpisodes, rederiveKwEventIndexes, Reprocessor } from './reprocess.js';
 import { buildAppraisalProcVersion } from './tuning.js';
 
 interface CliArgs {
@@ -84,11 +85,14 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
   const episodeStore = new SqliteEpisodeStore({ db });
 
   try {
-    const from = args.from ?? '1970-01-01T00:00:00.000Z';
-    const to = args.to ?? new Date().toISOString();
+    // 境界は CLI の入口で一度だけ UTC ISO へ正規化する。レポートの countBetween /
+    // listByPeriod も保存値との辞書順比較なので、オフセット形式のまま渡すと
+    // レポートと実際の破壊的操作が異なる範囲を見てしまう
+    const from = toUtcIso(args.from ?? '1970-01-01T00:00:00.000Z');
+    const to = toUtcIso(args.to ?? new Date().toISOString());
 
-    // 差分レポート（前）
-    const eventsInRange = (await experienceLogStore.listBetween(from, to)).length;
+    // 差分レポート（前）。件数は listBetween の limit に切られない countBetween で数える
+    const eventsInRange = await experienceLogStore.countBetween(from, to);
     const episodesBefore = (await episodeStore.listByPeriod(from, to)).length;
     console.log(`Range: ${from} 〜 ${to}`);
     console.log(`- experience_log events in range: ${eventsInRange}`);
@@ -100,8 +104,10 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
     }
 
     if (args.rederive) {
-      const updated = rederiveKwEventKinds(db, from, to);
-      console.log(`- kind rederived: ${updated} events`);
+      // 単一スキャンで kind / actor 両索引を再導出する
+      const rederived = rederiveKwEventIndexes(db, from, to);
+      console.log(`- kind rederived: ${rederived.kinds} events`);
+      console.log(`- actor rederived: ${rederived.actors} events`);
     }
 
     if (args.target === 'episodes') {
@@ -111,7 +117,9 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
         ...((config.appraisalLlmBaseUrl ?? config.llmBaseUrl) != null
           ? { baseURL: config.appraisalLlmBaseUrl ?? config.llmBaseUrl }
           : {}),
-        fetch: createNoThinkingFetch(),
+        fetch: createNoThinkingFetch({
+          disableThinkingRequestParam: config.llmDisableThinkingRequestParam,
+        }),
       });
       const model = modelFactory(selector);
       const neutralState = describeInnerState(defaultInnerState(new Date()));
@@ -131,8 +139,8 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
         },
       });
       const result = await reprocessor.reprocessEpisodes(from, to);
-      console.log(`- episodes deleted: ${result.deletedEpisodes}`);
-      console.log(`- events replayed: ${result.replayedEvents} (appraisal failures: ${result.appraisalFailures})`);
+      console.log(`- episodes deleted: ${result.deletedEpisodes} (straddling protected: ${result.protectedEpisodes}, drafts cleared: ${result.clearedDrafts})`);
+      console.log(`- events replayed: ${result.replayedEvents} (skipped as protected: ${result.skippedEvents}, appraisal failures: ${result.appraisalFailures})`);
       console.log(`- episodes created: ${result.createdEpisodes}`);
     }
 

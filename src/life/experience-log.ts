@@ -109,14 +109,14 @@ export class SqliteExperienceLogStore implements IExperienceLogStore {
     }));
   }
 
-  async listBetween(fromIso: string, toIso: string, limit = 10_000): Promise<ExperienceLogRecord[]> {
-    const rows = this.db.prepare<[string, string, number], ExperienceLogRow>(`
+  async listBetween(fromIso: string, toIso: string, limit = 10_000, afterId = 0): Promise<ExperienceLogRecord[]> {
+    const rows = this.db.prepare<[string, string, number, number], ExperienceLogRow>(`
       SELECT id, received_at, channel, kind, actor, payload
       FROM experience_log
-      WHERE received_at >= ? AND received_at <= ?
+      WHERE received_at >= ? AND received_at <= ? AND id > ?
       ORDER BY id ASC
       LIMIT ?
-    `).all(fromIso, toIso, Math.max(0, limit));
+    `).all(fromIso, toIso, afterId, Math.max(0, limit));
 
     return rows.map((row) => ({
       id: row.id,
@@ -126,6 +126,36 @@ export class SqliteExperienceLogStore implements IExperienceLogStore {
       actor: row.actor,
       payload: row.payload,
     }));
+  }
+
+  async countBetween(fromIso: string, toIso: string): Promise<number> {
+    const row = this.db.prepare<[string, string], { count: number }>(
+      'SELECT COUNT(*) AS count FROM experience_log WHERE received_at >= ? AND received_at <= ?',
+    ).get(fromIso, toIso);
+    return Promise.resolve(row?.count ?? 0);
+  }
+
+  async listChannelsBetween(fromIso: string, toIso: string): Promise<string[]> {
+    const rows = this.db.prepare<[string, string], { channel: string }>(
+      'SELECT DISTINCT channel FROM experience_log WHERE received_at >= ? AND received_at <= ? ORDER BY channel ASC',
+    ).all(fromIso, toIso);
+    return Promise.resolve(rows.map((row) => row.channel));
+  }
+
+  async maxReceivedAt(ids: number[]): Promise<string | null> {
+    let max: string | null = null;
+    // SQLite のバインド変数上限を超えないようチャンクで問い合わせる
+    for (let offset = 0; offset < ids.length; offset += 500) {
+      const chunk = ids.slice(offset, offset + 500);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const row = this.db.prepare<number[], { max: string | null }>(
+        `SELECT MAX(received_at) AS max FROM experience_log WHERE id IN (${placeholders})`,
+      ).get(...chunk);
+      if (row?.max != null && (max == null || row.max > max)) {
+        max = row.max;
+      }
+    }
+    return Promise.resolve(max);
   }
 
   async count(): Promise<number> {

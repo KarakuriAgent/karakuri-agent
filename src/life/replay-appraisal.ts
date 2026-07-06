@@ -116,7 +116,9 @@ export async function runReplay(argv: string[]): Promise<void> {
     ...((config.appraisalLlmBaseUrl ?? config.llmBaseUrl) != null
       ? { baseURL: config.appraisalLlmBaseUrl ?? config.llmBaseUrl }
       : {}),
-    fetch: createNoThinkingFetch(),
+    fetch: createNoThinkingFetch({
+      disableThinkingRequestParam: config.llmDisableThinkingRequestParam,
+    }),
   });
   const model = modelFactory(selector);
   const procVersion = buildAppraisalProcVersion(selector.selector);

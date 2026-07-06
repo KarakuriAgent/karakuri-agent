@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { openLifeDatabase } from '../src/life/db.js';
 import { EpisodeEmbeddingIndex, type IEmbeddingProvider } from '../src/life/embeddings.js';
@@ -114,12 +114,13 @@ describe('EpisodeRetrievalService', () => {
     expect(await service.search({ text: '映画', now: NOW })).toEqual([]);
   });
 
-  it('formats episodes for prompt injection', () => {
+  it('formats episodes for prompt injection with local-day dates', () => {
     const formatted = formatEpisodesForPrompt([
       {
         episode: {
           id: 1,
-          occurredAt: '2026-07-01T03:00:00.000Z',
+          // JST では 7/1 深夜（UTC 暦日ではなくローカル日で表示されることを固定する）
+          occurredAt: '2026-06-30T16:30:00.000Z',
           channel: 'kw:bot-1',
           body: '映画館でBさんと映画を観た。',
           importance: 0.7,
@@ -131,7 +132,7 @@ describe('EpisodeRetrievalService', () => {
         },
         score: 1,
       },
-    ]);
+    ], 'Asia/Tokyo');
     expect(formatted).toBe('- [2026-07-01] 映画館でBさんと映画を観た。');
   });
 });
@@ -197,6 +198,100 @@ describe('EpisodeEmbeddingIndex', () => {
     expect(await index.backfillPending()).toBe(1);
     expect(await index.pendingCount()).toBe(0);
     expect(index.getEmbedding(id)).not.toBeNull();
+  });
+
+  it('a permanently failing item does not starve later pending items (no head-of-line blocking)', async () => {
+    const { db, store } = await createEnv();
+    const poisonedId = await store.insert(makeEpisode({ body: '毒入り' }));
+    const healthyId = await store.insert(makeEpisode({ body: '健全なエピソード' }));
+    const provider = makeProvider({
+      embedText: async (text: string) => {
+        if (text === '毒入り') {
+          throw new Error('this specific content always fails');
+        }
+        return [text.length, 1, 2, 3];
+      },
+    });
+    const index = new EpisodeEmbeddingIndex({ db, provider, dimensions: 4 });
+    // 両方を pending に積む（episode_id 順で毒入りが先頭に来る）
+    db.prepare('INSERT OR IGNORE INTO episode_embedding_pending (episode_id) VALUES (?)').run(poisonedId);
+    db.prepare('INSERT OR IGNORE INTO episode_embedding_pending (episode_id) VALUES (?)').run(healthyId);
+
+    // 毒入りが先頭にいても後続の pending は埋められる
+    const indexed = await index.backfillPending();
+    expect(indexed).toBe(1);
+    expect(await index.pendingCount()).toBe(1); // 毒入りだけ残る
+    expect(index.getEmbedding(healthyId)).not.toBeNull();
+  });
+
+  it('deprioritizes failing rows so adjacent poisoned items cannot starve the queue', async () => {
+    const { db, store } = await createEnv();
+    // 恒久失敗が連続失敗の打ち切り閾値（3）以上先頭に並ぶ、飢餓の再発ケース
+    const poisonedIds: number[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      poisonedIds.push(await store.insert(makeEpisode({ body: `毒入り${index}` })));
+    }
+    const healthyId = await store.insert(makeEpisode({ body: '健全なエピソード' }));
+    const provider = makeProvider({
+      embedText: async (text: string) => {
+        if (text.startsWith('毒入り')) {
+          throw new Error('this specific content always fails');
+        }
+        return [text.length, 1, 2, 3];
+      },
+    });
+    const index = new EpisodeEmbeddingIndex({ db, provider, dimensions: 4 });
+    for (const id of [...poisonedIds, healthyId]) {
+      db.prepare('INSERT OR IGNORE INTO episode_embedding_pending (episode_id) VALUES (?)').run(id);
+    }
+
+    // 失敗した行は attempts 昇順の選択で自然に後回しになり、次の実行で後続が埋まる
+    let totalIndexed = 0;
+    for (let run = 0; run < 10 && totalIndexed === 0; run += 1) {
+      totalIndexed += await index.backfillPending();
+    }
+    expect(totalIndexed).toBe(1);
+    expect(index.getEmbedding(healthyId)).not.toBeNull();
+    // 恒久失敗行は pending に残る（上限到達で dead-letter 化。回収は M7 の --reembed）
+    expect(await index.pendingCount()).toBe(3);
+  });
+
+  it('excludes dead-lettered rows (attempts at the cap) from backfill selection', async () => {
+    const { db, store } = await createEnv();
+    const deadId = await store.insert(makeEpisode({ body: '恒久失敗' }));
+    const embedText = vi.fn(async (text: string) => [text.length, 1, 2, 3]);
+    const index = new EpisodeEmbeddingIndex({ db, provider: makeProvider({ embedText }), dimensions: 4 });
+    db.prepare('INSERT INTO episode_embedding_pending (episode_id, attempts) VALUES (?, 99)').run(deadId);
+
+    // dead-letter 行には API コールすら発生しない
+    expect(await index.backfillPending()).toBe(0);
+    expect(embedText).not.toHaveBeenCalled();
+    expect(await index.pendingCount()).toBe(1);
+  });
+
+  it('stops the batch after consecutive failures (API-wide outage)', async () => {
+    const { db, store } = await createEnv();
+    const ids: number[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      ids.push(await store.insert(makeEpisode({ body: `出来事${index}` })));
+    }
+    let attempts = 0;
+    const provider = makeProvider({
+      embedText: async () => {
+        attempts += 1;
+        throw new Error('embedding API down');
+      },
+    });
+    const index = new EpisodeEmbeddingIndex({ db, provider, dimensions: 4 });
+    for (const id of ids) {
+      db.prepare('INSERT OR IGNORE INTO episode_embedding_pending (episode_id) VALUES (?)').run(id);
+    }
+
+    attempts = 0;
+    expect(await index.backfillPending()).toBe(0);
+    // 全滅時は連続失敗の上限で打ち切る（pending 全件を無駄撃ちしない）
+    expect(attempts).toBe(3);
+    expect(await index.pendingCount()).toBe(5);
   });
 
   it('disables vector search when dimensions change (until M7 re-embedding)', async () => {

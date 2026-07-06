@@ -16,6 +16,20 @@ import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('EpisodeEmbeddingIndex');
 
+/** backfill をこの回数連続で失敗したら API 全体の障害とみなして打ち切る */
+const MAX_CONSECUTIVE_BACKFILL_FAILURES = 3;
+
+/**
+ * 1 行あたりの backfill 失敗回数の上限。超えた行はコンテンツ起因の恒久失敗と
+ * みなして選択から除外し（dead-letter）、後続の pending を飢えさせない。
+ * 回収は M7 の --reembed（pending 作り直し = attempts リセット）で行う。
+ *
+ * API 全体の障害中も先頭行の attempts は進むため（障害とコンテンツ起因は
+ * この層では区別できない）、選択を attempts 昇順にして増分を全体へ分散させ、
+ * 上限は一時障害で使い切らない程度に大きく取る
+ */
+const MAX_BACKFILL_ATTEMPTS_PER_EPISODE = 10;
+
 export interface IEmbeddingProvider {
   readonly modelName: string;
   embedText(text: string): Promise<number[]>;
@@ -143,10 +157,14 @@ export class EpisodeEmbeddingIndex {
       return 0;
     }
 
-    const pending = this.db.prepare<[number], { episode_id: number }>(
-      'SELECT episode_id FROM episode_embedding_pending LIMIT ?',
-    ).all(limit);
+    // attempts 昇順で選ぶ: 失敗した行は自然に後回しになり、恒久失敗行が
+    // 先頭に居座って毎回同じ場所で打ち切られる飢餓を防ぐ。上限に達した行
+    // （内容起因の恒久失敗とみなす）は dead-letter として選択から除外する
+    const pending = this.db.prepare<[number, number], { episode_id: number }>(
+      'SELECT episode_id FROM episode_embedding_pending WHERE attempts < ? ORDER BY attempts ASC, episode_id ASC LIMIT ?',
+    ).all(MAX_BACKFILL_ATTEMPTS_PER_EPISODE, limit);
     let indexed = 0;
+    let consecutiveFailures = 0;
     for (const row of pending) {
       const episode = this.db.prepare<[number], { body: string }>(
         'SELECT body FROM episodes WHERE id = ?',
@@ -157,8 +175,22 @@ export class EpisodeEmbeddingIndex {
       }
       const succeeded = await this.indexEpisode(row.episode_id, episode.body);
       if (!succeeded) {
-        break; // API が落ちている間はリトライを続けない
+        const attempts = this.recordBackfillFailure(row.episode_id);
+        if (attempts >= MAX_BACKFILL_ATTEMPTS_PER_EPISODE) {
+          logger.warn('Episode embedding dead-lettered after repeated failures', {
+            episodeId: row.episode_id,
+            attempts,
+          });
+        }
+        // 連続失敗は API 全体の障害とみなして打ち切る（行単位の恒久失敗は
+        // attempts 上限側で除外されるため、ここは一時障害の早期打ち切り専用）
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= MAX_CONSECUTIVE_BACKFILL_FAILURES) {
+          break;
+        }
+        continue;
       }
+      consecutiveFailures = 0;
       indexed += 1;
     }
 
@@ -226,6 +258,19 @@ export class EpisodeEmbeddingIndex {
         .run(BigInt(episodeId), toEmbeddingBuffer(embedding));
     });
     replace();
+  }
+
+  /** backfill 失敗を行単位で記録し、更新後の attempts を返す */
+  private recordBackfillFailure(episodeId: number): number {
+    try {
+      const row = this.db.prepare<[number], { attempts: number }>(
+        'UPDATE episode_embedding_pending SET attempts = attempts + 1 WHERE episode_id = ? RETURNING attempts',
+      ).get(episodeId);
+      return row?.attempts ?? 0;
+    } catch (error) {
+      logger.warn('Failed to record embedding backfill failure', error, { episodeId });
+      return 0;
+    }
   }
 
   private markPending(episodeId: number): void {

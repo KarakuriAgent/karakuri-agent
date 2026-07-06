@@ -106,6 +106,32 @@ describe('SqliteExperienceLogStore', () => {
     expect(records.map((record) => record.kind)).toEqual(['second', 'first']);
   });
 
+  it('pages listBetween with an id cursor and counts the full range', async () => {
+    const { store } = await createStore();
+    await store.append(buildEvent({ receivedAt: new Date('2026-07-01T00:00:00.000Z'), channel: 'kw:bot-1' }));
+    await store.append(buildEvent({ receivedAt: new Date('2026-07-02T00:00:00.000Z'), channel: 'discord' }));
+    await store.append(buildEvent({ receivedAt: new Date('2026-07-03T00:00:00.000Z'), channel: 'kw:bot-1' }));
+    await store.append(buildEvent({ receivedAt: new Date('2026-08-01T00:00:00.000Z'), channel: 'sns:mastodon' }));
+
+    const from = '2026-07-01T00:00:00.000Z';
+    const to = '2026-07-31T23:59:59.999Z';
+
+    // countBetween は listBetween の limit に影響されない全件数
+    expect(await store.countBetween(from, to)).toBe(3);
+
+    // afterId カーソルでのページング（古い順）
+    const firstPage = await store.listBetween(from, to, 2);
+    expect(firstPage.map((record) => record.receivedAt)).toEqual([
+      '2026-07-01T00:00:00.000Z',
+      '2026-07-02T00:00:00.000Z',
+    ]);
+    const secondPage = await store.listBetween(from, to, 2, firstPage.at(-1)!.id);
+    expect(secondPage.map((record) => record.receivedAt)).toEqual(['2026-07-03T00:00:00.000Z']);
+
+    // 区間内に登場するチャネルの列挙（区間外の sns:mastodon は含まない）
+    expect(await store.listChannelsBetween(from, to)).toEqual(['discord', 'kw:bot-1']);
+  });
+
   it('rejects UPDATE and DELETE at the database level (append-only)', async () => {
     const { dataDir, store } = await createStore();
     await store.append(buildEvent());

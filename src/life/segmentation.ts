@@ -105,12 +105,17 @@ export class SegmentationEngine {
   /**
    * クラッシュ回復・起動時処理: 最大継続時間を超えたドラフトを
    * 「中断された体験」として機械的に close する。
+   * channels を渡すと該当チャネルのドラフトのみ対象にする
+   * （reprocessing がリプレイ対象外の生きたドラフトを閉じないため）。
    */
-  async recoverStaleDrafts(now: Date): Promise<number> {
-    const drafts = await this.store.listDrafts();
+  async recoverStaleDrafts(now: Date, channels?: string[]): Promise<number> {
+    const allDrafts = await this.store.listDrafts();
+    const drafts = channels != null
+      ? allDrafts.filter((draft) => channels.includes(draft.channel))
+      : allDrafts;
     let closed = 0;
     for (const draft of drafts) {
-      const ageHours = (now.getTime() - new Date(draft.lastEventAt).getTime()) / 3_600_000;
+      const ageHours = Math.max(0, (now.getTime() - new Date(draft.lastEventAt).getTime()) / 3_600_000);
       if (ageHours >= this.maxDraftHours) {
         await this.finalizeDraft(draft, buildMechanicalBody(draft, '（この体験は途中で途切れた）'), null, now.toISOString());
         closed += 1;
@@ -298,7 +303,8 @@ export class SegmentationEngine {
   private async enforceLimits(channel: string, receivedAt: Date, _guarded: GuardedAppraisal): Promise<void> {
     const drafts = await this.store.listDrafts();
     for (const draft of drafts.filter((candidate) => candidate.channel === channel)) {
-      const ageHours = (receivedAt.getTime() - new Date(draft.startedAt).getTime()) / 3_600_000;
+      // 未読キュー経由（M8）の過去時刻イベントで負にならないようクランプする
+      const ageHours = Math.max(0, (receivedAt.getTime() - new Date(draft.startedAt).getTime()) / 3_600_000);
       if (draft.beats.length >= this.maxBeats || ageHours >= this.maxDraftHours) {
         logger.info('Force closing draft (guardrail limit)', {
           channel,

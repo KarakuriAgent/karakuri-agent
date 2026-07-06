@@ -236,6 +236,35 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       CREATE INDEX idx_relations_object ON relations(object_id);
     `,
   },
+  {
+    version: 8,
+    up: `
+      -- 埋め込み backfill の行単位リトライ回数。上限に達した行は dead-letter として
+      -- 選択から除外し、先頭の恒久失敗が後続の pending を飢えさせないようにする
+      -- （回収は M7 の --reembed = pending 作り直しで行う）
+      ALTER TABLE episode_embedding_pending ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    version: 9,
+    up: `
+      -- スマホ未読キュー（M8）: KW カスタムコマンド統合時、チャット着信は即応答せず
+      -- ここへ積み、check_phone 実行時にスレッド単位でまとめて処理する。
+      -- 処理済みは processed_at を立てて残す（会話内容の一次資料は experience_log 側）
+      CREATE TABLE phone_unread (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        source       TEXT NOT NULL,
+        thread_id    TEXT NOT NULL,
+        message_id   TEXT,
+        author_id    TEXT,
+        author_name  TEXT,
+        body         TEXT NOT NULL,
+        received_at  TEXT NOT NULL,
+        processed_at TEXT
+      );
+      CREATE INDEX idx_phone_unread_pending ON phone_unread(processed_at, thread_id, id);
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {

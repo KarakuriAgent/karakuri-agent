@@ -57,12 +57,17 @@ export interface IEpisodeStore {
   /** 忘却 = 浮力の減衰。削除はしない（一次資料は不変） */
   decayBuoyancy(beforeIso: string, factor: number, floor?: number): Promise<number>;
   /**
-   * M7 reprocessing 用: 期間内の導出エピソードを破棄する（episodes は導出ビューであり
-   * 一次資料ではないため削除できる）。削除した id を返す
+   * M7 reprocessing 用: 指定 id の導出エピソードを破棄する（episodes は導出ビューであり
+   * 一次資料ではないため削除できる）。範囲を跨ぐエピソードを保護できるよう、
+   * 期間指定ではなく id 指定にしている。削除件数を返す
    */
-  deleteByPeriod(fromIso: string, toIso: string): Promise<number[]>;
-  /** M7 reprocessing 用: 全ドラフトを破棄する（リプレイで再構築される） */
-  clearDrafts(): Promise<number>;
+  deleteByIds(ids: number[]): Promise<number>;
+  /**
+   * M7 reprocessing 用: 指定チャネルのドラフトを破棄する（リプレイで再構築される）。
+   * リプレイ対象外のチャネルで進行中のドラフトを巻き添えにしないため、
+   * スコープは必須（全消しの既定を持たない）
+   */
+  clearDrafts(channels: string[]): Promise<number>;
   // ドラフト操作
   getDraft(channel: string, threadKey: string): Promise<EpisodeDraft | null>;
   listDrafts(): Promise<EpisodeDraft[]>;
@@ -164,13 +169,9 @@ export class SqliteEpisodeStore implements IEpisodeStore {
     return Promise.resolve(rows.map(mapEpisodeRow));
   }
 
-  async deleteByPeriod(fromIso: string, toIso: string): Promise<number[]> {
-    const rows = this.db.prepare<[string, string], { id: number }>(
-      'SELECT id FROM episodes WHERE occurred_at >= ? AND occurred_at <= ?',
-    ).all(fromIso, toIso);
-    const ids = rows.map((row) => row.id);
+  async deleteByIds(ids: number[]): Promise<number> {
     if (ids.length === 0) {
-      return [];
+      return 0;
     }
 
     const remove = this.db.transaction(() => {
@@ -188,11 +189,15 @@ export class SqliteEpisodeStore implements IEpisodeStore {
       }
     });
     remove();
-    return ids;
+    return ids.length;
   }
 
-  async clearDrafts(): Promise<number> {
-    const result = this.db.prepare('DELETE FROM episode_drafts').run();
+  async clearDrafts(channels: string[]): Promise<number> {
+    if (channels.length === 0) {
+      return 0;
+    }
+    const placeholders = channels.map(() => '?').join(', ');
+    const result = this.db.prepare(`DELETE FROM episode_drafts WHERE channel IN (${placeholders})`).run(...channels);
     return Promise.resolve(result.changes);
   }
 

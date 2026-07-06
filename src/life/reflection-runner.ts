@@ -2,20 +2,21 @@
  * 省察の実行スケジュール（M4）。実行は実時刻（既存 scheduler と同じタイマー方式）で行い、
  * 「世界の夜」の判定は差し替え可能な関数（IsNightFn）に委ねる。
  *
- * - 日次: 夜に 1 回（前回実行日と違う日付になったら）
- * - 週次: 日曜の夜に直近 7 日ぶん
+ * - 日次: 夜に 1 回。対象日が暦の上で終わった後（夜ウィンドウの 0 時以降の側）に
+ *   実行する — 日が終わる前に書くと、実行後〜0 時のエピソードが取り漏れるため
+ * - 週次: 日曜の夜（明けの深夜帯）に直近 7 日ぶん
  * - 月次: 月が変わった最初の夜に前月ぶん
  */
 
 import type Database from 'better-sqlite3';
 
 import type { IMessageSink } from '../scheduler/types.js';
-import { formatDateInTimezone } from '../utils/date.js';
 import { formatError } from '../utils/error.js';
 import { createLogger } from '../utils/logger.js';
 import { reportSafely } from '../utils/report.js';
+import { formatDateInTimezone, shiftDateString } from '../utils/date.js';
 import { getLifeMeta, setLifeMeta } from './db.js';
-import { defaultIsNight, type IsNightFn, type ReflectionEngine } from './reflection.js';
+import { defaultIsNight, reflectionDateFor, type IsNightFn, type ReflectionEngine } from './reflection.js';
 
 const logger = createLogger('ReflectionRunner');
 const MINUTE_MS = 60_000;
@@ -80,42 +81,58 @@ export class ReflectionRunner {
       return;
     }
 
-    const today = formatDateInTimezone(now, this.options.timezone);
+    // 夜ウィンドウは 0 時をまたぐため「カレンダー上の今日」ではなく
+    // 「この夜が振り返る日」を対象にする（深夜〜明け方は前日に帰属）。
+    // カレンダー日付で判定すると、日付変更直後の tick がエピソード 0 件の
+    // 新日付で実行済みマークを付け、本来の夜の実行が毎日スキップされる。
+    const reflectionDate = reflectionDateFor(now, this.options.timezone);
+    // 対象日が暦の上で終わってから実行する（夜ウィンドウの 0 時以降の側で走る）。
+    // 日が終わる前（21〜24 時）に実行してマークを付けると、実行後〜0 時の
+    // エピソードが当日の窓に属したままどの省察にも拾われず、毎晩恒久的に漏れる
+    if (reflectionDate >= formatDateInTimezone(now, this.options.timezone)) {
+      return;
+    }
     try {
-      if (getLifeMeta(this.options.db, META_DAILY) !== today) {
-        const result = await this.options.engine.runDaily(today, now);
-        setLifeMeta(this.options.db, META_DAILY, today);
+      if (getLifeMeta(this.options.db, META_DAILY) !== reflectionDate) {
+        const result = await this.options.engine.runDaily(reflectionDate, now);
+        setLifeMeta(this.options.db, META_DAILY, reflectionDate);
         if (result != null && result.diaryNarrativeId != null) {
           await reportSafely(
             this.options.messageSink,
             this.options.reportChannelId,
-            `📔 日次省察 (${today}): 日記を書いた。新しい信念 ${result.newBeliefs} 件 / 改訂 ${result.revisions} 件 / 失効 ${result.deactivations} 件 / 単一出所の格下げ ${result.demotedSingleSource} 件`,
+            `📔 日次省察 (${reflectionDate}): 日記を書いた。新しい信念 ${result.newBeliefs} 件 / 改訂 ${result.revisions} 件 / 失効 ${result.deactivations} 件 / 単一出所の格下げ ${result.demotedSingleSource} 件`,
             logger,
           );
         }
       }
 
-      const weekKey = isoWeekKey(today);
-      if (isSunday(today) && getLifeMeta(this.options.db, META_WEEKLY) !== weekKey) {
-        const periodStart = shiftDate(today, -6);
-        const result = await this.options.engine.runWeekly(periodStart, today);
+      const weekKey = isoWeekKey(reflectionDate);
+      if (isSunday(reflectionDate) && getLifeMeta(this.options.db, META_WEEKLY) !== weekKey) {
+        const periodStart = shiftDateString(reflectionDate, -6);
+        const result = await this.options.engine.runWeekly(periodStart, reflectionDate);
         setLifeMeta(this.options.db, META_WEEKLY, weekKey);
         if (result != null) {
           await reportSafely(
             this.options.messageSink,
             this.options.reportChannelId,
-            `🗂 週次省察 (${periodStart}〜${today}): テーマ ${result.themes} 件 / 自己像の更新 ${result.selfUpdates} 件`,
+            `🗂 週次省察 (${periodStart}〜${reflectionDate}): テーマ ${result.themes} 件 / 自己像の更新 ${result.selfUpdates} 件`,
             logger,
           );
         }
       }
 
-      const monthKey = today.slice(0, 7);
+      const monthKey = reflectionDate.slice(0, 7);
       const lastMonthlyKey = getLifeMeta(this.options.db, META_MONTHLY);
       if (lastMonthlyKey == null) {
-        // 初回は実行済み扱いにする（過去の空データに対する即時実行を避ける）
-        setLifeMeta(this.options.db, META_MONTHLY, monthKey);
-      } else if (lastMonthlyKey !== monthKey) {
+        // 初回は実行済み扱いにする（過去の空データに対する即時実行を避ける）。
+        // マークは reflectionDate ではなくカレンダー上の今日の月で付ける:
+        // 初回 tick が月初の深夜帯だと reflectionDate は前月に落ち、同日の夜の
+        // tick が「月が変わった」と誤認して空の前月へ即時実行してしまう
+        setLifeMeta(this.options.db, META_MONTHLY, formatDateInTimezone(now, this.options.timezone).slice(0, 7));
+      } else if (monthKey > lastMonthlyKey) {
+        // 前進方向の月替わりのみ実行する（YYYY-MM は辞書順 = 時系列順）。
+        // 単純な不一致判定だと、月初の深夜帯 tick（reflectionDate が前月へ落ちる）が
+        // 初回マークより「過去の月」を見て空の月へ即時実行 + マークを巻き戻してしまう
         const previousMonth = previousMonthRange(monthKey);
         const result = await this.options.engine.runMonthly(previousMonth.start, previousMonth.end, now);
         setLifeMeta(this.options.db, META_MONTHLY, monthKey);
@@ -166,11 +183,6 @@ function isoWeekKey(date: string): string {
   const start = new Date(Date.UTC(year, 0, 1));
   const week = Math.floor((day.getTime() - start.getTime()) / (7 * 86_400_000));
   return `${year}-W${week}`;
-}
-
-function shiftDate(date: string, days: number): string {
-  const shifted = new Date(new Date(`${date}T00:00:00.000Z`).getTime() + days * 86_400_000);
-  return shifted.toISOString().slice(0, 10);
 }
 
 function previousMonthRange(monthKey: string): { start: string; end: string } {

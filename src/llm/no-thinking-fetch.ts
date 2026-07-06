@@ -6,13 +6,21 @@ const RESPONSES_NO_THINKING_PROVIDER_OPTIONS: ProviderOptions = {
   openai: { reasoningEffort: 'low' },
 };
 
+export interface NoThinkingFetchOptions {
+  baseFetch?: typeof globalThis.fetch | undefined;
+  disableThinkingRequestParam?: boolean | undefined;
+}
+
 export function noThinkingProviderOptions(api: OpenAiApiKind): ProviderOptions {
   return api === 'responses' ? RESPONSES_NO_THINKING_PROVIDER_OPTIONS : {};
 }
 
-export function createNoThinkingFetch(baseFetch: typeof globalThis.fetch = globalThis.fetch): typeof globalThis.fetch {
+export function createNoThinkingFetch({
+  baseFetch = globalThis.fetch,
+  disableThinkingRequestParam = false,
+}: NoThinkingFetchOptions = {}): typeof globalThis.fetch {
   return async (input, init) => {
-    if (isChatCompletionsRequest(input)) {
+    if (!disableThinkingRequestParam) {
       return baseFetch(input, init);
     }
 
@@ -28,14 +36,4 @@ export function createNoThinkingFetch(baseFetch: typeof globalThis.fetch = globa
 
     return baseFetch(input, init);
   };
-}
-
-function isChatCompletionsRequest(input: string | URL | Request): boolean {
-  const url = typeof input === 'string'
-    ? input
-    : input instanceof URL
-      ? input.toString()
-      : input.url;
-
-  return url.includes('/chat/completions');
 }

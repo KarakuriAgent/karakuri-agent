@@ -10,6 +10,7 @@
  * 2. 能動想起 — エージェントが使う検索ツール（recallEpisodes、agent/tools 側）
  */
 
+import { formatDateInTimezone } from '../utils/date.js';
 import { createLogger } from '../utils/logger.js';
 import type { EpisodeEmbeddingIndex } from './embeddings.js';
 import type { Episode, IEpisodeStore } from './episodes.js';
@@ -218,13 +219,16 @@ function characterBigrams(text: string): Set<string> {
   return bigrams;
 }
 
-/** 自動想起の結果をプロンプト注入用テキストへ整形する（untrusted タグは呼び出し側で付ける） */
-export function formatEpisodesForPrompt(episodes: ScoredEpisode[]): string {
+/**
+ * 自動想起の結果をプロンプト注入用テキストへ整形する（untrusted タグは呼び出し側で付ける）。
+ * 日付は UTC 暦日ではなくローカル日で示す（日記・日次省察の日付帰属と一致させる）
+ */
+export function formatEpisodesForPrompt(episodes: ScoredEpisode[], timezone: string): string {
   if (episodes.length === 0) {
     return '';
   }
   return episodes
-    .map(({ episode }) => `- [${episode.occurredAt.slice(0, 10)}] ${episode.body}`)
+    .map(({ episode }) => `- [${formatDateInTimezone(new Date(episode.occurredAt), timezone)}] ${episode.body}`)
     .join('\n');
 }
 

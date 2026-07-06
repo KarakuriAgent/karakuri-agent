@@ -13,6 +13,7 @@ import { InnerStateService, SqliteInnerStateStore } from '../src/life/inner-stat
 import { SqliteNarrativeStore } from '../src/life/narratives.js';
 import {
   defaultIsNight,
+  reflectionDateFor,
   ReflectionEngine,
   type DailyReflectionOutput,
   type MonthlyReflectionOutput,
@@ -227,6 +228,107 @@ describe('ReflectionEngine.runDaily', () => {
     expect(state.valence).toBeLessThan(0);
   });
 
+  it('collects episodes by the local calendar day, not the UTC day', async () => {
+    const env = await createEnv();
+    // JST 7/5 早朝（UTC では 7/4）と JST 7/6 深夜（UTC では 7/5）
+    await env.episodeStore.insert({
+      occurredAt: '2026-07-04T20:00:00.000Z', // JST 2026-07-05 05:00
+      channel: 'kw:bot-1',
+      body: '早朝の散歩に出た。',
+      importance: 0.4,
+      participants: [],
+      provenance: [1],
+      procVersion: 'test',
+    });
+    await env.episodeStore.insert({
+      occurredAt: '2026-07-05T16:00:00.000Z', // JST 2026-07-06 01:00
+      channel: 'kw:bot-1',
+      body: '深夜の物音を聞いた。',
+      importance: 0.4,
+      participants: [],
+      provenance: [2],
+      procVersion: 'test',
+    });
+
+    const generateTextFn = stubGenerateTextFn(makeDailyOutput());
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      timezone: 'Asia/Tokyo',
+      generateTextFn,
+    });
+    const result = await engine.runDaily('2026-07-05', new Date('2026-07-05T13:00:00.000Z'));
+
+    expect(result?.diaryNarrativeId).not.toBeNull();
+    const call = (generateTextFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0]![0] as { prompt: string };
+    expect(call.prompt).toContain('早朝の散歩');
+    expect(call.prompt).not.toContain('深夜の物音');
+  });
+
+  it('builds provenance per belief from cited episodes; uncited beliefs are capped as single-source', async () => {
+    const env = await createEnv();
+    // 1 会話 = 1 エピソード複数ビート（イベント id が複数）。イベント id を
+    // 数えると出所複数に見えてキャップを素通りする、汚染対策の本命ケース
+    const remarkEpisodeId = await env.episodeStore.insert({
+      occurredAt: '2026-07-05T10:00:00.000Z',
+      channel: 'kw:bot-1',
+      body: 'Bさんが「Cさんは嘘つきだ」と繰り返し言っていた。',
+      importance: 0.5,
+      participants: ['kw:agent:agent-b'],
+      provenance: [11, 12, 13],
+      procVersion: 'test',
+    });
+    const otherEpisodeId = await env.episodeStore.insert({
+      occurredAt: '2026-07-05T11:00:00.000Z',
+      channel: 'kw:bot-1',
+      body: '午後は市場へ買い物に出かけた。',
+      importance: 0.4,
+      participants: [],
+      provenance: [14, 15],
+      procVersion: 'test',
+    });
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: stubGenerateTextFn(makeDailyOutput({
+        new_beliefs: [
+          // 単一エピソード（単一人物の一言）由来の高 confidence 信念
+          { kind: 'person_fact', subject: 'kw:agent:agent-c', body: 'Cさんは嘘つきらしい', confidence: 0.95, source_episode_ids: [remarkEpisodeId] },
+          // 出所を示さない信念
+          { kind: 'world_fact', body: '市場は午後も開いているようだ', confidence: 0.9 },
+          // 複数エピソードを根拠にする信念
+          { kind: 'self', body: 'わたしは外に出るのが好きだ', confidence: 0.8, source_episode_ids: [remarkEpisodeId, otherEpisodeId] },
+        ],
+      })),
+    });
+    await engine.runDaily('2026-07-05', new Date('2026-07-05T14:00:00.000Z'));
+
+    // provenance は根拠エピソードごとの代表イベント id（episodes.provenance の
+    // 先頭 = 不変な experience_log id）。エピソード id は reprocess で振り直される
+    // ため保存しない。複数ビート（イベント id 3 件）でも単一エピソード由来なら
+    // 要素数 1 でキャップされる（汚染対策の本命）
+    const personFacts = await env.beliefStore.listActive({ kind: 'person_fact' });
+    expect(personFacts[0]!.provenance).toEqual([11]);
+    expect(personFacts[0]!.confidence).toBeLessThanOrEqual(SINGLE_SOURCE_CONFIDENCE_CAP);
+
+    // 出所不明の信念は単一出所側に倒す
+    const worldFacts = await env.beliefStore.listActive({ kind: 'world_fact' });
+    expect(worldFacts[0]!.confidence).toBeLessThanOrEqual(SINGLE_SOURCE_CONFIDENCE_CAP);
+
+    // 複数エピソードを根拠にする信念はキャップされない
+    const selfBeliefs = await env.beliefStore.listActive({ kind: 'self' });
+    expect(selfBeliefs[0]!.provenance).toEqual([11, 14]);
+    expect(selfBeliefs[0]!.confidence).toBeCloseTo(0.8);
+  });
+
   it('rejects non-declarative reflection outputs', async () => {
     const env = await createEnv();
     await env.episodeStore.insert({
@@ -333,7 +435,7 @@ describe('ReflectionEngine weekly / monthly', () => {
 });
 
 describe('ReflectionRunner', () => {
-  it('runs the daily reflection once per date, only at night', async () => {
+  it('runs the daily reflection once per date, only after the day has ended', async () => {
     const env = await createEnv();
     const runDaily = vi.fn(async () => null);
     const engine = { runDaily, runWeekly: vi.fn(), runMonthly: vi.fn() } as unknown as ReflectionEngine;
@@ -349,19 +451,120 @@ describe('ReflectionRunner', () => {
     await runner.tickOnce();
     expect(runDaily).not.toHaveBeenCalled();
 
-    now = new Date('2026-07-05T13:00:00.000Z'); // JST 22:00（夜）
+    // 宵の口（対象日がまだ終わっていない）は実行しない。ここで実行すると
+    // 実行後〜0 時のエピソードがどの省察にも拾われなくなる
+    now = new Date('2026-07-05T13:00:00.000Z'); // JST 22:00（夜・当日中）
+    await runner.tickOnce();
+    expect(runDaily).not.toHaveBeenCalled();
+
+    now = new Date('2026-07-05T15:30:00.000Z'); // JST 7/6 00:30（7/5 が終わった夜）
     await runner.tickOnce();
     expect(runDaily).toHaveBeenCalledTimes(1);
     expect(runDaily).toHaveBeenCalledWith('2026-07-05', now);
 
     await runner.tickOnce();
-    expect(runDaily).toHaveBeenCalledTimes(1); // 同日 2 回目は走らない
+    expect(runDaily).toHaveBeenCalledTimes(1); // 同じ夜の 2 回目は走らない
     expect(getLifeMeta(env.db, 'reflection_daily_last')).toBe('2026-07-05');
+  });
+
+  it('runs each day in the small hours after it ends, without preempting the next day', async () => {
+    const env = await createEnv();
+    const runDaily = vi.fn(async () => null);
+    const engine = { runDaily, runWeekly: vi.fn(async () => null), runMonthly: vi.fn(async () => null) } as unknown as ReflectionEngine;
+
+    let now = new Date('2026-07-06T15:30:00.000Z'); // JST 7/7 00:30（7/6 明けの深夜）
+    const runner = new ReflectionRunner({
+      engine,
+      db: env.db,
+      timezone: 'Asia/Tokyo',
+      now: () => now,
+    });
+
+    await runner.tickOnce();
+    expect(runDaily).toHaveBeenCalledTimes(1);
+    expect(runDaily).toHaveBeenLastCalledWith('2026-07-06', now);
+
+    // 同じ深夜帯の後続 tick は実行済みマークで走らず、マークも進まない
+    now = new Date('2026-07-06T16:30:00.000Z'); // JST 7/7 01:30
+    await runner.tickOnce();
+    expect(runDaily).toHaveBeenCalledTimes(1);
+    expect(getLifeMeta(env.db, 'reflection_daily_last')).toBe('2026-07-06');
+
+    // 7/7 の宵の口は実行せず、7/7 が終わった深夜に 7/7 ぶんが実行される
+    now = new Date('2026-07-07T13:00:00.000Z'); // JST 7/7 22:00
+    await runner.tickOnce();
+    expect(runDaily).toHaveBeenCalledTimes(1);
+
+    now = new Date('2026-07-07T15:30:00.000Z'); // JST 7/8 00:30
+    await runner.tickOnce();
+    expect(runDaily).toHaveBeenCalledTimes(2);
+    expect(runDaily).toHaveBeenLastCalledWith('2026-07-07', now);
+  });
+
+  it('catches up the previous day in the small hours when the evening run was missed', async () => {
+    const env = await createEnv();
+    const runDaily = vi.fn(async () => null);
+    const engine = { runDaily, runWeekly: vi.fn(async () => null), runMonthly: vi.fn(async () => null) } as unknown as ReflectionEngine;
+
+    const now = new Date('2026-07-06T16:00:00.000Z'); // JST 7/7 01:00（プロセスが宵の口に落ちていた想定）
+    const runner = new ReflectionRunner({
+      engine,
+      db: env.db,
+      timezone: 'Asia/Tokyo',
+      now: () => now,
+    });
+
+    await runner.tickOnce();
+    expect(runDaily).toHaveBeenCalledWith('2026-07-06', now);
+  });
+
+  it('does not run monthly over the empty past month when first started in the small hours of the 1st', async () => {
+    const env = await createEnv();
+    const runDaily = vi.fn(async () => null);
+    const runMonthly = vi.fn(async () => null);
+    const engine = { runDaily, runWeekly: vi.fn(async () => null), runMonthly } as unknown as ReflectionEngine;
+
+    // 新規インストールの初回 tick が月初の深夜帯: reflectionDate は前月末（7/31）
+    // に落ちるが、初回マークは前月キーで付けてはいけない
+    let now = new Date('2026-07-31T16:00:00.000Z'); // JST 8/1 01:00
+    const runner = new ReflectionRunner({
+      engine,
+      db: env.db,
+      timezone: 'Asia/Tokyo',
+      now: () => now,
+    });
+    await runner.tickOnce();
+    expect(runMonthly).not.toHaveBeenCalled();
+    expect(getLifeMeta(env.db, 'reflection_monthly_last')).toBe('2026-08');
+
+    // 同じ深夜帯の次の tick（reflectionDate は前月 = マークより過去の月）でも
+    // 実行されず、マークが巻き戻されることもない
+    now = new Date('2026-07-31T16:15:00.000Z'); // JST 8/1 01:15
+    await runner.tickOnce();
+    expect(runMonthly).not.toHaveBeenCalled();
+    expect(getLifeMeta(env.db, 'reflection_monthly_last')).toBe('2026-08');
+
+    // 8/1 明けの深夜 tick が「月が変わった」と誤認して空の 7 月へ即時実行しない
+    now = new Date('2026-08-01T15:30:00.000Z'); // JST 8/2 00:30
+    await runner.tickOnce();
+    expect(runMonthly).not.toHaveBeenCalled();
+
+    // 翌月に入った最初の夜（9/1 明けの深夜）には 8 月ぶんが正しく実行される
+    now = new Date('2026-09-01T15:30:00.000Z'); // JST 9/2 00:30
+    await runner.tickOnce();
+    expect(runMonthly).toHaveBeenCalledTimes(1);
+    expect(runMonthly).toHaveBeenCalledWith('2026-08-01', '2026-08-31', now);
   });
 
   it('defaultIsNight distinguishes night from day', () => {
     expect(defaultIsNight(new Date('2026-07-05T13:00:00.000Z'), 'Asia/Tokyo')).toBe(true);  // JST 22:00
     expect(defaultIsNight(new Date('2026-07-05T03:00:00.000Z'), 'Asia/Tokyo')).toBe(false); // JST 12:00
+  });
+
+  it('reflectionDateFor attributes the small hours to the previous day', () => {
+    expect(reflectionDateFor(new Date('2026-07-05T13:00:00.000Z'), 'Asia/Tokyo')).toBe('2026-07-05'); // JST 7/5 22:00
+    expect(reflectionDateFor(new Date('2026-07-05T15:30:00.000Z'), 'Asia/Tokyo')).toBe('2026-07-05'); // JST 7/6 00:30 → 前日
+    expect(reflectionDateFor(new Date('2026-07-05T18:00:00.000Z'), 'Asia/Tokyo')).toBe('2026-07-05'); // JST 7/6 03:00 → 前日
   });
 });
 
