@@ -15,7 +15,8 @@
     "docker:up": "docker compose up -d",
     "docker:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
     "docker:dev:up": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "dashboard": "tsx scripts/dashboard.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "3.0.41",
