@@ -15,7 +15,50 @@ export const DRIVES_DEFAULTS = {
   satiationWindowHours: 24,
   /** この回数以上繰り返した行動を「偏り」とみなす */
   satiationThreshold: 5,
+  /** 共有欲: 「語れる体験」を探す直近ウィンドウ（時間） */
+  shareUrgeEpisodeWindowHours: 24,
+  /** 共有欲: 投稿後にふたたび圧が湧くまでのクールダウン（時間）。実質のペースメーカー（8h ≒ 最大 3 回/日） */
+  shareUrgePostCooldownHours: 8,
+  /** 共有欲: 「心が動いた体験」とみなす importance の下限（medium = 0.6 以上） */
+  shareUrgeMinImportance: 0.6,
 } as const;
+
+/** 共有欲の判定に必要な読み取り依存（episodes と SNS 活動ログ） */
+export interface ShareUrgeDeps {
+  /** since 以降で importance が閾値以上のエピソード数 */
+  countSalientEpisodesSince(since: Date, minImportance: number): Promise<number>;
+  /** 全 provider 横断の直近投稿時刻（ISO）。未投稿なら null */
+  getLastPostAt(): Promise<string | null>;
+}
+
+/**
+ * 共有欲（M8 追補）: 「心が動いた体験があり、まだ誰にも話していない」を決定論で検出して
+ * 言語化する。importance は appraisal 由来（感情が動いた体験ほど高い）なので、
+ * 感情の出所は本人の体験 — ツールが内発的感情を捏造しない原則と整合する。
+ * 一度投稿すればクールダウンが明けるまで圧は消える（構造的に連投しない）。
+ */
+export async function describeShareUrge(
+  deps: ShareUrgeDeps,
+  now: Date,
+  options: { episodeWindowHours?: number; postCooldownHours?: number; minImportance?: number } = {},
+): Promise<string | null> {
+  const episodeWindowHours = options.episodeWindowHours ?? DRIVES_DEFAULTS.shareUrgeEpisodeWindowHours;
+  const postCooldownHours = options.postCooldownHours ?? DRIVES_DEFAULTS.shareUrgePostCooldownHours;
+  const minImportance = options.minImportance ?? DRIVES_DEFAULTS.shareUrgeMinImportance;
+
+  const lastPostAt = await deps.getLastPostAt();
+  if (lastPostAt != null && now.getTime() - new Date(lastPostAt).getTime() < postCooldownHours * 3_600_000) {
+    return null;
+  }
+
+  const since = new Date(now.getTime() - episodeWindowHours * 3_600_000);
+  const salientCount = await deps.countSalientEpisodesSince(since, minImportance);
+  if (salientCount === 0) {
+    return null;
+  }
+
+  return '最近、心が動く出来事があった。誰かに話したい気持ちがある。';
+}
 
 interface DriveCandidate {
   strength: number;
@@ -107,6 +150,8 @@ export interface BuildDrivesOptions {
   satiationThreshold?: number | undefined;
   /** SNS / チャット向けの話題偏りも含める */
   includeTopicBias?: boolean | undefined;
+  /** 共有欲の判定依存（SNS が構成されているときのみ渡す） */
+  shareUrge?: ShareUrgeDeps | undefined;
 }
 
 /** drives セクションの本文（untrusted タグは呼び出し側で付ける） */
@@ -135,6 +180,12 @@ export async function buildDrivesDescription(
       if (topicBias != null) {
         parts.push(topicBias);
       }
+    }
+  }
+  if (options.shareUrge != null) {
+    const shareUrge = await describeShareUrge(options.shareUrge, now).catch(() => null);
+    if (shareUrge != null) {
+      parts.push(shareUrge);
     }
   }
   return parts.length > 0 ? parts.join('') : null;

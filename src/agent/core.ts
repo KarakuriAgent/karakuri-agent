@@ -4,7 +4,7 @@ import type { Config } from '../config.js';
 import type { IActionLedgerStore } from '../life/action-ledger.js';
 import type { AppraisalService } from '../life/appraisal.js';
 import type { IBeliefStore } from '../life/beliefs.js';
-import { buildDrivesDescription } from '../life/drives.js';
+import { buildDrivesDescription, type ShareUrgeDeps } from '../life/drives.js';
 import type { INarrativeStore } from '../life/narratives.js';
 import { formatProspectsForPrompt, type IProspectStore } from '../life/prospects.js';
 import type { IRelationStore } from '../life/relations.js';
@@ -19,6 +19,7 @@ import {
 } from '../life/normalize.js';
 import { routeKwNotification, type PerceptionBuffer } from '../life/perception-buffer.js';
 import type { ExperienceRecorder } from '../life/recorder.js';
+import type { IEpisodeStore } from '../life/episodes.js';
 import type { PhoneIntegration } from '../phone/service.js';
 import type { SnsRateLimiter } from '../sns/rate-limiter.js';
 import { formatEpisodesForPrompt, type EpisodeRetrievalService } from '../life/retrieval.js';
@@ -112,6 +113,8 @@ export interface KarakuriAgentOptions {
   snsActivityStores?: Map<SnsProviderType, ISnsActivityStore> | undefined;
   /** M8: provider 別の SNS 書き込みレート制限 */
   snsRateLimiters?: Map<SnsProviderType, SnsRateLimiter> | undefined;
+  /** M8 追補: 共有欲（心が動いた体験→伝えたい）の判定に使うエピソードストア */
+  episodeStore?: IEpisodeStore | undefined;
   /** @deprecated Use snsActivityStores. */
   snsActivityStore?: ISnsActivityStore | undefined;
   snsContextRegistry?: SkillContextRegistry | undefined;
@@ -145,6 +148,7 @@ export class KarakuriAgent implements IAgent {
   private readonly userStore: IUserStore | undefined;
   private readonly snsActivityStores: Map<SnsProviderType, ISnsActivityStore>;
   private readonly snsRateLimiters: Map<SnsProviderType, SnsRateLimiter> | undefined;
+  private readonly episodeStore: IEpisodeStore | undefined;
   private readonly snsContextRegistry: SkillContextRegistry | undefined;
   private readonly experienceRecorder: ExperienceRecorder | undefined;
   private readonly perceptionBuffer: PerceptionBuffer | undefined;
@@ -180,6 +184,7 @@ export class KarakuriAgent implements IAgent {
     userStore,
     snsActivityStores,
     snsRateLimiters,
+    episodeStore,
     snsActivityStore,
     snsContextRegistry,
     experienceRecorder,
@@ -209,6 +214,7 @@ export class KarakuriAgent implements IAgent {
     this.userStore = userStore;
     this.snsActivityStores = snsActivityStores ?? (snsActivityStore != null ? new Map([['mastodon', snsActivityStore]]) : new Map());
     this.snsRateLimiters = snsRateLimiters;
+    this.episodeStore = episodeStore;
     this.snsContextRegistry = snsContextRegistry;
     this.experienceRecorder = experienceRecorder;
     this.perceptionBuffer = perceptionBuffer;
@@ -971,9 +977,27 @@ export class KarakuriAgent implements IAgent {
 
     try {
       const state = await this.innerStateService.getCurrent(receivedAt);
+      // 共有欲（M8 追補）: SNS が構成されていて episodes を参照できるときだけ判定する
+      const shareUrge: ShareUrgeDeps | undefined = this.episodeStore != null && this.snsActivityStores.size > 0
+        ? {
+            countSalientEpisodesSince: (since, minImportance) =>
+              this.episodeStore!.countSalientSince(since, minImportance),
+            getLastPostAt: async () => {
+              let latest: string | null = null;
+              for (const store of this.snsActivityStores.values()) {
+                const at = await store.getLastWriteActionAt?.('post') ?? null;
+                if (at != null && (latest == null || at > latest)) {
+                  latest = at;
+                }
+              }
+              return latest;
+            },
+          }
+        : undefined;
       const description = await buildDrivesDescription(state, this.actionLedger, receivedAt, {
         ...(this.satiationThreshold != null ? { satiationThreshold: this.satiationThreshold } : {}),
         ...(options.includeTopicBias != null ? { includeTopicBias: options.includeTopicBias } : {}),
+        ...(shareUrge != null ? { shareUrge } : {}),
       });
       if (description == null) {
         return null;

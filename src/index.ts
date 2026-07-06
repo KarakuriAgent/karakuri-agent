@@ -355,6 +355,7 @@ async function main(): Promise<void> {
     userStore,
     snsActivityStores,
     snsRateLimiters,
+    episodeStore,
     snsContextRegistry,
     experienceRecorder,
     perceptionBuffer,

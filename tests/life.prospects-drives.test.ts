@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildOneshotCronExpression, createProspectReminderTool, MAX_PROSPECT_REMINDERS } from '../src/agent/tools/prospect-reminder.js';
 import { SqliteActionLedgerStore } from '../src/life/action-ledger.js';
-import { buildDrivesDescription, describeSatiationPressure, describeStrongestDrive } from '../src/life/drives.js';
+import { buildDrivesDescription, describeSatiationPressure, describeShareUrge, describeStrongestDrive, type ShareUrgeDeps } from '../src/life/drives.js';
 import type { InnerState } from '../src/life/inner-state.js';
 import { formatProspectsForPrompt, SqliteProspectStore } from '../src/life/prospects.js';
 import type { CronJobDefinition, ISchedulerStore, RegisterCronJobInput } from '../src/scheduler/types.js';
@@ -129,6 +129,37 @@ describe('drives', () => {
     await ledger.increment('action', 'move', new Date('2026-07-05T11:00:00.000Z'));
 
     expect(await describeSatiationPressure(ledger, new Date('2026-07-05T12:00:00.000Z'))).toBeNull();
+  });
+});
+
+describe('describeShareUrge (M8 追補)', () => {
+  const NOW = new Date('2026-07-06T12:00:00.000Z');
+  const makeDeps = (overrides: Partial<ShareUrgeDeps> = {}): ShareUrgeDeps => ({
+    countSalientEpisodesSince: async () => 1,
+    getLastPostAt: async () => null,
+    ...overrides,
+  });
+
+  it('urges sharing when a salient episode exists and nothing was posted recently', async () => {
+    expect(await describeShareUrge(makeDeps(), NOW)).toContain('誰かに話したい');
+  });
+
+  it('stays silent during the post cooldown (pacemaker: max ~3/day at 8h)', async () => {
+    const deps = makeDeps({ getLastPostAt: async () => '2026-07-06T05:00:00.000Z' }); // 7h 前
+    expect(await describeShareUrge(deps, NOW)).toBeNull();
+    // クールダウン明け（8h 超）は再び湧く
+    const past = makeDeps({ getLastPostAt: async () => '2026-07-06T03:00:00.000Z' }); // 9h 前
+    expect(await describeShareUrge(past, NOW)).not.toBeNull();
+  });
+
+  it('stays silent without a salient episode', async () => {
+    const deps = makeDeps({ countSalientEpisodesSince: async () => 0 });
+    expect(await describeShareUrge(deps, NOW)).toBeNull();
+  });
+
+  it('joins the drives description via buildDrivesDescription', async () => {
+    const combined = await buildDrivesDescription(makeState(), undefined, NOW, { shareUrge: makeDeps() });
+    expect(combined).toContain('誰かに話したい');
   });
 });
 
