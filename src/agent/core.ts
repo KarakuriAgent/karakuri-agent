@@ -25,6 +25,7 @@ import type { SnsRateLimiter } from '../sns/rate-limiter.js';
 import { formatEpisodesForPrompt, type EpisodeRetrievalService } from '../life/retrieval.js';
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
+import { isRepetitiveToolCallError } from '../llm/repetitive-tool-call-error.js';
 import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
@@ -640,10 +641,10 @@ export class KarakuriAgent implements IAgent {
       const disableThinking = isKarakuriWorldMode || !this.config.llmEnableThinking;
       const effectiveModelFactory = disableThinking ? this.noThinkingModelFactory : this.modelFactory;
 
-      result = await this.generateTextFn({
+      const buildGenerateTextArgs = (messages: ModelMessage[]): Parameters<typeof generateText>[0] => ({
         model: effectiveModelFactory(this.config.llmModelSelector),
         system: systemPrompt,
-        messages: session.messages,
+        messages,
         tools,
         stopWhen: stepCountIs(isKarakuriWorldMode ? KW_MODE_MAX_STEPS : this.config.maxSteps),
         ...(isKarakuriWorldMode ? { toolChoice: { type: 'tool' as const, toolName: KARAKURI_WORLD_COMMAND_TOOL_NAME } } : {}),
@@ -662,6 +663,17 @@ export class KarakuriAgent implements IAgent {
             }
           : {}),
       });
+
+      const generation = await this.generateTextWithRepetitiveToolCallRecovery(
+        sessionId,
+        ephemeral,
+        buildGenerateTextArgs,
+        session.messages,
+      );
+      result = generation.result;
+      if (generation.messages !== session.messages) {
+        session = { ...session, messages: generation.messages };
+      }
 
       logger.debug('LLM responded', { sessionId, responseLength: result.text.length, stepCount: result.steps.length });
       for (const [i, step] of result.steps.entries()) {
@@ -779,6 +791,42 @@ export class KarakuriAgent implements IAgent {
 
     logger.info('handleMessage complete', { sessionId, responseLength: assistantResponse.length });
     return assistantResponse;
+  }
+
+  /**
+   * DashScope 等が「同一 tool-call の連続」を検知して 400 を返した場合、永続セッションから重複した
+   * tool-call/tool-result ペアを除去して 1 回だけリトライする。リトライはコード構造上ここでしか
+   * 呼ばれないため必ず最大 1 回に留まる。
+   */
+  private async generateTextWithRepetitiveToolCallRecovery(
+    sessionId: string,
+    ephemeral: boolean,
+    buildArgs: (messages: ModelMessage[]) => Parameters<typeof generateText>[0],
+    currentMessages: ModelMessage[],
+  ): Promise<{ result: Awaited<ReturnType<typeof generateText>>; messages: ModelMessage[] }> {
+    try {
+      return { result: await this.generateTextFn(buildArgs(currentMessages)), messages: currentMessages };
+    } catch (error) {
+      if (!isRepetitiveToolCallError(error)) throw error;
+      logger.warn('Detected DashScope repetitive tool call API error', { sessionId, ephemeral, statusCode: error.statusCode });
+
+      if (ephemeral || !this.config.repetitiveToolCallRecoveryEnabled) throw error;
+
+      const { session: pruned, prunedCount, prunedToolCallIds } = await this.sessionManager.pruneRepetitiveToolCalls(sessionId);
+      if (prunedCount === 0) {
+        logger.warn('No repetitive tool call duplicates found in persisted history; cannot recover this turn', { sessionId });
+        throw error;
+      }
+      logger.warn('Pruned repetitive tool call duplicates; retrying LLM call once', { sessionId, prunedCount, prunedToolCallIds });
+      try {
+        const retryResult = await this.generateTextFn(buildArgs(pruned.messages));
+        logger.info('Retry after repetitive tool call pruning succeeded', { sessionId });
+        return { result: retryResult, messages: pruned.messages };
+      } catch (retryError) {
+        logger.error('Retry after repetitive tool call pruning failed; giving up on this turn', retryError, { sessionId });
+        throw retryError;
+      }
+    }
   }
 
   /** M8: 世界内行為統合の接続（PhoneService は agent を参照するため生成後に注入する） */

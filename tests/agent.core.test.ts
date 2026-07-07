@@ -1,4 +1,4 @@
-import type { LanguageModel, ModelMessage } from 'ai';
+import { APICallError, type LanguageModel, type ModelMessage } from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => ({
@@ -22,7 +22,8 @@ import { LoopDetector } from '../src/life/loop-detector.js';
 import { PerceptionBuffer } from '../src/life/perception-buffer.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
-import type { ISessionManager, SessionData } from '../src/session/types.js';
+import { pruneRepetitiveToolCallsFromMessages } from '../src/session/prune-repetitive-tool-calls.js';
+import type { ISessionManager, PruneRepetitiveToolCallsResult, SessionData } from '../src/session/types.js';
 import { SkillContextRegistry } from '../src/skill/context-provider.js';
 import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../src/skill/types.js';
 import type { IUserStore, UserRecord, UserSearchOptions } from '../src/user/types.js';
@@ -50,6 +51,7 @@ const baseConfig: Config = {
   kwPerceptionBufferEnabled: true,
   loopWarningEnabled: true,
   loopDetectorThreshold: 3,
+  repetitiveToolCallRecoveryEnabled: true,
   appraisalEnabled: true,
   innerStateInjectionEnabled: true,
   embeddingDimensions: 1536,
@@ -250,6 +252,7 @@ class SessionManagerStub implements ISessionManager {
   forceSummarization = false;
   appliedSummary: string | null = null;
   addMessagesCalls = 0;
+  pruneRepetitiveToolCallsCalls = 0;
 
   async loadSession(sessionId: string): Promise<SessionData> {
     return { ...this.session, sessionId };
@@ -286,10 +289,49 @@ class SessionManagerStub implements ISessionManager {
     };
     return this.session;
   }
+
+  async pruneRepetitiveToolCalls(sessionId: string): Promise<PruneRepetitiveToolCallsResult> {
+    this.pruneRepetitiveToolCallsCalls++;
+    const { messages, prunedCount, prunedToolCallIds } = pruneRepetitiveToolCallsFromMessages(this.session.messages);
+    this.session = { ...this.session, sessionId, messages };
+    return { session: this.session, prunedCount, prunedToolCallIds };
+  }
 }
 
 function assistantMessage(content: string): ModelMessage {
   return { role: 'assistant', content };
+}
+
+function assistantToolCallMessage(toolCallId: string): ModelMessage {
+  return {
+    role: 'assistant',
+    content: [{ type: 'tool-call', toolCallId, toolName: 'recallDiary', input: { target: 'core' } }],
+  };
+}
+
+function toolResultMessage(toolCallId: string): ModelMessage {
+  return {
+    role: 'tool',
+    content: [{ type: 'tool-result', toolCallId, toolName: 'recallDiary', output: { type: 'text', value: 'saved' } }],
+  };
+}
+
+function duplicateToolCallMessages(): ModelMessage[] {
+  return [
+    assistantToolCallMessage('call-1'),
+    toolResultMessage('call-1'),
+    assistantToolCallMessage('call-2'),
+    toolResultMessage('call-2'),
+  ];
+}
+
+function makeRepetitiveToolCallError(): APICallError {
+  return new APICallError({
+    message: 'Repetitive tool calls detected in the conversation history.',
+    url: 'https://example.com',
+    requestBodyValues: {},
+    statusCode: 400,
+  });
 }
 
 async function flushMicrotasks(times = 8): Promise<void> {
@@ -1096,6 +1138,194 @@ describe('KarakuriAgent', () => {
     })).rejects.toThrow('LLM call failed');
 
     expect(abortFn).toHaveBeenCalledTimes(1);
+  });
+
+  describe('repetitive tool call recovery', () => {
+    it('prunes duplicate tool calls from the session and retries once after a repetitive tool call error', async () => {
+      const memoryStore = new MemoryStoreStub();
+      const sessionManager = new SessionManagerStub();
+      sessionManager.session.messages = duplicateToolCallMessages();
+
+      const generateTextFn = vi
+        .fn()
+        .mockRejectedValueOnce(makeRepetitiveToolCallError())
+        .mockResolvedValueOnce(makeGenerateTextResult('recovered reply', [assistantMessage('recovered reply')])) as unknown as typeof import('ai').generateText;
+
+      const agent = new KarakuriAgent({
+        config: baseConfig,
+        memoryStore,
+        sessionManager,
+        generateTextFn,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await expect(agent.handleMessage('session-1', 'hello', 'Alice')).resolves.toBe('recovered reply');
+
+      expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(2);
+      expect(sessionManager.pruneRepetitiveToolCallsCalls).toBe(1);
+      expect(sessionManager.session.messages).not.toContainEqual(assistantToolCallMessage('call-1'));
+      expect(sessionManager.session.messages).toContainEqual(assistantToolCallMessage('call-2'));
+    });
+
+    it('rethrows immediately when no duplicate tool calls are found to prune', async () => {
+      const memoryStore = new MemoryStoreStub();
+      const sessionManager = new SessionManagerStub();
+
+      const generateTextFn = vi.fn(async () => {
+        throw makeRepetitiveToolCallError();
+      }) as unknown as typeof import('ai').generateText;
+
+      const agent = new KarakuriAgent({
+        config: baseConfig,
+        memoryStore,
+        sessionManager,
+        generateTextFn,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await expect(agent.handleMessage('session-1', 'hello', 'Alice')).rejects.toThrow(
+        'Repetitive tool calls detected',
+      );
+
+      expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
+      expect(sessionManager.pruneRepetitiveToolCallsCalls).toBe(1);
+    });
+
+    it('skips recovery for ephemeral turns and rejects without pruning', async () => {
+      const memoryStore = new MemoryStoreStub();
+      const sessionManager = new SessionManagerStub();
+      sessionManager.session.messages = duplicateToolCallMessages();
+
+      const generateTextFn = vi.fn(async () => {
+        throw makeRepetitiveToolCallError();
+      }) as unknown as typeof import('ai').generateText;
+
+      const agent = new KarakuriAgent({
+        config: baseConfig,
+        memoryStore,
+        sessionManager,
+        generateTextFn,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await expect(agent.handleMessage('heartbeat:2025-01-01T00:00:00.000Z', '(heartbeat tick)', 'heartbeat', {
+        userId: 'system',
+        ephemeral: true,
+      })).rejects.toThrow('Repetitive tool calls detected');
+
+      expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
+      expect(sessionManager.pruneRepetitiveToolCallsCalls).toBe(0);
+    });
+
+    it('recovers in karakuri-world mode the same way as normal mode', async () => {
+      const memoryStore = new MemoryStoreStub();
+      const sessionManager = new SessionManagerStub();
+      sessionManager.session.messages = duplicateToolCallMessages();
+      const userStore = new UserStoreStub();
+
+      const generateTextFn = vi
+        .fn()
+        .mockRejectedValueOnce(makeRepetitiveToolCallError())
+        .mockResolvedValueOnce(makeKwModeGenerateTextResult('周囲を確認します。')) as unknown as typeof import('ai').generateText;
+
+      const agent = new KarakuriAgent({
+        config: {
+          ...baseConfig,
+          karakuriWorldBotIds: ['kw-bot-1'],
+          karakuriWorld: {
+            apiBaseUrl: 'https://example.com/world',
+            apiKey: 'world-key',
+          },
+          postResponseEvaluatorEnabled: false,
+        },
+        memoryStore,
+        sessionManager,
+        userStore,
+        generateTextFn,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      stubKarakuriWorldNotificationFetch();
+
+      await expect(agent.handleMessage('session-1', 'notification_id: notif-123', 'Admin', { userId: 'kw-bot-1' })).resolves.toBe('周囲を確認します。');
+
+      expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(2);
+      expect(sessionManager.pruneRepetitiveToolCallsCalls).toBe(1);
+    });
+
+    it('retries at most once, rejecting with the retry error if pruning does not fix the underlying issue', async () => {
+      const memoryStore = new MemoryStoreStub();
+      const sessionManager = new SessionManagerStub();
+      sessionManager.session.messages = duplicateToolCallMessages();
+
+      const generateTextFn = vi
+        .fn()
+        .mockRejectedValueOnce(makeRepetitiveToolCallError())
+        .mockRejectedValueOnce(makeRepetitiveToolCallError()) as unknown as typeof import('ai').generateText;
+
+      const agent = new KarakuriAgent({
+        config: baseConfig,
+        memoryStore,
+        sessionManager,
+        generateTextFn,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await expect(agent.handleMessage('session-1', 'hello', 'Alice')).rejects.toThrow(
+        'Repetitive tool calls detected',
+      );
+
+      expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(2);
+      expect(sessionManager.pruneRepetitiveToolCallsCalls).toBe(1);
+    });
+
+    it('skips recovery entirely when disabled via config', async () => {
+      const memoryStore = new MemoryStoreStub();
+      const sessionManager = new SessionManagerStub();
+      sessionManager.session.messages = duplicateToolCallMessages();
+
+      const generateTextFn = vi.fn(async () => {
+        throw makeRepetitiveToolCallError();
+      }) as unknown as typeof import('ai').generateText;
+
+      const agent = new KarakuriAgent({
+        config: { ...baseConfig, repetitiveToolCallRecoveryEnabled: false },
+        memoryStore,
+        sessionManager,
+        generateTextFn,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await expect(agent.handleMessage('session-1', 'hello', 'Alice')).rejects.toThrow(
+        'Repetitive tool calls detected',
+      );
+
+      expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
+      expect(sessionManager.pruneRepetitiveToolCallsCalls).toBe(0);
+    });
+
+    it('does not attempt recovery for unrelated errors', async () => {
+      const memoryStore = new MemoryStoreStub();
+      const sessionManager = new SessionManagerStub();
+      sessionManager.session.messages = duplicateToolCallMessages();
+
+      const generateTextFn = vi.fn(async () => {
+        throw new Error('some other failure');
+      }) as unknown as typeof import('ai').generateText;
+
+      const agent = new KarakuriAgent({
+        config: baseConfig,
+        memoryStore,
+        sessionManager,
+        generateTextFn,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await expect(agent.handleMessage('session-1', 'hello', 'Alice')).rejects.toThrow('some other failure');
+
+      expect(vi.mocked(generateTextFn)).toHaveBeenCalledTimes(1);
+      expect(sessionManager.pruneRepetitiveToolCallsCalls).toBe(0);
+    });
   });
 
   it('does not inject builtin sns skill for non-system non-admin users', async () => {

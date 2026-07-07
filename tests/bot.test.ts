@@ -95,6 +95,7 @@ const baseConfig: Config = {
   kwPerceptionBufferEnabled: true,
   loopWarningEnabled: true,
   loopDetectorThreshold: 3,
+  repetitiveToolCallRecoveryEnabled: true,
   appraisalEnabled: true,
   innerStateInjectionEnabled: true,
   embeddingDimensions: 1536,

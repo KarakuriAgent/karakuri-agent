@@ -26,13 +26,13 @@ function assistantMessage(content: string): ModelMessage {
   return { role: 'assistant', content };
 }
 
-function assistantToolCallMessage(): ModelMessage {
+function assistantToolCallMessage(toolCallId = 'call-1'): ModelMessage {
   return {
     role: 'assistant',
     content: [
       {
         type: 'tool-call',
-        toolCallId: 'call-1',
+        toolCallId,
         toolName: 'recallDiary',
         input: { target: 'core' },
       },
@@ -40,13 +40,13 @@ function assistantToolCallMessage(): ModelMessage {
   };
 }
 
-function toolResultMessage(): ModelMessage {
+function toolResultMessage(toolCallId = 'call-1'): ModelMessage {
   return {
     role: 'tool',
     content: [
       {
         type: 'tool-result',
-        toolCallId: 'call-1',
+        toolCallId,
         toolName: 'recallDiary',
         output: { type: 'text', value: 'saved' },
       },
@@ -210,5 +210,50 @@ describe('FileSessionManager', () => {
       toolResultMessage(),
       assistantMessage('second answer'),
     ]);
+  });
+
+  it('removes duplicate tool-call/tool-result pairs, keeping only the latest', async () => {
+    const manager = await createManager();
+
+    await manager.addMessages('thread-1', [
+      userMessage('question one'),
+      assistantToolCallMessage('call-1'),
+      toolResultMessage('call-1'),
+      userMessage('question two'),
+      assistantToolCallMessage('call-2'),
+      toolResultMessage('call-2'),
+    ]);
+
+    const result = await manager.pruneRepetitiveToolCalls('thread-1');
+
+    expect(result.prunedCount).toBe(1);
+    expect(result.prunedToolCallIds).toEqual(['call-1']);
+    expect(result.session.messages).toEqual([
+      userMessage('question one'),
+      userMessage('question two'),
+      assistantToolCallMessage('call-2'),
+      toolResultMessage('call-2'),
+    ]);
+
+    const reloaded = await manager.loadSession('thread-1');
+    expect(reloaded.messages).toEqual(result.session.messages);
+  });
+
+  it('does not rewrite the session when there are no duplicates', async () => {
+    const manager = await createManager();
+
+    await manager.addMessages('thread-1', [
+      userMessage('question one'),
+      assistantToolCallMessage('call-1'),
+      toolResultMessage('call-1'),
+    ]);
+    const before = await manager.loadSession('thread-1');
+
+    const result = await manager.pruneRepetitiveToolCalls('thread-1');
+
+    expect(result.prunedCount).toBe(0);
+    expect(result.prunedToolCallIds).toEqual([]);
+    const after = await manager.loadSession('thread-1');
+    expect(after.updatedAt).toBe(before.updatedAt);
   });
 });

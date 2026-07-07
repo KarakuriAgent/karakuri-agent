@@ -7,7 +7,8 @@ import { readFileIfExists, writeFileAtomically } from '../utils/file.js';
 import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
 import { estimateMessageTokens, estimateTokenCount } from '../utils/token-counter.js';
-import type { ISessionManager, SessionData } from './types.js';
+import { pruneRepetitiveToolCallsFromMessages } from './prune-repetitive-tool-calls.js';
+import type { ISessionManager, PruneRepetitiveToolCallsResult, SessionData } from './types.js';
 
 const logger = createLogger('SessionManager');
 
@@ -111,6 +112,30 @@ export class FileSessionManager implements ISessionManager {
       await this.writeSessionFile(updated);
       logger.debug('Summary applied', { sessionId, retainedMessages: retainedMessages.length, summaryLength: summary.length });
       return updated;
+    });
+  }
+
+  async pruneRepetitiveToolCalls(sessionId: string): Promise<PruneRepetitiveToolCallsResult> {
+    const sessionPath = this.getSessionPath(sessionId);
+
+    return this.mutex.runExclusive(sessionPath, async () => {
+      const session = await this.loadSession(sessionId);
+      const { messages, prunedCount, prunedToolCallIds } = pruneRepetitiveToolCallsFromMessages(session.messages);
+
+      if (prunedCount === 0) {
+        logger.debug('No repetitive tool call duplicates found', { sessionId });
+        return { session, prunedCount: 0, prunedToolCallIds: [] };
+      }
+
+      const updated: SessionData = {
+        ...session,
+        messages,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await this.writeSessionFile(updated);
+      logger.info('Pruned repetitive tool calls from session', { sessionId, prunedCount, prunedToolCallIds });
+      return { session: updated, prunedCount, prunedToolCallIds };
     });
   }
 

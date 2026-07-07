@@ -75,6 +75,7 @@ const configSchema = z.object({
   kwPerceptionBufferEnabled: z.string().trim().optional(),
   loopWarningEnabled: z.string().trim().optional(),
   loopDetectorThreshold: z.coerce.number().int().min(2).default(3),
+  repetitiveToolCallRecoveryEnabled: z.string().trim().optional(),
   appraisalEnabled: z.string().trim().optional(),
   innerStateInjectionEnabled: z.string().trim().optional(),
   embeddingModel: z.string().trim().optional(),
@@ -204,6 +205,8 @@ export interface Config {
   loopWarningEnabled: boolean;
   /** M1: 同一行動 × 同一対象の連続回数がこの値以上で警告を注入する */
   loopDetectorThreshold: number;
+  /** LLMプロバイダの「同一tool-callの連続」検知エラー発生時に、セッション履歴から重複 tool-call/tool-result ペアを除去して1回だけリトライする機能の有効化（切り分け・ロールバック用） */
+  repetitiveToolCallRecoveryEnabled: boolean;
   /** M2: appraisal（統合判定）の有効化（切り分け・ロールバック用） */
   appraisalEnabled: boolean;
   /** M2: 内部状態の自然言語注入の有効化（切り分け・ロールバック用） */
@@ -301,6 +304,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     kwPerceptionBufferEnabled: env.KW_PERCEPTION_BUFFER_ENABLED,
     loopWarningEnabled: env.LOOP_WARNING_ENABLED,
     loopDetectorThreshold: env.LOOP_DETECTOR_THRESHOLD,
+    repetitiveToolCallRecoveryEnabled: env.REPETITIVE_TOOL_CALL_RECOVERY_ENABLED,
     appraisalEnabled: env.APPRAISAL_ENABLED,
     innerStateInjectionEnabled: env.INNER_STATE_INJECTION_ENABLED,
     embeddingModel: normalizeOptionalString(env.EMBEDDING_MODEL),
@@ -495,6 +499,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmDisableThinkingRequestParam: parseBooleanEnv(parsed.llmDisableThinkingRequestParam, 'LLM_DISABLE_THINKING_REQUEST_PARAM', false),
       kwPerceptionBufferEnabled: parseBooleanEnv(parsed.kwPerceptionBufferEnabled, 'KW_PERCEPTION_BUFFER_ENABLED', true),
       loopWarningEnabled: parseBooleanEnv(parsed.loopWarningEnabled, 'LOOP_WARNING_ENABLED', true),
+      repetitiveToolCallRecoveryEnabled: parseBooleanEnv(
+        parsed.repetitiveToolCallRecoveryEnabled,
+        'REPETITIVE_TOOL_CALL_RECOVERY_ENABLED',
+        true,
+      ),
       appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
       innerStateInjectionEnabled: parseBooleanEnv(parsed.innerStateInjectionEnabled, 'INNER_STATE_INJECTION_ENABLED', true),
       embeddingModel: normalizeOptionalString(parsed.embeddingModel),
