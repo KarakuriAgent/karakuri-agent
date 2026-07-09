@@ -102,7 +102,15 @@ export function buildCurrentDateTimeSection(currentDateTime: string): string {
 
 export function buildRulesSection(rules?: string | null): string {
   const normalized = rules?.trim();
-  return normalized != null && normalized.length > 0 ? normalized : '';
+  if (normalized == null || normalized.length === 0) {
+    return '';
+  }
+  return [
+    '<rules>',
+    'The following are mandatory operating rules, not general guidance. They are binding and take precedence over persona flavor, momentary desires (including anything described under drives), and other behavioral guidance elsewhere in this prompt (including any "Additional runtime instructions" section), except when following a rule would mean abandoning an urgent obligation or an in-progress conversation.',
+    normalized,
+    '</rules>',
+  ].join('\n');
 }
 
 export function buildMemorySection(coreMemory: string): string {
