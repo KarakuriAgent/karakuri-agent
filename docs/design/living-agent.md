@@ -578,9 +578,9 @@ greenfield 設計だが、以下は移行元・流用元として活きる:
 | --- | --- |
 | bot 層 / Discord adapter / SNS providers / safe-fetch | そのまま流用（チャネル層は本設計の対象外） |
 | scheduler / cron（oneshot 含む） | 展望記憶の能動側・省察のスケジュールに流用 |
-| post-response evaluator | Appraisal Service に発展的統合。M2〜M5 は並走（旧: user profile / core memory / diary の振り分け、新: 状態Δ・サリエンス・関係/展望の抽出。書き込み先が重ならないため衝突しない）し、user profile 系の移行完了（M6）で停止 |
-| memory maintenance | Reflection Engine に発展的統合（掃除 → 掃除 + 省察） |
-| diary.db / users.db / memory.md | 新ストアへの一括インポート（体験ログには「移行前の記録」として区別して投入） |
+| post-response evaluator | Appraisal Service に発展的統合。M2〜M5 は並走（旧: user profile / core memory / diary の振り分け、新: 状態Δ・サリエンス・関係/展望の抽出。書き込み先が重ならないため衝突しない）し、user profile 系の移行完了（M6）で停止 → **コード削除済み** |
+| memory maintenance | Reflection Engine に発展的統合（掃除 → 掃除 + 省察）→ **旧 maintenance はコード削除済み** |
+| diary.db / users.db / memory.md | 新ストアへの一括インポート（体験ログには「移行前の記録」として区別して投入）→ **完了。旧ストアと legacy import 経路はコード削除済み（users.db は ID・表示名・alias 台帳として存続）** |
 | セッション要約・トークン予算管理 | 継続（ワーキングメモリ層として役割は不変） |
 | alias 機構 | relations テーブルの alias_of エッジへ移行 |
 | KW ビルトイン指示 / KW 専用ツールセット | ツールセットはそのまま流用。ビルトイン指示は Context Assembler の trusted 部と統合整理（M3） |

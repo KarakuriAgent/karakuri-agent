@@ -12,10 +12,10 @@ v1 はテキストメッセージのみ対応（添付ファイル非対応）�
 Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
                 │                      │
                 │                      ├── OpenAI-compatible LLM (via @ai-sdk/openai, selector-based routing)
-                │                      ├── Tools (recallDiary, userLookup*, webFetch, webSearch*, loadSkill*, skill-gated tools*)
+                │                      ├── Tools (recallEpisodes, userLookup*, webFetch, webSearch*, loadSkill*, skill-gated tools*)
                 │                      ├── Prompt Context (AGENT.md / RULES.md, eager reload)
                 │                      ├── Skills (data/skills/* + data/system-skills/*, eager reload)
-                │                      ├── Memory (CompositeMemoryStore: file core + SQLite diary)
+                │                      ├── Life Memory (life.db: experience_log / episodes / beliefs / narratives / relations)
                 │                      └── Session (file-based, write-through cache + turn単位管理)
                 │
                 └── State (JSON file-backed custom adapter)
@@ -30,7 +30,6 @@ Discord ──→ Chat SDK (bot.ts) ──→ Agent Core
 | ------- | ------------------ | --------------------------- | ----------------------- |
 | Channel | Chat SDK adapters  | Discord                     | Slack, Web 等            |
 | Agent   | `IAgent`           | generateText + OpenAI-compatible LLM | モデル/API切替、スキル追加  |
-| Memory  | `IMemoryStore`     | CompositeMemoryStore（file core + SQLite diary） | object storage, external DB |
 | Session | `ISessionManager`  | JSON ファイル (write-through cache) | Redis, DB |
 
 ## プロジェクト構造
@@ -66,14 +65,6 @@ karakuri-agent/
 │   │   ├── x.ts                   # X API 実装
 │   │   ├── loop-runner.ts         # SNS 専用ループ（provider 別に独立稼働）
 │   │   └── types.ts               # SNS provider 共通型
-│   ├── memory/
-│   │   ├── composite-store.ts  # IMemoryStore + CompositeMemoryStore
-│   │   ├── diary-store.ts      # SqliteDiaryStore (SQLite diary)
-│   │   ├── maintenance-runner.ts # 定期メモリ保守ループ
-│   │   ├── maintenance.ts      # LLM ベースのメモリ/日記整理
-│   │   ├── persistence-mutex.ts # メモリ永続化の直列化
-│   │   ├── store.ts            # FileMemoryStore (core memory only)
-│   │   └── types.ts
 │   ├── skill/
 │   │   ├── context-provider.ts # skillごとの動的コンテキスト注入と commit/abort hook
 │   │   ├── frontmatter.ts      # SKILL.md frontmatter parser
@@ -93,10 +84,7 @@ karakuri-agent/
 │   └── index.ts                # エントリポイント
 ├── tests/                      # Memory / Session / Agent / utility unit test
 ├── data/                       # .gitignoreで全体を除外
-│   ├── diary.db                # 日記（直近3日分は自動注入）
-│   ├── memory/
-│   │   └── core/
-│   │       └── memory.md       # 重要な記憶（常時システムプロンプトに注入）
+│   ├── life.db                 # 生きたエージェントの記憶（experience_log / episodes / beliefs / narratives / relations）
 │   ├── AGENT.md                # 任意: trusted なエージェント人格
 │   ├── RULES.md                # 任意: trusted な行動ルール
 │   ├── skills/
@@ -171,18 +159,11 @@ karakuri-agent/
 - `src/config.ts` (timezone 含む, LLM selector parse)
 - `src/utils/mutex.ts`, `src/utils/message-splitter.ts`, `src/utils/token-counter.ts`
 
-### Phase 2: Memory 層
+### Phase 2: Memory 層（削除済み）
 
-- `src/memory/types.ts` (IMemoryStore / ICoreMemoryStore / IDiaryStore)
-- `src/memory/store.ts` (FileMemoryStore: core memory file store)
-- `src/memory/diary-store.ts` (SqliteDiaryStore: diary SQLite store)
-- `src/memory/composite-store.ts` (CompositeMemoryStore)
-- `src/memory/maintenance.ts` (LLM による core memory / diary の整理)
-- `src/memory/maintenance-runner.ts`（定期実行 + report channel 通知）
-- `src/memory/persistence-mutex.ts`（maintenance 全体と post-response / SNS 評価の apply 段階の競合回避）
-- `data/memory/core/memory.md`（空 or 初期内容）
-- `data/diary.db`
-- **unit test**: core append/overwrite/concurrent write, diary append/replace/delete/range/date listing, maintenance pipeline / runner
+初期実装の旧メモリ層（FileMemoryStore / SqliteDiaryStore / CompositeMemoryStore / maintenance / persistence-mutex）は
+living-agent 移行（M1〜M8）で life.db（experience_log / episodes / beliefs / narratives / relations）へ置き換えられ、削除された。
+記憶の設計は [living-agent.md](living-agent.md) を参照。
 
 ### Phase 3: Session 層
 
@@ -192,8 +173,8 @@ karakuri-agent/
 
 ### Phase 4: Agent 層
 
-- `src/user/store.ts` / `src/user/post-response-evaluator.ts`（SQLite user store + 応答後の永続化評価。LLM 判定と apply を分離）
-- `src/agent/tools/recall-diary.ts`
+- `src/user/store.ts`（SQLite user store: ユーザー ID・表示名・alias の台帳）
+- `src/agent/tools/recall-episodes.ts`
 - `src/agent/tools/web-fetch.ts`
 - `src/agent/tools/web-search.ts`
 - `src/agent/tools/index.ts`
@@ -213,20 +194,18 @@ karakuri-agent/
 - `npm run dev` で起動
 - Discord でメッセージ送信 → 応答確認（メンション不要）
 - 再起動後の follow-up 継続確認（永続 state）
-- メモリ保存・読み込み確認（memory.md, diary.db）
-- `MEMORY_MAINTENANCE_INTERVAL_MINUTES` 有効時に定期整理と report channel 通知を確認
+- 記憶の蓄積・想起確認（life.db, `<episodic-memory>` 注入, recallEpisodes）
 - ユーザー情報保存確認（users.db, user profile prompt, userLookup）
-- ボット再起動後のメモリ永続化確認
+- ボット再起動後の記憶永続化確認
 - 長い会話でセッション要約が動作するか確認（turn 単位で壊れないか）
-- concurrent write テスト（複数スレッドから memory 同時書き込み）
 
 ## リスク・注意点
 
 1. **Chat SDK は beta**: exact version 固定 + lockfile コミット必須。破壊的変更に備える
 2. **Discord Gateway 接続**: Chat SDK の Discord アダプターが長時間稼働で安定するか Phase 0 で検証。問題時は discord.js 直接使用にフォールバック
 3. **AI SDK v6 API**: `stopWhen: stepCountIs(n)`, `ModelMessage` 型を使用（ai-sdk.dev/docs で確認済み）
-4. **永続化競合**: memory.md は mutex + atomic write、diary は SQLite WAL、さらに maintenance 全体と post-response evaluator / SNS 観測ユーザー評価の apply 段階は shared persistence mutex で整合性を保つ。evaluator の core memory snapshot read + LLM 判定は lock 外で進め、system turn が background evaluator の LLM 待ちで詰まらないようにする
-5. **Prompt injection**: memory/diary/user profile 内容はタグで区切り、instruction 部分と明確分離する
+4. **永続化競合**: life.db / users.db は SQLite WAL、system turn はグローバル mutex で直列化して整合性を保つ
+5. **Prompt injection**: 記憶・user profile 内容はタグで区切り、instruction 部分と明確分離する
 6. **コンテキスト予算**: メッセージ件数ではなくトークン予算ベースで要約トリガー管理
 7. **Timezone**: diary 日付は `config.timezone`（デフォルト `Asia/Tokyo`）基準
 8. **セッション ID**: raw thread ID ではなく hash/base64url 化してファイル名安全性を確保
@@ -236,7 +215,6 @@ karakuri-agent/
 
 各層の詳細設計は以下のドキュメントを参照:
 
-- [Memory 層](memory.md)
 - [Session 層](session.md)
 - [Agent 層](agent.md)
 - [Skill 層](skill.md)

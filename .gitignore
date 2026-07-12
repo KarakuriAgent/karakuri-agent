@@ -5,3 +5,4 @@ dist/
 coverage/
 .vitest/
 docker-compose.override.yml
+data_bk/

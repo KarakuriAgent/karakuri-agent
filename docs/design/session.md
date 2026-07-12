@@ -40,13 +40,13 @@ interface ISessionManager {
 
   /**
    * トークン予算ベースで要約が必要か判定
-   * session 外部のコンテキスト（coreMemory や recentDiaries）のトークン数は
+   * session 外部のコンテキスト（prompt context / skills / user profile）のトークン数は
    * 呼び出し側（Agent 層）が計算して `additionalTokens` として渡す。
    * summary + messages + additionalTokens の合計が予算を超えたら true を返す。
    *
    * @param session         判定対象のセッションデータ
    * @param additionalTokens session の外側に注入されるトークン数
-   *                         （AGENT.md / RULES.md / skills 一覧 / coreMemory / recentDiaries）。
+   *                         （AGENT.md / RULES.md / skills 一覧 / user profile）。
    *                         渡す外部コンテキストがない場合は明示的に 0 を指定する。
    */
   needsSummarization(session: SessionData, additionalTokens: number): boolean;
@@ -93,18 +93,18 @@ interface ISessionManager {
 ```
 使用トークン ≈ tokens(session.summary)
              + tokens(session.messages)
-             + additionalTokens            // 呼び出し側が渡す: tokens(AGENT/RULES/skills/coreMemory/recentDiaries)
+             + additionalTokens            // 呼び出し側が渡す: tokens(AGENT/RULES/skills/user profile)
 ```
 
 合計が設定値（デフォルト: 80000 トークン）を超えたら `needsSummarization()` が `true` を返す。
 
 trusted prompt context（AGENT.md / RULES.md / skills 一覧）と
-`coreMemory` / `recentDiaries` は Session 層のスコープ外のため、
+trusted prompt context（AGENT.md / RULES.md / skills 一覧）や user profile は Session 層のスコープ外のため、
 それらのトークン数は Agent 層で計算し `additionalTokens` として渡す。
 渡す外部コンテキストがない場合は明示的に `0` を指定する。
 
 > **注**: `additionalTokens` が対象とするのは **可変長の外部コンテキスト**
-> （AGENT.md / RULES.md / skills 一覧 / coreMemory / recentDiaries）。
+> （AGENT.md / RULES.md / skills 一覧 / user profile）。
 > `CORE_SAFETY_INSTRUCTIONS` のような固定長の不変部分は
 > トークン予算の設定値側で余裕を持たせて吸収する。
 
