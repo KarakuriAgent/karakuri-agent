@@ -19,6 +19,8 @@ import { DEFAULT_LLM_MODEL, createOpenAiModelFactory, parseModelSelector } from 
 import type { AppraisalService } from '../src/life/appraisal.js';
 import { InnerStateService, type IInnerStateStore, type InnerState } from '../src/life/inner-state.js';
 import { LoopDetector } from '../src/life/loop-detector.js';
+import { ExperienceRecorder } from '../src/life/recorder.js';
+import type { IExperienceLogStore } from '../src/life/types.js';
 import { PerceptionBuffer } from '../src/life/perception-buffer.js';
 import type { DiaryEntry, IMemoryStore } from '../src/memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../src/scheduler/types.js';
@@ -3337,8 +3339,79 @@ describe('KarakuriAgent', () => {
         .filter((system) => system.includes('<inner-state>'));
       expect(injectedSystems).toEqual([]);
     });
+
+    it('propagates the experience_log id to KW appraisal for provenance', async () => {
+      const appraisalService = {
+        enqueue: vi.fn(async () => {}),
+        drain: vi.fn(async () => {}),
+      } as unknown as AppraisalService;
+      const recorder = new ExperienceRecorder({ store: createExperienceLogStoreStub(42) });
+
+      const agent = new KarakuriAgent({
+        config: {
+          ...baseConfig,
+          karakuriWorldBotIds: ['kw-bot-1'],
+          karakuriWorld: { apiBaseUrl: 'https://example.com/world', apiKey: 'world-key' },
+        },
+        memoryStore: new MemoryStoreStub(),
+        sessionManager: new SessionManagerStub(),
+        appraisalService,
+        experienceRecorder: recorder,
+        generateTextFn: vi.fn(async () => makeKwModeGenerateTextResult('了解した。')) as unknown as typeof import('ai').generateText,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+      stubKarakuriWorldNotificationFetch();
+
+      await agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+      await agent.drainPendingEvaluations();
+
+      const enqueueMock = (appraisalService.enqueue as ReturnType<typeof vi.fn>).mock;
+      expect(enqueueMock.calls.length).toBeGreaterThan(0);
+      expect(enqueueMock.calls[0]?.[2]).toBe(42);
+    });
+
+    it('propagates the experience_log id to Discord appraisal for provenance', async () => {
+      const appraisalService = {
+        enqueue: vi.fn(async () => {}),
+        drain: vi.fn(async () => {}),
+      } as unknown as AppraisalService;
+      const recorder = new ExperienceRecorder({ store: createExperienceLogStoreStub(7) });
+
+      const agent = new KarakuriAgent({
+        config: baseConfig,
+        memoryStore: new MemoryStoreStub(),
+        sessionManager: new SessionManagerStub(),
+        appraisalService,
+        experienceRecorder: recorder,
+        generateTextFn: vi.fn(async () => makeGenerateTextResult('こんにちは！', [assistantMessage('こんにちは！')])) as unknown as typeof import('ai').generateText,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+
+      await agent.handleMessage('session-1', 'こんにちは', 'Alice', { userId: 'user-1' });
+      await agent.drainPendingEvaluations();
+      // 事後 appraisal は record の解決を待ってから enqueue される（fire-and-forget）
+      await vi.waitFor(() => {
+        expect((appraisalService.enqueue as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
+      });
+
+      const enqueueMock = (appraisalService.enqueue as ReturnType<typeof vi.fn>).mock;
+      expect(enqueueMock.calls[0]?.[2]).toBe(7);
+    });
   });
 });
+
+function createExperienceLogStoreStub(appendId: number): IExperienceLogStore {
+  return {
+    append: vi.fn().mockResolvedValue(appendId),
+    getRecent: vi.fn().mockResolvedValue([]),
+    listBetween: vi.fn().mockResolvedValue([]),
+    countBetween: vi.fn().mockResolvedValue(0),
+    listChannelsBetween: vi.fn().mockResolvedValue([]),
+    maxReceivedAt: vi.fn().mockResolvedValue(null),
+    count: vi.fn().mockResolvedValue(0),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+}
 
 class InMemoryInnerStateStore implements IInnerStateStore {
   private state: InnerState | null = null;

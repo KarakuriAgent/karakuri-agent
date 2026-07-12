@@ -294,9 +294,11 @@ export class KarakuriAgent implements IAgent {
           receivedAt,
         })
       : null;
-    if (kwEvent != null) {
-      this.experienceRecorder?.record(kwEvent);
-    }
+    // id は appraisal の provenance（episodes / prospects / relations）へ配線する。
+    // KW は appraisal 先行のため insert 完了を待つ（失敗時は null で provenance なしに縮退）
+    const kwEventId = kwEvent != null
+      ? (await this.experienceRecorder?.record(kwEvent)) ?? null
+      : null;
 
     // 知覚と記憶の分離（M1）: 状態系（行動選択用）通知は Perception Buffer のみに置き、
     // セッション履歴に積まない。会話系・未知種別は履歴に残す（多ターン会話の成立に必須）
@@ -322,9 +324,10 @@ export class KarakuriAgent implements IAgent {
           receivedAt: options?.arrivedAt ?? receivedAt,
         })
       : null;
-    if (discordChatTurnEvent != null) {
-      this.experienceRecorder?.record(discordChatTurnEvent);
-    }
+    // 応答をブロックしないよう insert 完了は待たず、id は事後 appraisal の enqueue 時に解決する
+    const discordChatTurnRecording: Promise<number | null> = discordChatTurnEvent != null
+      ? this.experienceRecorder?.record(discordChatTurnEvent) ?? Promise.resolve(null)
+      : Promise.resolve(null);
 
     // appraisal の実行順序（チャネル別ポリシー）: KW は appraisal 先行 → 応答
     // （行動完了通知は非同期で誰も待っていない。更新後の状態で行動選択する）。
@@ -334,6 +337,7 @@ export class KarakuriAgent implements IAgent {
       await this.appraisalService.enqueue(
         kwEvent,
         recentTranscript != null ? { recentTranscript } : undefined,
+        kwEventId ?? undefined,
       );
     }
 
@@ -716,7 +720,7 @@ export class KarakuriAgent implements IAgent {
       // 自分が発行したコマンド（own_action）も一次資料に残す
       const commandInput = extractKarakuriWorldCommandInput(result);
       if (commandInput != null) {
-        this.experienceRecorder?.record(normalizeKwOwnAction({
+        void this.experienceRecorder?.record(normalizeKwOwnAction({
           botId: userId,
           command: commandInput.command,
           params: commandInput.params,
@@ -748,7 +752,7 @@ export class KarakuriAgent implements IAgent {
         }
       }
     } else if (isDiscordConversation && assistantResponse.trim().length > 0) {
-      this.experienceRecorder?.record(normalizeDiscordOwnResponse({
+      void this.experienceRecorder?.record(normalizeDiscordOwnResponse({
         text: assistantResponse,
         sessionId,
         inReplyToUserId: userId,
@@ -759,12 +763,16 @@ export class KarakuriAgent implements IAgent {
     // Discord は応答先行 → appraisal 事後（非同期）。ユーザーが待っているため、
     // 1 ターン遅れの状態反映で実害なし（既存 post-response evaluator と同じタイミング設計）
     if (discordChatTurnEvent != null && this.config.appraisalEnabled && this.appraisalService != null) {
-      void this.appraisalService.enqueue(discordChatTurnEvent, {
+      const appraisalService = this.appraisalService;
+      // 受信順の直列適用は record（better-sqlite3 の同期 insert）が呼び出し順に
+      // 解決することに依存する。store を真に非同期な実装へ差し替える場合は
+      // セッション単位で recording を連鎖させること
+      void discordChatTurnRecording.then((eventId) => appraisalService.enqueue(discordChatTurnEvent, {
         recentTranscript: [
           `USER (${userName}): ${truncateForAppraisal(userMessage)}`,
           `ASSISTANT: ${truncateForAppraisal(assistantResponse)}`,
         ].join('\n'),
-      });
+      }, eventId ?? undefined));
     }
 
     // 旧 post-response evaluator（M6 で新パイプラインへ切り替え済み。

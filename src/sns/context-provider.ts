@@ -80,9 +80,10 @@ export class SnsSkillContextProvider implements SkillContextProvider {
               notification,
               receivedAt: new Date(),
             });
-            this.options.experienceRecorder?.record(event);
+            // id は appraisal の provenance へ配線する（insert は軽量なので await で直列化）
+            const eventId = (await this.options.experienceRecorder?.record(event)) ?? null;
             // SNS はチャットに準ずる: 応答先行 → appraisal 事後（fire-and-forget）
-            void this.options.appraisalService?.enqueue(event);
+            void this.options.appraisalService?.enqueue(event, undefined, eventId ?? undefined);
           }
         }
         latestNotificationId = complete ? notifications[0]?.id : undefined;

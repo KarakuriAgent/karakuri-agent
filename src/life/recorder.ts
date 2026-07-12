@@ -14,36 +14,51 @@ export interface ExperienceRecorderOptions {
 
 /**
  * 体験ログへの記録窓口。記録は同期パスをブロックせず、失敗してもチャネル処理を
- * 止めない（fire-and-forget）。ただし一次資料の欠落 = 体験の永久喪失なので、
+ * 止めない（待たずに投げ放しにできる）。ただし一次資料の欠落 = 体験の永久喪失なので、
  * 失敗はエラーログに加えて report 経路（REPORT_CHANNEL_ID）へ通知する。
  */
 export class ExperienceRecorder {
-  private readonly pending = new Set<Promise<void>>();
+  private readonly pending = new Set<Promise<unknown>>();
 
   constructor(private readonly options: ExperienceRecorderOptions) {}
 
-  record(event: NormalizedEvent): void {
-    let task: Promise<void>;
+  /**
+   * 体験を記録し experience_log の id で解決する（失敗時は null。絶対に reject しない）。
+   * id を appraisal の provenance へ配線する呼び出し側は await し、
+   * 配線不要の呼び出し側は従来どおり `void record(...)` で投げ放しにできる。
+   */
+  record(event: NormalizedEvent): Promise<number | null> {
+    let task: Promise<number | null>;
     try {
       task = this.options.store.append(event).then(
-        () => undefined,
-        (error: unknown) => this.handleFailure(event, error),
+        (id) => id,
+        (error: unknown): number | null => {
+          // 失敗報告（Discord 投稿を含む）は待たずに開始し、await する呼び出し側を
+          // ネットワーク往復でブロックしない。flush は track 経由で報告完了も待つ
+          this.track(this.handleFailure(event, error));
+          return null;
+        },
       );
     } catch (error) {
       // store.append が同期的に throw しても呼び出し元へ伝播させない
-      void this.handleFailure(event, error);
-      return;
+      this.track(this.handleFailure(event, error));
+      return Promise.resolve(null);
     }
 
+    this.track(task);
+    return task;
+  }
+
+  /** graceful shutdown 用。進行中の書き込みと失敗報告を待つ */
+  async flush(): Promise<void> {
+    await Promise.allSettled([...this.pending]);
+  }
+
+  private track(task: Promise<unknown>): void {
     this.pending.add(task);
     void task.finally(() => {
       this.pending.delete(task);
     });
-  }
-
-  /** graceful shutdown 用。進行中の書き込みを待つ */
-  async flush(): Promise<void> {
-    await Promise.allSettled([...this.pending]);
   }
 
   private async handleFailure(event: NormalizedEvent, error: unknown): Promise<void> {

@@ -230,7 +230,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
   };
 
   const recordOwnAction = (action: string, detail: unknown): void => {
-    options.experienceRecorder?.record(normalizeSnsOwnAction({
+    void options.experienceRecorder?.record(normalizeSnsOwnAction({
       provider: snsProviderType,
       action,
       detail,

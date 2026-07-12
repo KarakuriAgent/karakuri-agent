@@ -28,15 +28,23 @@ function createStore(overrides: Partial<IExperienceLogStore> = {}): IExperienceL
 }
 
 describe('ExperienceRecorder', () => {
-  it('appends events to the store', async () => {
-    const store = createStore();
+  it('appends events to the store and resolves with the experience_log id', async () => {
+    const store = createStore({ append: vi.fn().mockResolvedValue(42) });
     const recorder = new ExperienceRecorder({ store });
 
-    recorder.record(buildEvent());
+    const id = await recorder.record(buildEvent());
     await recorder.flush();
 
+    expect(id).toBe(42);
     expect(store.append).toHaveBeenCalledTimes(1);
     expect(store.append).toHaveBeenCalledWith(expect.objectContaining({ channel: 'kw:bot-1' }));
+  });
+
+  it('resolves with null when the append fails', async () => {
+    const store = createStore({ append: vi.fn().mockRejectedValue(new Error('disk full')) });
+    const recorder = new ExperienceRecorder({ store });
+
+    await expect(recorder.record(buildEvent())).resolves.toBeNull();
   });
 
   it('does not throw when the store rejects, and reports the failure', async () => {

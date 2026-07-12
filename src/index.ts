@@ -470,11 +470,15 @@ async function main(): Promise<void> {
           reflectionRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
-        drainEvaluations: () => Promise.all([
-          agent.drainPendingEvaluations(),
-          phoneService.drain(),
-          experienceRecorder.flush(),
-        ]).then(() => undefined),
+        // recorder を先に flush する: Discord 事後 appraisal は record の解決後に
+        // enqueue されるため、並列に drain すると tail のスナップショットが
+        // 未登録の appraisal を取りこぼす
+        drainEvaluations: () => experienceRecorder.flush()
+          .then(() => Promise.all([
+            agent.drainPendingEvaluations(),
+            phoneService.drain(),
+          ]))
+          .then(() => undefined),
         closeStores: () => [
           memoryStore.close(),
           userStore.close(),
