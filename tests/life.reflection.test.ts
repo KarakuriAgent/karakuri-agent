@@ -158,6 +158,99 @@ describe('ReflectionEngine.runDaily', () => {
     expect(active[0]!.supersedes).toBe(beliefId);
   });
 
+  it('rejects deactivations without reason/evidence and demotes young beliefs instead (#107)', async () => {
+    const env = await createEnv();
+    const youngId = await env.beliefStore.insert({
+      kind: 'person_fact',
+      subject: 'kbx-001',
+      body: 'kbx-001 は他人をからかう話し方をする',
+      confidence: 0.6,
+      provenance: [1, 2],
+      procVersion: 'test',
+    });
+    const noEvidenceId = await env.beliefStore.insert({
+      kind: 'self',
+      subject: 'self',
+      body: '自分は不愉快な会話を断ちやすい',
+      confidence: 0.6,
+      provenance: [3, 4],
+      procVersion: 'test',
+    });
+    await env.episodeStore.insert({
+      occurredAt: '2026-07-05T10:00:00.000Z',
+      channel: 'kw:bot-1',
+      body: 'kbx-001 が朝食に誘ってくれた。',
+      importance: 0.5,
+      participants: [],
+      provenance: [5],
+      procVersion: 'test',
+    });
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: stubGenerateTextFn(makeDailyOutput({
+        diary: '今日はいろいろあった。',
+        deactivations: [
+          { belief_id: youngId, reason: '今日は優しかった', evidence: '朝食に誘ってくれた' },
+          { belief_id: noEvidenceId, reason: '', evidence: '' },
+        ],
+      })),
+    });
+    // 生成直後（若い信念）の省察
+    const result = await engine.runDaily('2026-07-05', new Date());
+
+    // 失効は 0 件: 若い信念は減衰降格、根拠なしは棄却
+    expect(result?.deactivations).toBe(0);
+    // 若い信念は改訂（supersedes チェーン）で confidence が下がって生きている
+    const demoted = await env.beliefStore.listActive({ subject: 'kbx-001' });
+    expect(demoted).toHaveLength(1);
+    expect(demoted[0]!.confidence).toBeCloseTo(0.4, 5);
+    expect(demoted[0]!.supersedes).toBe(youngId);
+    // 根拠なしの失効指示は無視され、元の信念が生きている
+    expect((await env.beliefStore.getById(noEvidenceId))?.active).toBe(true);
+  });
+
+  it('deactivates old beliefs with cited evidence (#107)', async () => {
+    const env = await createEnv();
+    // 8 日前に生成された信念（過去データ相当）
+    env.db.prepare(`
+      INSERT INTO beliefs (kind, subject, body, confidence, active, supersedes, provenance, proc_version, created_at)
+      VALUES ('person_fact', 'kbx-001', '古い理解', 0.5, 1, NULL, '[1,2]', 'test', ?)
+    `).run(new Date(Date.now() - 8 * 86_400_000).toISOString());
+    const oldId = Number((env.db.prepare('SELECT MAX(id) AS id FROM beliefs').get() as { id: number }).id);
+    await env.episodeStore.insert({
+      occurredAt: '2026-07-05T10:00:00.000Z',
+      channel: 'kw:bot-1',
+      body: '正反対の行動を目撃した。',
+      importance: 0.5,
+      participants: [],
+      provenance: [9],
+      procVersion: 'test',
+    });
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: stubGenerateTextFn(makeDailyOutput({
+        diary: '今日で考えが変わった。',
+        deactivations: [{ belief_id: oldId, reason: '明確に矛盾する出来事があった', evidence: '本人が正反対の行動を取った' }],
+      })),
+    });
+    const result = await engine.runDaily('2026-07-05', new Date());
+
+    expect(result?.deactivations).toBe(1);
+    expect((await env.beliefStore.getById(oldId))?.active).toBe(false);
+  });
+
   it('demotes high-confidence single-source beliefs (unit test for the contamination guard)', async () => {
     const env = await createEnv();
     // insert 時のキャップを迂回して高 confidence の単一出所信念を作る（過去データ相当）

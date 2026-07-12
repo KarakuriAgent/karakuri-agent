@@ -100,7 +100,7 @@ export class ReflectionRunner {
           await reportSafely(
             this.options.messageSink,
             this.options.reportChannelId,
-            `📔 日次省察 (${reflectionDate}): 日記を書いた。新しい信念 ${result.newBeliefs} 件 / 改訂 ${result.revisions} 件 / 失効 ${result.deactivations} 件 / 単一出所の格下げ ${result.demotedSingleSource} 件`,
+            `📔 日次省察 (${reflectionDate}): 日記を書いた。新しい信念 ${result.newBeliefs} 件 / 改訂 ${result.revisions} 件 / 失効 ${result.deactivations} 件（減衰降格 ${result.deactivationsDemoted} / 棄却 ${result.deactivationsRejected}）/ 単一出所の格下げ ${result.demotedSingleSource} 件`,
             logger,
           );
         }

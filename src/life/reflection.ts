@@ -84,7 +84,11 @@ export const dailyReflectionSchema = z.object({
   })).max(8).describe('Contradiction resolutions as revisions, never overwrites'),
   deactivations: z.array(z.object({
     belief_id: z.number().int(),
-  })).max(8).describe('Beliefs that no longer hold'),
+    // スキーマ上は optional（json_schema を強制しない互換バックエンドで省察全体を
+    // 落とさないため）。適用側ガードレールで無い失効は棄却する（#107）
+    reason: z.string().max(200).optional().describe('Why this belief no longer holds (required to actually deactivate)'),
+    evidence: z.string().max(300).optional().describe('The concrete observation from today that contradicts it (required to actually deactivate)'),
+  })).max(8).describe('Beliefs that no longer hold. Only with clear contradicting evidence from today'),
   prospect_updates: z.array(z.object({
     prospect_id: z.number().int(),
     status: z.enum(['fulfilled', 'abandoned']),
@@ -125,6 +129,13 @@ const MOOD_REPAIR_AMOUNT: Record<DailyReflectionOutput['mood_repair'], number> =
 const BUOYANCY_DECAY_AGE_DAYS = 60;
 const BUOYANCY_DECAY_FACTOR = 0.85;
 
+/** 失効の churn 対策（#107）: 生成からこの日数未満の信念は失効ではなく減衰に降格する */
+const BELIEF_DEACTIVATION_MIN_AGE_DAYS = 7;
+/** 減衰降格 1 回ぶんの confidence 低下量 */
+const BELIEF_DEMOTION_STEP = 0.2;
+/** これ未満まで下がる減衰は失効として扱う（ゾンビ信念を残さない） */
+const BELIEF_DEACTIVATION_CONFIDENCE_FLOOR = 0.2;
+
 export interface ReflectionEngineOptions {
   model: LanguageModel;
   procVersion: string;
@@ -143,6 +154,10 @@ export interface DailyReflectionResult {
   newBeliefs: number;
   revisions: number;
   deactivations: number;
+  /** 失効指示のうち減衰降格へ切り替えた件数（若い信念 — #107） */
+  deactivationsDemoted: number;
+  /** 失効指示のうち棄却した件数（根拠なし・同夜改訂済み — #107） */
+  deactivationsRejected: number;
   demotedSingleSource: number;
   moodRepair: number;
   prospectsFulfilled: number;
@@ -171,6 +186,8 @@ export class ReflectionEngine {
             newBeliefs: 0,
             revisions: 0,
             deactivations: 0,
+            deactivationsDemoted: 0,
+            deactivationsRejected: 0,
             demotedSingleSource,
             moodRepair: 0,
             prospectsFulfilled: 0,
@@ -192,6 +209,7 @@ export class ReflectionEngine {
         '- Judge how much this reflection settles your feelings (mood_repair).',
         '- Extract new durable beliefs about the world, people (with subject id when known), or yourself.',
         '- Resolve contradictions between beliefs and today\'s experience as revisions (改訂), keeping the old belief in history.',
+        '- Deactivate a belief ONLY when today\'s experience clearly contradicts it; cite the reason and the concrete contradicting observation (evidence). "No supporting evidence today" is NOT a reason to deactivate — lower its confidence with a revision instead.',
         '- Take stock of open promises / intentions / goals: mark only those clearly fulfilled or clearly given up (prospect_updates). Leave the rest open.',
         '- For each new belief, list in source_episode_ids the episode ids (the # numbers) it is actually based on.',
         '- Beliefs learned from a single person\'s single remark deserve low confidence.',
@@ -265,6 +283,7 @@ export class ReflectionEngine {
     }
 
     let revisions = 0;
+    const revisedBeliefIds = new Set<number>();
     for (const revision of output.revisions) {
       if (revision.body != null && !isDeclarativeText(revision.body)) {
         continue;
@@ -276,11 +295,55 @@ export class ReflectionEngine {
       });
       if (revised != null) {
         revisions += 1;
+        revisedBeliefIds.add(revision.belief_id);
       }
     }
 
+    // 失効のガードレール（#107）: 根拠のない失効を棄却し、若い信念は
+    // 失効ではなく confidence 減衰に降格する（1 回の反証で消えず、反証が
+    // 続くと消える経路依存にする — 実機で生成翌日に全滅した churn への対策）
     let deactivations = 0;
+    let deactivationsDemoted = 0;
+    let deactivationsRejected = 0;
     for (const deactivation of output.deactivations) {
+      const reason = deactivation.reason?.trim() ?? '';
+      const evidence = deactivation.evidence?.trim() ?? '';
+      if (reason.length === 0 || evidence.length === 0) {
+        logger.info('Belief deactivation rejected: missing reason/evidence', {
+          beliefId: deactivation.belief_id,
+        });
+        deactivationsRejected += 1;
+        continue;
+      }
+      if (revisedBeliefIds.has(deactivation.belief_id)) {
+        // 同じ夜に revisions で改訂済み: 矛盾解消は改訂が先に立つ。後継を
+        // 黙って残したまま旧 id への失効を no-op させない（1 信念 1 アクション）
+        logger.info('Belief deactivation skipped: already revised in this reflection', {
+          beliefId: deactivation.belief_id,
+        });
+        deactivationsRejected += 1;
+        continue;
+      }
+      const belief = await this.options.beliefStore.getById(deactivation.belief_id);
+      if (belief == null || !belief.active) {
+        continue;
+      }
+      // 年齢は supersedes チェーンの根本から数える（改訂のたびに若返らせない）
+      const ageDays = (now.getTime() - new Date(await this.resolveBeliefChainRootCreatedAt(belief)).getTime()) / 86_400_000;
+      if (ageDays < BELIEF_DEACTIVATION_MIN_AGE_DAYS && belief.confidence - BELIEF_DEMOTION_STEP >= BELIEF_DEACTIVATION_CONFIDENCE_FLOOR) {
+        // 減衰降格: supersedes チェーンに改訂として残る
+        await this.options.beliefStore.revise(belief.id, {
+          confidence: Math.max(0, belief.confidence - BELIEF_DEMOTION_STEP),
+          procVersion: this.options.procVersion,
+        });
+        logger.info('Young belief demoted instead of deactivated', {
+          beliefId: belief.id,
+          ageDays: Math.round(ageDays * 10) / 10,
+          reason: reason.slice(0, 80),
+        });
+        deactivationsDemoted += 1;
+        continue;
+      }
       if (await this.options.beliefStore.deactivate(deactivation.belief_id)) {
         deactivations += 1;
       }
@@ -317,8 +380,8 @@ export class ReflectionEngine {
       });
     }
 
-    logger.info('Daily reflection completed', { date, diaryNarrativeId, newBeliefs, revisions, deactivations, prospectsFulfilled, prospectsAbandoned });
-    return { diaryNarrativeId, newBeliefs, revisions, deactivations, demotedSingleSource, moodRepair, prospectsFulfilled, prospectsAbandoned };
+    logger.info('Daily reflection completed', { date, diaryNarrativeId, newBeliefs, revisions, deactivations, deactivationsDemoted, deactivationsRejected, prospectsFulfilled, prospectsAbandoned });
+    return { diaryNarrativeId, newBeliefs, revisions, deactivations, deactivationsDemoted, deactivationsRejected, demotedSingleSource, moodRepair, prospectsFulfilled, prospectsAbandoned };
   }
 
   /** 週次省察: 日記群 → テーマ、自己像のドリフト */
@@ -461,6 +524,23 @@ export class ReflectionEngine {
 
     logger.info('Monthly reflection completed', { periodStart, periodEnd, chapters, decayed });
     return { chapters, decayed };
+  }
+
+  /**
+   * supersedes チェーンを根本まで辿って最初の生成日時を返す（#107）。
+   * 改訂のたびに新しい行が作られ createdAt が若返るため、失効ガードの
+   * 年齢判定は鎖の根本で行う（循環・深すぎる鎖は打ち切り）
+   */
+  private async resolveBeliefChainRootCreatedAt(belief: { supersedes: number | null; createdAt: string }): Promise<string> {
+    let current = belief;
+    for (let depth = 0; depth < 20 && current.supersedes != null; depth += 1) {
+      const previous = await this.options.beliefStore.getById(current.supersedes);
+      if (previous == null) {
+        break;
+      }
+      current = previous;
+    }
+    return current.createdAt;
   }
 
   /**
