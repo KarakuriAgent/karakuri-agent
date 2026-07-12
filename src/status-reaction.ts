@@ -40,7 +40,7 @@ export function resolveToolEmoji(toolName: string): string | null {
   }
 
   switch (toolName) {
-    case 'recallDiary':
+    case 'recallEpisodes':
     case 'userLookup':
       return STATUS_EMOJI.memory;
     case 'webFetch':

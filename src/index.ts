@@ -3,13 +3,11 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { ProviderOptions } from '@ai-sdk/provider-utils';
-
 import { KarakuriAgent } from './agent/core.js';
 import { FilePromptContextStore } from './agent/prompt-context.js';
 import { createBot, type BotRuntime } from './bot.js';
 import { loadConfig, resolveWriteRateLimits, type Config } from './config.js';
-import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from './llm/model-selector.js';
+import { createConfiguredOpenAiModelFactory } from './llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import type { IMessageSink } from './scheduler/types.js';
@@ -20,7 +18,7 @@ import { openLifeDatabase } from './life/db.js';
 import { SqliteNarrativeStore } from './life/narratives.js';
 import { buildReflectionProcVersion, ReflectionEngine } from './life/reflection.js';
 import { ReflectionRunner } from './life/reflection-runner.js';
-import { importLegacyStores, importSeedMemories, SEED_MEMORIES_FILE } from './life/seed.js';
+import { importSeedMemories, SEED_MEMORIES_FILE } from './life/seed.js';
 import { EpisodeEmbeddingIndex, OpenAiEmbeddingProvider } from './life/embeddings.js';
 import { SqliteEpisodeStore } from './life/episodes.js';
 import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
@@ -37,10 +35,6 @@ import { LoopDetector } from './life/loop-detector.js';
 import { kwChannel } from './life/normalize.js';
 import { PerceptionBuffer } from './life/perception-buffer.js';
 import { ExperienceRecorder } from './life/recorder.js';
-import { CompositeMemoryStore } from './memory/composite-store.js';
-import { SqliteDiaryStore } from './memory/diary-store.js';
-import { MemoryMaintenanceRunner } from './memory/maintenance-runner.js';
-import { FileMemoryStore } from './memory/store.js';
 import { PhoneService } from './phone/service.js';
 import { SqlitePhoneUnreadStore } from './phone/unread-store.js';
 import { FileSessionManager } from './session/manager.js';
@@ -62,39 +56,6 @@ const logger = createLogger('Server');
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
-interface MemoryMaintenanceModelConfig {
-  modelSelector: Config['llmModelSelector'];
-  modelFactoryOptions: OpenAiProviderOptions;
-  providerOptions: ProviderOptions;
-}
-
-export function createMemoryMaintenanceModelConfig(config: Pick<
-  Config,
-  'llmApiKey'
-  | 'llmBaseUrl'
-  | 'llmModelSelector'
-  | 'llmDisableThinkingRequestParam'
-  | 'postResponseLlmApiKey'
-  | 'postResponseLlmBaseUrl'
-  | 'postResponseLlmModelSelector'
->): MemoryMaintenanceModelConfig {
-  const maintenanceModelSelector = config.postResponseLlmModelSelector ?? config.llmModelSelector;
-
-  return {
-    modelSelector: maintenanceModelSelector,
-    modelFactoryOptions: {
-      apiKey: config.postResponseLlmApiKey ?? config.llmApiKey,
-      ...((config.postResponseLlmBaseUrl ?? config.llmBaseUrl) != null
-        ? { baseURL: config.postResponseLlmBaseUrl ?? config.llmBaseUrl }
-        : {}),
-      fetch: createNoThinkingFetch({
-        disableThinkingRequestParam: config.llmDisableThinkingRequestParam,
-      }),
-    },
-    providerOptions: noThinkingProviderOptions(maintenanceModelSelector.api),
-  };
-}
-
 async function main(): Promise<void> {
   logger.info('Starting karakuri-agent...');
   const config = loadConfig();
@@ -104,12 +65,7 @@ async function main(): Promise<void> {
     provider: config.llmModelSelector.provider,
     api: config.llmModelSelector.api,
     port: config.port,
-    memoryMaintenanceIntervalMinutes: config.memoryMaintenanceIntervalMinutes,
-    memoryMaintenanceRecentDiaryDays: config.memoryMaintenanceRecentDiaryDays,
   });
-  const coreMemoryStore = new FileMemoryStore({ dataDir: config.dataDir });
-  const diaryStore = new SqliteDiaryStore({ dataDir: config.dataDir, timezone: config.timezone });
-  const memoryStore = new CompositeMemoryStore(coreMemoryStore, diaryStore);
   const userStore = new SqliteUserStore({ dataDir: config.dataDir });
   migrateLegacySnsActivityDb({ dataDir: config.dataDir, snsProviders: (config.snsList ?? []).map((sns) => sns.provider), migrateTo: config.snsLegacyDbMigrateTo });
   const snsActivityStores = new Map<SnsProviderType, SqliteSnsActivityStore>();
@@ -247,17 +203,8 @@ async function main(): Promise<void> {
       beliefStore,
       narrativeStore,
     });
-    await importLegacyStores({
-      db: lifeDb,
-      experienceLogStore,
-      beliefStore,
-      narrativeStore,
-      memoryStore,
-      diaryStore,
-      userStore,
-    });
   } catch (error) {
-    logger.warn('Seed / legacy import failed (continuing startup)', error);
+    logger.warn('Seed import failed (continuing startup)', error);
   }
   const reflectionRunner = config.reflectionEnabled
     ? (() => {
@@ -370,7 +317,6 @@ async function main(): Promise<void> {
   ]);
   const agent = new KarakuriAgent({
     config,
-    memoryStore,
     sessionManager,
     promptContextStore,
     skillStore,
@@ -435,24 +381,6 @@ async function main(): Promise<void> {
         },
       }
     : undefined;
-  const memoryMaintenanceRunner = config.memoryMaintenanceIntervalMinutes != null
-    ? (() => {
-        const maintenanceModelConfig = createMemoryMaintenanceModelConfig(config);
-        const modelFactory = createConfiguredOpenAiModelFactory(maintenanceModelConfig.modelFactoryOptions);
-        return new MemoryMaintenanceRunner({
-          model: modelFactory(maintenanceModelConfig.modelSelector),
-          memoryStore,
-          intervalMinutes: config.memoryMaintenanceIntervalMinutes,
-          ...(config.memoryMaintenanceRecentDiaryDays != null
-            ? { recentDiaryDays: config.memoryMaintenanceRecentDiaryDays }
-            : {}),
-          timezone: config.timezone,
-          providerOptions: maintenanceModelConfig.providerOptions,
-          ...(messageSink != null ? { messageSink } : {}),
-          ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
-        });
-      })()
-    : undefined;
   const scheduler = await createScheduler({
     agent,
     config,
@@ -461,7 +389,6 @@ async function main(): Promise<void> {
   });
   const bot = createBot(config, agent, { messageSink, threadMutex: chatThreadMutex, ...(unreadDiversion != null ? { unreadDiversion } : {}) });
 
-  memoryMaintenanceRunner?.start();
   reflectionRunner?.start();
   await bot.initialize();
   logger.debug('Bot initialized');
@@ -490,7 +417,6 @@ async function main(): Promise<void> {
         closeServer: () => closeServer(server),
         closeScheduler: () => Promise.all([
           scheduler.close(),
-          memoryMaintenanceRunner?.close() ?? Promise.resolve(),
           reflectionRunner?.close() ?? Promise.resolve(),
         ]).then(() => undefined),
         shutdownBot: () => bot.shutdown(),
@@ -504,7 +430,6 @@ async function main(): Promise<void> {
           ]))
           .then(() => undefined),
         closeStores: () => [
-          memoryStore.close(),
           userStore.close(),
           Promise.all([
             experienceLogStore.close(),

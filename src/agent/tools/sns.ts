@@ -15,9 +15,6 @@ import { httpUrlSchema, type LookupFn } from '../../utils/safe-fetch.js';
 
 const logger = createLogger('SnsTools');
 const visibilitySchema = z.enum(['public', 'unlisted', 'private', 'direct']);
-// Cap LLM-based user evaluations per turn to limit cost and latency.
-// Callers can share evaluatedUsers across provider-specific tool sets within a turn.
-const MAX_USER_EVALUATIONS_PER_TURN = 3;
 
 const snsPostInputSchema = z.object({
   text: z.string().trim().min(1).max(140),
@@ -56,9 +53,7 @@ export interface CreateSnsToolsOptions {
   sleep?: (milliseconds: number) => Promise<void>;
   activityStore?: ISnsActivityStore;
   userStore?: IUserStore;
-  evaluateUser?: (snsUserId: string, displayName: string, postText: string) => void;
   reportError?: (message: string) => void;
-  evaluatedUsers?: Set<string> | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
   /** M6: 話題偏り検出用の頻度台帳（bucket=topic に投稿話題を記録） */
   actionLedger?: IActionLedgerStore | undefined;
@@ -125,39 +120,6 @@ async function safeCheck<T>(operationName: string, operation: () => Promise<T>):
   }
 }
 
-function trackPost(
-  post: SnsPost,
-  provider: string,
-  userStore: IUserStore | undefined,
-  evaluateUser: ((snsUserId: string, displayName: string, postText: string) => void) | undefined,
-  evaluatedUsers: Set<string>,
-): void {
-  ensureSnsUser(userStore, provider, post.authorId, post.authorName);
-  if (evaluateUser == null) {
-    return;
-  }
-
-  const snsUserId = `sns:${provider}:${post.authorId}`;
-  if (evaluatedUsers.has(snsUserId) || evaluatedUsers.size >= MAX_USER_EVALUATIONS_PER_TURN) {
-    return;
-  }
-
-  evaluatedUsers.add(snsUserId);
-  evaluateUser(snsUserId, post.authorName, post.text);
-}
-
-function trackThread(
-  posts: SnsPost[],
-  provider: string,
-  userStore: IUserStore | undefined,
-  evaluateUser: ((snsUserId: string, displayName: string, postText: string) => void) | undefined,
-  evaluatedUsers: Set<string>,
-): void {
-  for (const post of posts) {
-    trackPost(post, provider, userStore, evaluateUser, evaluatedUsers);
-  }
-}
-
 /**
  * 投稿本文から話題キーを決定論で抽出する（LLM 不要）。
  * ハッシュタグを優先し、無ければ本文冒頭を丸めたキーを使う。
@@ -204,7 +166,6 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
     ...(options.lookupFn != null ? { lookupFn: options.lookupFn } : {}),
     ...(options.sleep != null ? { sleep: options.sleep } : {}),
   });
-  const evaluatedUsers = options.evaluatedUsers ?? new Set<string>();
   const toolPrefix = `sns_${snsProviderType}`;
   const toolName = (action: string) => `${toolPrefix}_${action}`;
   const threadDescription = snsProviderType === 'x'
@@ -303,7 +264,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       inputSchema: snsGetPostInputSchema,
       execute: async (input) => executeSafely(toolName('get_post'), async () => {
         const result = await provider.getPost(input.post_id);
-        trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
+        ensureSnsUser(options.userStore, snsProviderType, result.authorId, result.authorName);
         return result;
       }),
     }),
@@ -323,7 +284,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
         const result = await provider.like(input.post_id);
         const warning = await safeRecord('sns_like', () => options.activityStore?.recordLike(input.post_id) ?? Promise.resolve(), options.reportError);
         recordOwnAction('like', { post_id: input.post_id });
-        trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
+        ensureSnsUser(options.userStore, snsProviderType, result.authorId, result.authorName);
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
@@ -343,7 +304,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
         const result = await provider.repost(input.post_id);
         const warning = await safeRecord('sns_repost', () => options.activityStore?.recordRepost(input.post_id) ?? Promise.resolve(), options.reportError);
         recordOwnAction('repost', { post_id: input.post_id });
-        trackPost(result, snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
+        ensureSnsUser(options.userStore, snsProviderType, result.authorId, result.authorName);
         return warning != null ? { ...result, _warning: warning } : result;
       })),
     }),
@@ -360,7 +321,9 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
       inputSchema: snsGetThreadInputSchema,
       execute: async (input) => executeSafely(toolName('get_thread'), async () => {
         const result = await provider.getThread(input.post_id);
-        trackThread([...result.ancestors, ...result.descendants], snsProviderType, options.userStore, options.evaluateUser, evaluatedUsers);
+        for (const post of [...result.ancestors, ...result.descendants]) {
+          ensureSnsUser(options.userStore, snsProviderType, post.authorId, post.authorName);
+        }
         return result;
       }),
     }),

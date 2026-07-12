@@ -27,7 +27,6 @@ import { formatEpisodesForPrompt, type EpisodeRetrievalService } from '../life/r
 import { createConfiguredOpenAiModelFactory, type LlmModelSelector } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
 import { isRepetitiveToolCallError } from '../llm/repetitive-tool-call-error.js';
-import type { IMemoryStore } from '../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../scheduler/types.js';
 import { SESSION_SCHEMA_VERSION } from '../session/manager.js';
 import type { ISessionManager, SessionData } from '../session/types.js';
@@ -35,11 +34,9 @@ import { createBuiltinSnsSkillDefinition, createLegacyBuiltinSnsSkillDefinition,
 import type { ISnsActivityStore, SnsProviderType } from '../sns/types.js';
 import type { SkillContextRegistry } from '../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition, SkillFilterOptions } from '../skill/types.js';
-import { evaluatePostResponse } from '../user/post-response-evaluator.js';
-import type { IUserStore } from '../user/types.js';
+import type { IUserStore, UserAlias, UserRecord } from '../user/types.js';
 import { formatDateTimeInTimezone } from '../utils/date.js';
 import { createLogger } from '../utils/logger.js';
-import { KeyedMutex } from '../utils/mutex.js';
 import {
   buildKarakuriWorldModeInstructions,
   KARAKURI_WORLD_COMMAND_TOOL_NAME,
@@ -66,7 +63,6 @@ import {
 
 const logger = createLogger('Agent');
 
-const DEFAULT_RECENT_DIARY_COUNT = 3;
 const DEFAULT_RECENT_TURN_COUNT = 4;
 const DEFAULT_KARAKURI_WORLD_MODE_RESPONSE = '(行動完了)';
 
@@ -106,7 +102,6 @@ export interface IAgent {
 
 export interface KarakuriAgentOptions {
   config: Config;
-  memoryStore: IMemoryStore;
   sessionManager: ISessionManager;
   skillStore?: ISkillStore | undefined;
   promptContextStore?: IPromptContextStore | undefined;
@@ -137,12 +132,10 @@ export interface KarakuriAgentOptions {
   generateTextFn?: typeof generateText;
   modelFactory?: (selector: LlmModelSelector) => LanguageModel;
   keepRecentTurns?: number;
-  recentDiaryCount?: number;
 }
 
 export class KarakuriAgent implements IAgent {
   private readonly config: Config;
-  private readonly memoryStore: IMemoryStore;
   private readonly sessionManager: ISessionManager;
   private readonly skillStore: ISkillStore | undefined;
   private readonly promptContextStore: IPromptContextStore | undefined;
@@ -172,15 +165,10 @@ export class KarakuriAgent implements IAgent {
   private readonly generateTextFn: typeof generateText;
   private readonly modelFactory: (selector: LlmModelSelector) => LanguageModel;
   private readonly noThinkingModelFactory: (selector: LlmModelSelector) => LanguageModel;
-  private readonly postResponseModelFactory: ((selector: LlmModelSelector) => LanguageModel) | undefined;
   private readonly keepRecentTurns: number;
-  private readonly recentDiaryCount: number;
-  private readonly evaluationMutex = new KeyedMutex();
-  private readonly pendingEvaluations = new Set<Promise<void>>();
 
   constructor({
     config,
-    memoryStore,
     sessionManager,
     skillStore,
     promptContextStore,
@@ -207,10 +195,8 @@ export class KarakuriAgent implements IAgent {
     generateTextFn = generateText,
     modelFactory,
     keepRecentTurns = DEFAULT_RECENT_TURN_COUNT,
-    recentDiaryCount = DEFAULT_RECENT_DIARY_COUNT,
   }: KarakuriAgentOptions) {
     this.config = config;
-    this.memoryStore = memoryStore;
     this.sessionManager = sessionManager;
     this.skillStore = skillStore;
     this.promptContextStore = promptContextStore;
@@ -235,7 +221,6 @@ export class KarakuriAgent implements IAgent {
     this.satiationThreshold = satiationThreshold;
     this.generateTextFn = generateTextFn;
     this.keepRecentTurns = keepRecentTurns;
-    this.recentDiaryCount = recentDiaryCount;
 
     const noThinkingFetch = createNoThinkingFetch({
       disableThinkingRequestParam: config.llmDisableThinkingRequestParam,
@@ -251,15 +236,6 @@ export class KarakuriAgent implements IAgent {
       ...(config.llmBaseUrl != null ? { baseURL: config.llmBaseUrl } : {}),
       fetch: noThinkingFetch,
     });
-    this.postResponseModelFactory = config.postResponseLlmApiKey != null || config.postResponseLlmBaseUrl != null
-      ? createConfiguredOpenAiModelFactory({
-          apiKey: config.postResponseLlmApiKey ?? config.llmApiKey,
-          ...((config.postResponseLlmBaseUrl ?? config.llmBaseUrl) != null
-            ? { baseURL: config.postResponseLlmBaseUrl ?? config.llmBaseUrl }
-            : {}),
-          ...(!config.llmEnableThinking ? { fetch: noThinkingFetch } : {}),
-        })
-      : undefined;
   }
 
   async handleMessage(
@@ -277,7 +253,7 @@ export class KarakuriAgent implements IAgent {
     const isKarakuriWorldMode = isKarakuriWorldBot && this.config.karakuriWorld != null;
     const shouldIncludeUserProfile = isRealUser && !isKarakuriWorldMode;
     const ensuredUserPromise = shouldIncludeUserProfile && this.userStore != null
-      ? this.ensureUserAndResolveProfile(userId, userName).catch((error) => {
+      ? this.ensureUserAndResolveAlias(userId, userName).catch((error) => {
           logger.warn('Failed to ensure user record', error, { userId });
           return null;
         })
@@ -368,23 +344,18 @@ export class KarakuriAgent implements IAgent {
         ? [createLegacyBuiltinSnsSkillDefinition()]
         : configuredSnsList.map((credentials) => createBuiltinSnsSkillDefinition(credentials.provider))
       : [];
-    const [coreMemory, recentDiaries, promptContext, listedSkills, ensuredUserProfile] = await Promise.all([
-      this.memoryStore.readCoreMemory(),
-      this.memoryStore.getRecentDiaries(this.recentDiaryCount),
+    const [promptContext, listedSkills, ensuredUserProfile] = await Promise.all([
       this.promptContextStore?.read() ?? Promise.resolve({ agentInstructions: null, rules: null }),
       this.skillStore?.listSkills(includeSystemOnly ? { includeSystemOnly: true } : undefined) ?? Promise.resolve([]),
       ensuredUserPromise,
     ]);
 
     const promptUserName = shouldIncludeUserProfile ? ensuredUserProfile?.record.displayName ?? userName : undefined;
-    // M6: profile 参照は新ストア（beliefs person_fact + relations alias）を優先し、
-    // 無ければ旧 user store へフォールバックする（二重管理を作らない）
+    // profile は新ストア（beliefs person_fact + relations alias）のみから構築する
     const beliefProfile = shouldIncludeUserProfile && this.beliefStore != null && userId != null
       ? await this.buildUserProfileFromBeliefs(userId)
       : null;
-    const promptUserProfile = shouldIncludeUserProfile
-      ? beliefProfile ?? ensuredUserProfile?.profile.profile ?? null
-      : undefined;
+    const promptUserProfile = shouldIncludeUserProfile ? beliefProfile : undefined;
     const promptUserAliasOf = shouldIncludeUserProfile ? ensuredUserProfile?.aliasOf?.primaryUserId ?? null : undefined;
     const hasPostMessage = hasAdminAccess
       && (this.config.postMessageChannelIds?.length ?? 0) > 0
@@ -401,7 +372,6 @@ export class KarakuriAgent implements IAgent {
         snsActivityStores: this.snsActivityStores,
         ...(this.snsRateLimiters != null ? { snsRateLimiters: this.snsRateLimiters } : {}),
         userStore: this.userStore,
-        evaluatedUsers: new Set<string>(),
       });
     // Auto-load the builtin SNS skill when explicitly requested via autoLoadSnsSkill option
     // so the LLM receives dynamic context (notifications, trends, activity log) and gated
@@ -536,7 +506,7 @@ export class KarakuriAgent implements IAgent {
           }
         : {};
 
-      const additionalTokens = countAdditionalContextTokens(coreMemory, recentDiaries, {
+      const additionalTokens = countAdditionalContextTokens({
         agentInstructions: promptContext.agentInstructions,
         currentDateTime,
         rules: promptContext.rules,
@@ -576,7 +546,6 @@ export class KarakuriAgent implements IAgent {
         agentInstructions: promptContext.agentInstructions,
         currentDateTime,
         rules: promptContext.rules,
-        coreMemory,
         ...(shouldIncludeUserProfile
           ? {
               userName: promptUserName ?? userName,
@@ -585,7 +554,6 @@ export class KarakuriAgent implements IAgent {
               userAliasOf: promptUserAliasOf,
             }
           : {}),
-        recentDiaries,
         summary: session.summary,
         skills: visibleSkills,
         autoLoadedSkills,
@@ -631,7 +599,6 @@ export class KarakuriAgent implements IAgent {
               : {}),
           })
         : createAgentTools({
-          memoryStore: this.memoryStore,
           dataDir: this.config.dataDir,
           braveApiKey: this.config.braveApiKey,
           snsList: useLegacySnsSkill ? undefined : (isKarakuriWorldMode ? [] : configuredSnsList),
@@ -653,11 +620,6 @@ export class KarakuriAgent implements IAgent {
           ...(this.snsRateLimiters != null ? { snsRateLimiters: this.snsRateLimiters } : {}),
           kwMode: isKarakuriWorldMode,
           ...(skillContextScope != null ? { contextScope: skillContextScope } : {}),
-          ...(isSystemUser && this.userStore != null && this.config.postResponseEvaluatorEnabled ? {
-            evaluateUser: (snsUserId: string, displayName: string, postText: string) => {
-              this.enqueueSnsUserEvaluation({ userId: snsUserId, userName: displayName, postText });
-            },
-          } : {}),
           skills: visibleSkills,
           autoLoadedSkills,
           includeSystemOnly,
@@ -810,7 +772,7 @@ export class KarakuriAgent implements IAgent {
     }
 
     // Discord は応答先行 → appraisal 事後（非同期）。ユーザーが待っているため、
-    // 1 ターン遅れの状態反映で実害なし（既存 post-response evaluator と同じタイミング設計）
+    // 1 ターン遅れの状態反映で実害なし
     if (discordChatTurnEvent != null && this.config.appraisalEnabled && this.appraisalService != null) {
       const appraisalService = this.appraisalService;
       // 受信順の直列適用は record（better-sqlite3 の同期 insert）が呼び出し順に
@@ -822,28 +784,6 @@ export class KarakuriAgent implements IAgent {
           `ASSISTANT: ${truncateForAppraisal(assistantResponse)}`,
         ].join('\n'),
       }, eventId ?? undefined));
-    }
-
-    // 旧 post-response evaluator（M6 で新パイプラインへ切り替え済み。
-    // POST_RESPONSE_EVALUATOR_ENABLED=true で退避的に並走再開できる）
-    if (this.config.postResponseEvaluatorEnabled) {
-      if (!kwNotLoggedIn && isRealUser) {
-        this.enqueuePostResponseEvaluation({
-          userId,
-          userName,
-          userMessage,
-          assistantResponse,
-          ...(isKarakuriWorldMode ? { skipUserStore: true } : {}),
-        });
-      } else if (!kwNotLoggedIn && isSystemUser) {
-        this.enqueuePostResponseEvaluation({
-          userId: 'system',
-          userName,
-          userMessage,
-          assistantResponse,
-          skipUserStore: true,
-        });
-      }
     }
 
     logger.info('handleMessage complete', { sessionId, responseLength: assistantResponse.length });
@@ -963,10 +903,9 @@ export class KarakuriAgent implements IAgent {
   }
 
 
-  private async ensureUserAndResolveProfile(userId: string, displayName: string): Promise<{
-    record: NonNullable<Awaited<ReturnType<IUserStore['ensureUser']>>>;
-    profile: NonNullable<Awaited<ReturnType<IUserStore['ensureUser']>>>;
-    aliasOf: import('../user/types.js').UserAlias | null;
+  private async ensureUserAndResolveAlias(userId: string, displayName: string): Promise<{
+    record: UserRecord;
+    aliasOf: UserAlias | null;
   }> {
     if (this.userStore == null) {
       throw new Error('User store is not configured');
@@ -975,27 +914,10 @@ export class KarakuriAgent implements IAgent {
     const resolved = this.userStore.resolveAlias != null
       ? await this.userStore.resolveAlias(userId)
       : { primaryUserId: userId, aliasOf: null };
-    if (resolved.aliasOf == null) {
-      return { record, profile: record, aliasOf: null };
-    }
-    const primary = await this.userStore.getUser(resolved.primaryUserId);
-    return { record, profile: primary ?? record, aliasOf: resolved.aliasOf };
-  }
-
-
-  private async resolveProfileRecord(record: NonNullable<Awaited<ReturnType<IUserStore['getUser']>>>): Promise<NonNullable<Awaited<ReturnType<IUserStore['getUser']>>>> {
-    if (this.userStore?.resolveAlias == null) {
-      return record;
-    }
-    const resolved = await this.userStore.resolveAlias(record.userId);
-    if (resolved.aliasOf == null) {
-      return record;
-    }
-    return await this.userStore.getUser(resolved.primaryUserId) ?? record;
+    return { record, aliasOf: resolved.aliasOf };
   }
 
   async drainPendingEvaluations(): Promise<void> {
-    await Promise.allSettled([...this.pendingEvaluations]);
     await this.appraisalService?.drain();
   }
 
@@ -1238,112 +1160,6 @@ export class KarakuriAgent implements IAgent {
     }
   }
 
-  private async resolveEvaluationLockUserId(userId: string, skipUserStore = false): Promise<string> {
-    if (skipUserStore || this.userStore?.resolveAlias == null) {
-      return userId;
-    }
-
-    try {
-      return (await this.userStore.resolveAlias(userId)).primaryUserId;
-    } catch (error) {
-      logger.warn('Failed to resolve user alias for evaluation mutex; falling back to raw user ID', error, { userId });
-      return userId;
-    }
-  }
-
-  private enqueueSnsUserEvaluation({
-    userId,
-    userName,
-    postText,
-  }: {
-    userId: string;
-    userName: string;
-    postText: string;
-  }): void {
-    const task = (async () => {
-      const lockUserId = await this.resolveEvaluationLockUserId(userId);
-      await this.evaluationMutex.runExclusive(`eval:${lockUserId}`, async () => {
-        try {
-          const ensuredUser = this.userStore != null ? await this.ensureUserAndResolveProfile(userId, userName) : null;
-          const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
-          const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
-
-          await evaluatePostResponse({
-            model: modelFactory(modelSelector),
-            memoryStore: this.memoryStore,
-            userStore: ensuredUser != null ? this.userStore : undefined,
-            userId,
-            userName,
-            savedDisplayName: ensuredUser?.record.displayName,
-            userMessage: `SNS post observed from ${userName}:\n${postText.trim()}`,
-            assistantResponse: 'Recorded SNS user context from the observed post.',
-            currentProfile: ensuredUser?.profile.profile,
-            timezone: this.config.timezone,
-            generateTextFn: this.generateTextFn,
-            logger,
-            ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
-          });
-        } catch (error) {
-          logger.error('SNS user evaluation task failed', error, { userId });
-        }
-      });
-    })();
-
-    this.pendingEvaluations.add(task);
-    void task.finally(() => {
-      this.pendingEvaluations.delete(task);
-    });
-  }
-
-  private enqueuePostResponseEvaluation({
-    userId,
-    userName,
-    userMessage,
-    assistantResponse,
-    skipUserStore,
-  }: {
-    userId: string;
-    userName: string;
-    userMessage: string;
-    assistantResponse: string;
-    skipUserStore?: boolean;
-  }): void {
-    const task = (async () => {
-      const lockUserId = await this.resolveEvaluationLockUserId(userId, skipUserStore);
-      await this.evaluationMutex.runExclusive(`eval:${lockUserId}`, async () => {
-        try {
-          const currentUser = skipUserStore ? null : await (this.userStore?.getUser(userId) ?? Promise.resolve(null));
-          const currentProfileUser = !skipUserStore && currentUser != null ? await this.resolveProfileRecord(currentUser) : null;
-          const modelFactory = this.postResponseModelFactory ?? this.modelFactory;
-          const modelSelector = this.config.postResponseLlmModelSelector ?? this.config.llmModelSelector;
-          const userStoreIfKnown = !skipUserStore && currentUser != null ? this.userStore : undefined;
-
-          await evaluatePostResponse({
-            model: modelFactory(modelSelector),
-            memoryStore: this.memoryStore,
-            userStore: userStoreIfKnown,
-            userId,
-            userName,
-            savedDisplayName: currentUser?.displayName,
-            userMessage,
-            assistantResponse,
-            currentProfile: currentProfileUser?.profile,
-            timezone: this.config.timezone,
-            generateTextFn: this.generateTextFn,
-            logger,
-            ...(!this.config.llmEnableThinking ? { providerOptions: noThinkingProviderOptions(modelSelector.api) } : {}),
-          });
-        } catch (error) {
-          logger.warn('Post-response evaluation task failed', error, { userId });
-        }
-      });
-    })();
-
-    this.pendingEvaluations.add(task);
-    void task.finally(() => {
-      this.pendingEvaluations.delete(task);
-    });
-  }
 }
 
 /**

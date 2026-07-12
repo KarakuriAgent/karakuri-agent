@@ -1,13 +1,12 @@
 /**
- * seed 記憶と既存データのインポート（M4）。
+ * seed 記憶のインポート（M4）。
  *
- * - seed 記憶: 立ち上げ時の初期記憶（この世界に来た経緯・住んでいる場所・暮らしの下地）。
- *   LLM は「自分が何者か」を指示より文脈上の証拠から推論するため、記憶の蓄積が最強の
- *   定着装置になる。内容は人格定義（AGENT.md）と整合させて data/seed-memories.json に書く
- * - 既存データ: diary.db / users.db / memory.md を新ストアへ一括インポート
+ * seed 記憶: 立ち上げ時の初期記憶（この世界に来た経緯・住んでいる場所・暮らしの下地）。
+ * LLM は「自分が何者か」を指示より文脈上の証拠から推論するため、記憶の蓄積が最強の
+ * 定着装置になる。内容は人格定義（AGENT.md）と整合させて data/seed-memories.json に書く。
  *
- * provenance の整合: どちらも experience_log に区別可能な kind（seed / legacy_import）で
- * 投入してから beliefs / narratives が参照する（一次資料 NOT NULL と整合）。
+ * provenance の整合: experience_log に区別可能な kind（seed）で投入してから
+ * beliefs / narratives が参照する（一次資料 NOT NULL と整合）。
  * 冪等: life_meta のフラグで一度だけ実行される。
  */
 
@@ -17,8 +16,6 @@ import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 
-import type { IDiaryStore, IMemoryStore } from '../memory/types.js';
-import type { IUserStore } from '../user/types.js';
 import { createLogger } from '../utils/logger.js';
 import type { IBeliefStore } from './beliefs.js';
 import { getLifeMeta, setLifeMeta } from './db.js';
@@ -29,9 +26,7 @@ const logger = createLogger('LifeSeed');
 
 export const SEED_MEMORIES_FILE = 'seed-memories.json';
 const META_SEED_IMPORTED = 'seed_imported';
-const META_LEGACY_IMPORTED = 'legacy_imported';
 const SEED_PROC_VERSION = 'seed-v1';
-const LEGACY_PROC_VERSION = 'legacy-import-v1';
 
 const seedFileSchema = z.object({
   beliefs: z.array(z.object({
@@ -124,121 +119,4 @@ export async function importSeedMemories({
   setLifeMeta(db, META_SEED_IMPORTED, now().toISOString());
   logger.info('Seed memories imported', { beliefs, narratives });
   return { beliefs, narratives };
-}
-
-export interface ImportLegacyStoresOptions {
-  db: Database.Database;
-  experienceLogStore: IExperienceLogStore;
-  beliefStore: IBeliefStore;
-  narrativeStore: INarrativeStore;
-  memoryStore: IMemoryStore;
-  diaryStore: IDiaryStore;
-  userStore?: IUserStore | undefined;
-  now?: () => Date;
-}
-
-/**
- * 既存の diary.db / users.db / memory.md を「移行前の記録」として一度だけ
- * 新ストアへインポートする。旧ストアは M6 まで並走するため変更しない。
- */
-export async function importLegacyStores({
-  db,
-  experienceLogStore,
-  beliefStore,
-  narrativeStore,
-  memoryStore,
-  diaryStore,
-  userStore,
-  now = () => new Date(),
-}: ImportLegacyStoresOptions): Promise<{ diaries: number; coreMemory: boolean; profiles: number } | null> {
-  if (getLifeMeta(db, META_LEGACY_IMPORTED) != null) {
-    return null;
-  }
-
-  // 日記 → narratives(kind=diary)
-  let diaries = 0;
-  try {
-    const dates = await diaryStore.listDiaryDates();
-    for (const date of dates) {
-      const content = await diaryStore.readDiary(date);
-      if (content == null || content.trim().length === 0) {
-        continue;
-      }
-      const eventId = await experienceLogStore.append({
-        receivedAt: now(),
-        channel: 'legacy:diary',
-        kind: 'legacy_import',
-        payload: { type: 'diary', date, content },
-      });
-      await narrativeStore.insert({
-        kind: 'diary',
-        periodStart: date,
-        periodEnd: date,
-        body: content.trim(),
-        provenance: [eventId],
-        procVersion: LEGACY_PROC_VERSION,
-      });
-      diaries += 1;
-    }
-  } catch (error) {
-    logger.warn('Failed to import legacy diaries', error);
-  }
-
-  // core memory → belief(world_fact)
-  let coreMemory = false;
-  try {
-    const content = await memoryStore.readCoreMemory();
-    if (content.trim().length > 0) {
-      const eventId = await experienceLogStore.append({
-        receivedAt: now(),
-        channel: 'legacy:core-memory',
-        kind: 'legacy_import',
-        payload: { type: 'core_memory', content },
-      });
-      await beliefStore.insert({
-        kind: 'world_fact',
-        body: content.trim(),
-        confidence: 0.8,
-        provenance: [eventId, eventId],
-        procVersion: LEGACY_PROC_VERSION,
-      });
-      coreMemory = true;
-    }
-  } catch (error) {
-    logger.warn('Failed to import legacy core memory', error);
-  }
-
-  // user profiles → beliefs(person_fact, subject = userId)
-  let profiles = 0;
-  if (userStore != null) {
-    try {
-      const users = await userStore.searchUsers('', { limit: 10_000 });
-      for (const user of users) {
-        if (user.profile == null || user.profile.trim().length === 0) {
-          continue;
-        }
-        const eventId = await experienceLogStore.append({
-          receivedAt: now(),
-          channel: 'legacy:users',
-          kind: 'legacy_import',
-          payload: { type: 'user_profile', userId: user.userId, displayName: user.displayName, profile: user.profile },
-        });
-        await beliefStore.insert({
-          kind: 'person_fact',
-          subject: user.userId,
-          body: `${user.displayName}: ${user.profile.trim()}`,
-          confidence: 0.8,
-          provenance: [eventId, eventId],
-          procVersion: LEGACY_PROC_VERSION,
-        });
-        profiles += 1;
-      }
-    } catch (error) {
-      logger.warn('Failed to import legacy user profiles', error);
-    }
-  }
-
-  setLifeMeta(db, META_LEGACY_IMPORTED, now().toISOString());
-  logger.info('Legacy stores imported', { diaries, coreMemory, profiles });
-  return { diaries, coreMemory, profiles };
 }

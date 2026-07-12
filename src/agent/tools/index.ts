@@ -4,7 +4,6 @@ import type { SnsCredentials } from '../../config.js';
 import type { ExperienceRecorder } from '../../life/recorder.js';
 import type { IProspectStore } from '../../life/prospects.js';
 import type { EpisodeRetrievalService } from '../../life/retrieval.js';
-import type { IMemoryStore } from '../../memory/types.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
 import type { SnsRateLimiter } from '../../sns/rate-limiter.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
@@ -19,7 +18,6 @@ import { createLoadSkillTool } from './load-skill.js';
 import { createManageCronTool } from './manage-cron.js';
 import { createPostMessageTool } from './post-message.js';
 import { createProspectReminderTool } from './prospect-reminder.js';
-import { createRecallDiaryTool } from './recall-diary.js';
 import { createRecallEpisodesTool } from './recall-episodes.js';
 import { createLinkUserTool, createUnlinkUserTool } from './user-alias.js';
 import { createUserLookupTool } from './user-lookup.js';
@@ -29,7 +27,6 @@ import { createWebSearchTool } from './web-search.js';
 const logger = createLogger('AgentTools');
 
 export interface CreateAgentToolsOptions {
-  memoryStore: IMemoryStore;
   dataDir?: string | undefined;
   braveApiKey?: string | undefined;
   snsList?: SnsCredentials[] | undefined;
@@ -52,7 +49,6 @@ export interface CreateAgentToolsOptions {
   includeSystemOnly?: boolean | undefined;
   contextScope?: SkillContextScope | undefined;
   kwMode?: boolean | undefined;
-  evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
   retrievalService?: EpisodeRetrievalService | undefined;
   prospectStore?: IProspectStore | undefined;
@@ -63,7 +59,6 @@ export interface CreateAgentToolsOptions {
 }
 
 export function createAgentTools({
-  memoryStore,
   dataDir,
   braveApiKey,
   snsList,
@@ -84,7 +79,6 @@ export function createAgentTools({
   includeSystemOnly,
   contextScope,
   kwMode = false,
-  evaluateUser,
   experienceRecorder,
   retrievalService,
   prospectStore,
@@ -97,12 +91,10 @@ export function createAgentTools({
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
     && hasAdminAccess;
   const manageCronEnabled = hasAdminAccess && schedulerStore != null;
-  // alias 系は人間 admin の手動運用専用。system turn (heartbeat / cron / SNS loop / memory maintenance) からは露出しない。
+  // alias 系は人間 admin の手動運用専用。system turn (heartbeat / cron) からは露出しない。
   const shouldExposeUserAlias = isAdminUser(userId, adminUserIds) && !kwMode && userStore != null;
-  const evaluatedUsers = new Set<string>();
 
   const tools: ToolSet = {
-    recallDiary: createRecallDiaryTool({ memoryStore }),
     ...(retrievalService != null
       ? {
           recallEpisodes: createRecallEpisodesTool({ retrievalService, timezone: timezone ?? 'Asia/Tokyo' }),
@@ -174,9 +166,7 @@ export function createAgentTools({
     snsActivityStores,
     snsRateLimiters,
     userStore,
-    evaluateUser,
     reportError,
-    evaluatedUsers,
     experienceRecorder,
     actionLedger,
   });

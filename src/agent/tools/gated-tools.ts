@@ -20,9 +20,7 @@ export interface AvailableGatedToolSources {
   dataDir?: string | undefined;
   snsActivityStores?: Map<SnsCredentials['provider'], ISnsActivityStore> | undefined;
   userStore?: IUserStore | undefined;
-  evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
   reportError?: ((message: string) => void) | undefined;
-  evaluatedUsers?: Set<string> | undefined;
   experienceRecorder?: ExperienceRecorder | undefined;
   actionLedger?: IActionLedgerStore | undefined;
   /** M8: provider 別の書き込みレート制限 */
@@ -98,14 +96,12 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
         ? { activityStore: availableToolSources.snsActivityStores.get(sns.provider)! }
         : {}),
       ...(availableToolSources.userStore != null ? { userStore: availableToolSources.userStore } : {}),
-      ...(availableToolSources.evaluateUser != null ? { evaluateUser: availableToolSources.evaluateUser } : {}),
       ...(availableToolSources.reportError != null ? { reportError: availableToolSources.reportError } : {}),
       ...(availableToolSources.experienceRecorder != null ? { experienceRecorder: availableToolSources.experienceRecorder } : {}),
       ...(availableToolSources.actionLedger != null ? { actionLedger: availableToolSources.actionLedger } : {}),
       ...(availableToolSources.snsRateLimiters?.get(sns.provider) != null
         ? { rateLimiter: availableToolSources.snsRateLimiters.get(sns.provider)! }
         : {}),
-      evaluatedUsers: availableToolSources.evaluatedUsers ?? new Set<string>(),
     });
     Object.assign(allGatedTools, providerTools);
     if (availableToolSources.snsList == null && availableToolSources.sns != null) {

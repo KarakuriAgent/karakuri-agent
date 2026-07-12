@@ -12,7 +12,7 @@ const MAX_USER_LOOKUP_PROFILE_CHARS = 600;
 
 export interface UserLookupToolOptions {
   userStore: IUserStore;
-  /** M6: 新ストア（beliefs person_fact）。設定時は profile をこちら優先で返す */
+  /** 新ストア（beliefs person_fact）。profile はこちらのみから構築する */
   beliefStore?: IBeliefStore | undefined;
   /** M6: 関係グラフ（relations）。設定時は alias_of と関係エッジもこちらから返す */
   relationStore?: IRelationStore | undefined;
@@ -20,10 +20,10 @@ export interface UserLookupToolOptions {
 
 export function createUserLookupTool({ userStore, beliefStore, relationStore }: UserLookupToolOptions) {
   return tool({
-    description: 'Search for known users by name or keyword. Leave query empty to list recent known users.',
+    description: 'Search for known users by display name. Leave query empty to list recent known users.',
     inputSchema: z.object({
       query: z.string().trim().max(200).optional().default('')
-        .describe('Search query (name or keyword). Leave empty to list recent known users.'),
+        .describe('Display-name search query. Leave empty to list recent known users.'),
       limit: z.number().int().min(1).max(MAX_USER_LOOKUP_LIMIT).optional()
         .describe(`Maximum users to return (default ${DEFAULT_USER_LOOKUP_LIMIT}, hard max ${MAX_USER_LOOKUP_LIMIT})`),
       offset: z.number().int().min(0).max(MAX_USER_LOOKUP_OFFSET).optional()
@@ -48,7 +48,7 @@ export function createUserLookupTool({ userStore, beliefStore, relationStore }: 
         .filter((entry) => entry.aliasOf != null)
         .map((entry) => [entry.aliasOf!.aliasUserId, entry.aliasOf!.primaryUserId]));
 
-      // M6: profile と関係情報は新ストア（beliefs / relations）を優先する
+      // profile と関係情報は新ストア（beliefs / relations）のみから構築する
       const newStoreInfo = new Map<string, { profile?: string; relations?: string[]; aliasOf?: string }>();
       if (beliefStore != null || relationStore != null) {
         await Promise.all(userIds.map(async (userId) => {
@@ -91,7 +91,7 @@ export function createUserLookupTool({ userStore, beliefStore, relationStore }: 
           return {
             userId: user.userId,
             displayName: user.displayName,
-            profile: truncateProfile(info?.profile ?? user.profile),
+            profile: truncateProfile(info?.profile ?? null),
             ...(aliases.length > 0
               ? {
                   aliases: aliases.map((alias: UserAlias) => ({

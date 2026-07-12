@@ -22,9 +22,6 @@ const configSchema = z.object({
   }).trim().min(1, 'LLM_API_KEY is required (OPENAI_API_KEY is also accepted)'),
   llmBaseUrl: z.string().trim().optional(),
   llmModel: z.string().trim().default(DEFAULT_LLM_MODEL),
-  postResponseLlmApiKey: z.string().trim().optional(),
-  postResponseLlmBaseUrl: z.string().trim().optional(),
-  postResponseLlmModel: z.string().trim().optional(),
   appraisalLlmApiKey: z.string().trim().optional(),
   appraisalLlmBaseUrl: z.string().trim().optional(),
   appraisalLlmModel: z.string().trim().optional(),
@@ -52,8 +49,6 @@ const configSchema = z.object({
   tokenBudget: z.coerce.number().int().positive().default(80_000),
   port: z.coerce.number().int().min(1).max(65_535).default(3_000),
   heartbeatIntervalMinutes: z.coerce.number().positive().default(120),
-  memoryMaintenanceIntervalMinutes: z.coerce.number().positive().optional(),
-  memoryMaintenanceRecentDiaryDays: z.coerce.number().int().positive().optional(),
   kwCommandCheckPhone: z.string().trim().min(1).optional(),
   kwCommandBrowseSns: z.string().trim().min(1).optional(),
   kwCommandPostSns: z.string().trim().min(1).optional(),
@@ -88,7 +83,6 @@ const configSchema = z.object({
   selfImageInjectionEnabled: z.string().trim().optional(),
   drivesInjectionEnabled: z.string().trim().optional(),
   prospectsInjectionEnabled: z.string().trim().optional(),
-  postResponseEvaluatorEnabled: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -160,10 +154,6 @@ export interface Config {
   llmBaseUrl?: string | undefined;
   llmModel: string;
   llmModelSelector: LlmModelSelector;
-  postResponseLlmApiKey?: string | undefined;
-  postResponseLlmBaseUrl?: string | undefined;
-  postResponseLlmModel?: string | undefined;
-  postResponseLlmModelSelector?: LlmModelSelector | undefined;
   /** M2: appraisal 役割のモデル指定（未指定は既定モデルへフォールバック。軽量モデルを既定の想定とする） */
   appraisalLlmApiKey?: string | undefined;
   appraisalLlmBaseUrl?: string | undefined;
@@ -186,8 +176,6 @@ export interface Config {
   tokenBudget: number;
   port: number;
   heartbeatIntervalMinutes?: number | undefined;
-  memoryMaintenanceIntervalMinutes?: number | undefined;
-  memoryMaintenanceRecentDiaryDays?: number | undefined;
   /** M8: KW カスタムコマンド統合（設定されたコマンドだけ有効。checkPhone 設定でチャット未読キュー化が有効になる） */
   worldActionCommands: WorldActionCommands;
   /** M8: SNS 書き込み・読み取りの決定論レート制限 */
@@ -229,11 +217,6 @@ export interface Config {
   drivesInjectionEnabled: boolean;
   /** M5: 展望記憶（約束・予定・目標）注入の有効化 */
   prospectsInjectionEnabled: boolean;
-  /**
-   * 旧 post-response evaluator の並走（M6 で新パイプラインへ切り替え済みのため既定 false）。
-   * true にすると退避的に旧 user profile / core memory / diary 振り分けを再開する
-   */
-  postResponseEvaluatorEnabled: boolean;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -252,6 +235,12 @@ const DEPRECATED_ENV_KEYS: Record<string, string> = {
   SNS_PROVIDER: 'Multi provider 化で廃止。MASTODON_* / X_* / ELYTH_* を使う',
   SNS_LOOP_MIN_INTERVAL_MINUTES: 'M8 で SNS ループは削除済み（SNS 活動は世界内行為 post_sns / browse_sns / check_phone へ統合）',
   SNS_LOOP_MAX_INTERVAL_MINUTES: 'M8 で SNS ループは削除済み（SNS 活動は世界内行為 post_sns / browse_sns / check_phone へ統合）',
+  MEMORY_MAINTENANCE_INTERVAL_MINUTES: '旧メモリ系（core memory / diary）の削除で廃止。記憶の整理・日記生成は省察エンジン（REFLECTION_ENABLED / LLM_REFLECTION_*）が担う',
+  MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '旧メモリ系（core memory / diary）の削除で廃止。日記は life.db の narratives(kind=diary) として省察エンジンが生成する',
+  POST_RESPONSE_LLM_API_KEY: '旧 post-response evaluator の削除で廃止。役割別モデルは LLM_APPRAISAL_* / LLM_REFLECTION_* で指定する',
+  POST_RESPONSE_LLM_BASE_URL: '旧 post-response evaluator の削除で廃止。役割別モデルは LLM_APPRAISAL_* / LLM_REFLECTION_* で指定する',
+  POST_RESPONSE_LLM_MODEL: '旧 post-response evaluator の削除で廃止。役割別モデルは LLM_APPRAISAL_* / LLM_REFLECTION_* で指定する',
+  POST_RESPONSE_EVALUATOR_ENABLED: '旧 post-response evaluator は削除済み。ユーザーに関する記憶は appraisal（relations）と省察（beliefs person_fact）が life.db へ記録する',
 };
 
 function warnDeprecatedEnv(env: NodeJS.ProcessEnv): void {
@@ -273,9 +262,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     llmApiKey: resolveEnvAliases(env.LLM_API_KEY, env.OPENAI_API_KEY),
     llmBaseUrl: resolveEnvAliases(env.LLM_BASE_URL, env.OPENAI_BASE_URL),
     llmModel: resolveEnvAliases(env.LLM_MODEL, env.OPENAI_MODEL, env.AGENT_MODEL),
-    postResponseLlmApiKey: env.POST_RESPONSE_LLM_API_KEY,
-    postResponseLlmBaseUrl: env.POST_RESPONSE_LLM_BASE_URL,
-    postResponseLlmModel: env.POST_RESPONSE_LLM_MODEL,
     appraisalLlmApiKey: env.LLM_APPRAISAL_API_KEY,
     appraisalLlmBaseUrl: env.LLM_APPRAISAL_BASE_URL,
     appraisalLlmModel: env.LLM_APPRAISAL_MODEL,
@@ -303,8 +289,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tokenBudget: env.TOKEN_BUDGET ?? env.AGENT_TOKEN_BUDGET,
     port: env.PORT,
     heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES,
-    memoryMaintenanceIntervalMinutes: normalizeOptionalString(env.MEMORY_MAINTENANCE_INTERVAL_MINUTES),
-    memoryMaintenanceRecentDiaryDays: normalizeOptionalString(env.MEMORY_MAINTENANCE_RECENT_DIARY_DAYS),
     kwCommandCheckPhone: normalizeOptionalString(env.KW_COMMAND_CHECK_PHONE),
     kwCommandBrowseSns: normalizeOptionalString(env.KW_COMMAND_BROWSE_SNS),
     kwCommandPostSns: normalizeOptionalString(env.KW_COMMAND_POST_SNS),
@@ -339,14 +323,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     selfImageInjectionEnabled: env.SELF_IMAGE_INJECTION_ENABLED,
     drivesInjectionEnabled: env.DRIVES_INJECTION_ENABLED,
     prospectsInjectionEnabled: env.PROSPECTS_INJECTION_ENABLED,
-    postResponseEvaluatorEnabled: env.POST_RESPONSE_EVALUATOR_ENABLED,
   };
 
   try {
     const parsed = configSchema.parse(rawConfig);
     assertValidTimezone(parsed.timezone);
     const llmBaseUrl = normalizeBaseUrl(parsed.llmBaseUrl);
-    const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
     const karakuriWorldApiBaseUrl = normalizeKarakuriWorldApiBaseUrl(parsed.karakuriWorldApiBaseUrl);
     const karakuriWorldApiKey = normalizeOptionalString(parsed.karakuriWorldApiKey);
     const mastodonInstanceUrl = normalizeBaseUrl(parsed.mastodonInstanceUrl, 'MASTODON_INSTANCE_URL');
@@ -362,10 +344,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const elythApiBaseRaw = normalizeOptionalString(parsed.elythApiBase);
 
     const llmModelSelector = parseModelSelector(parsed.llmModel);
-    const postResponseLlmModel = normalizeOptionalString(parsed.postResponseLlmModel);
-    const postResponseLlmModelSelector = postResponseLlmModel != null
-      ? parseModelSelector(postResponseLlmModel)
-      : undefined;
     const appraisalLlmModel = normalizeOptionalString(parsed.appraisalLlmModel);
     const appraisalLlmModelSelector = appraisalLlmModel != null
       ? parseModelSelector(appraisalLlmModel)
@@ -495,10 +473,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmBaseUrl,
       llmModel: llmModelSelector.selector,
       llmModelSelector,
-      postResponseLlmApiKey: normalizeOptionalString(parsed.postResponseLlmApiKey),
-      postResponseLlmBaseUrl,
-      postResponseLlmModel,
-      postResponseLlmModelSelector,
       appraisalLlmApiKey: normalizeOptionalString(parsed.appraisalLlmApiKey),
       appraisalLlmBaseUrl,
       appraisalLlmModel,
@@ -538,7 +512,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       selfImageInjectionEnabled: parseBooleanEnv(parsed.selfImageInjectionEnabled, 'SELF_IMAGE_INJECTION_ENABLED', true),
       drivesInjectionEnabled: parseBooleanEnv(parsed.drivesInjectionEnabled, 'DRIVES_INJECTION_ENABLED', true),
       prospectsInjectionEnabled: parseBooleanEnv(parsed.prospectsInjectionEnabled, 'PROSPECTS_INJECTION_ENABLED', true),
-      postResponseEvaluatorEnabled: parseBooleanEnv(parsed.postResponseEvaluatorEnabled, 'POST_RESPONSE_EVALUATOR_ENABLED', false),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,
@@ -546,13 +519,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       model: config.llmModel,
       llmProvider: config.llmModelSelector.provider,
       llmApi: config.llmModelSelector.api,
-      hasPostResponseModel: config.postResponseLlmModelSelector != null,
       hasKarakuriWorld: config.karakuriWorld != null,
       snsProviders: config.snsList.map((sns) => sns.provider),
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
-      memoryMaintenanceIntervalMinutes: config.memoryMaintenanceIntervalMinutes,
-      memoryMaintenanceRecentDiaryDays: config.memoryMaintenanceRecentDiaryDays,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,
       hasAdminUsers: (config.adminUserIds?.length ?? 0) > 0,
       hasKarakuriWorldBots: (config.karakuriWorldBotIds?.length ?? 0) > 0,
