@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildOneshotCronExpression, createProspectReminderTool, MAX_PROSPECT_REMINDERS } from '../src/agent/tools/prospect-reminder.js';
 import { SqliteActionLedgerStore } from '../src/life/action-ledger.js';
-import { buildDrivesDescription, describeSatiationPressure, describeShareUrge, describeStrongestDrive, type ShareUrgeDeps } from '../src/life/drives.js';
+import { buildDrivesDescription, describeSatiationPressure, describeShareUrge, describeSnsCuriosity, describeStrongestDrive, type ShareUrgeDeps } from '../src/life/drives.js';
 import type { InnerState } from '../src/life/inner-state.js';
 import { formatProspectsForPrompt, normalizeProspectBody, prospectBodiesLookSimilar, SqliteProspectStore } from '../src/life/prospects.js';
 import type { CronJobDefinition, ISchedulerStore, RegisterCronJobInput } from '../src/scheduler/types.js';
@@ -161,6 +161,27 @@ describe('SqliteProspectStore', () => {
 });
 
 describe('drives', () => {
+  it('derives SNS curiosity from the last notification check (#109)', () => {
+    const now = new Date('2026-07-12T12:00:00.000Z');
+    // 閾値（12h）未満は注入しない
+    expect(describeSnsCuriosity(new Date('2026-07-12T06:00:00.000Z'), now)).toBeNull();
+    // 閾値超過で「覗きたい」圧
+    expect(describeSnsCuriosity(new Date('2026-07-11T20:00:00.000Z'), now)).toContain('SNS');
+    // 起動後未確認（経過不明）は注入しない
+    expect(describeSnsCuriosity(null, now)).toBeNull();
+  });
+
+  it('includes SNS curiosity in the drives description (#109)', async () => {
+    const now = new Date('2026-07-12T12:00:00.000Z');
+    const description = await buildDrivesDescription(
+      makeState({ social: 0.3, energy: 0.8, hunger: 0.3 }),
+      undefined,
+      now,
+      { snsLastCheckedAt: new Date('2026-07-11T00:00:00.000Z') },
+    );
+    expect(description).toContain('しばらくSNSを見ていない');
+  });
+
   it('converts physiology into desires (strongest first)', () => {
     expect(describeStrongestDrive(makeState({ hunger: 0.9 }))).toContain('食べたい');
     expect(describeStrongestDrive(makeState({ energy: 0.1 }))).toContain('休みたい');

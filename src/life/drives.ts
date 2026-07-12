@@ -21,6 +21,8 @@ export const DRIVES_DEFAULTS = {
   shareUrgePostCooldownHours: 8,
   /** 共有欲: 「心が動いた体験」とみなす importance の下限（medium = 0.6 以上） */
   shareUrgeMinImportance: 0.6,
+  /** SNS 未確認圧（#109）: この時間以上 SNS 通知を確認していないと「覗きたい」圧が湧く */
+  snsCuriosityThresholdHours: 12,
 } as const;
 
 /** 共有欲の判定に必要な読み取り依存（episodes と SNS 活動ログ） */
@@ -58,6 +60,28 @@ export async function describeShareUrge(
   }
 
   return '最近、心が動く出来事があった。誰かに話したい気持ちがある。';
+}
+
+/**
+ * SNS 未確認圧（#109）: 実機で `<phone-status>` の経過分数（2,739 分まで増加）が
+ * 一度も行動を誘発しなかったため、閾値超過を欲求の言葉に変換して `<drives>` へ
+ * 注入する（share urge と同型の決定論導出）。browse_sns / check_phone の実行で
+ * lastCheckedAt が更新されて自然に解消される。
+ * lastCheckedAt が null（起動後未確認）のときは経過が不明なため注入しない。
+ */
+export function describeSnsCuriosity(
+  lastCheckedAt: Date | null,
+  now: Date,
+  options: { thresholdHours?: number } = {},
+): string | null {
+  if (lastCheckedAt == null) {
+    return null;
+  }
+  const thresholdHours = options.thresholdHours ?? DRIVES_DEFAULTS.snsCuriosityThresholdHours;
+  if (now.getTime() - lastCheckedAt.getTime() < thresholdHours * 3_600_000) {
+    return null;
+  }
+  return 'しばらくSNSを見ていない。ちょっと覗きたい気持ちがある。';
 }
 
 interface DriveCandidate {
@@ -152,6 +176,8 @@ export interface BuildDrivesOptions {
   includeTopicBias?: boolean | undefined;
   /** 共有欲の判定依存（SNS が構成されているときのみ渡す） */
   shareUrge?: ShareUrgeDeps | undefined;
+  /** SNS 未確認圧の判定に使う最後の通知確認時刻（SNS 構成時のみ。null = 起動後未確認） */
+  snsLastCheckedAt?: Date | null | undefined;
 }
 
 /** drives セクションの本文（untrusted タグは呼び出し側で付ける） */
@@ -186,6 +212,12 @@ export async function buildDrivesDescription(
     const shareUrge = await describeShareUrge(options.shareUrge, now).catch(() => null);
     if (shareUrge != null) {
       parts.push(shareUrge);
+    }
+  }
+  if (options.snsLastCheckedAt !== undefined) {
+    const snsCuriosity = describeSnsCuriosity(options.snsLastCheckedAt, now);
+    if (snsCuriosity != null) {
+      parts.push(snsCuriosity);
     }
   }
   return parts.length > 0 ? parts.join('') : null;

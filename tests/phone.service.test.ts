@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { IAgent } from '../src/agent/core.js';
 import { openLifeDatabase } from '../src/life/db.js';
-import { PhoneService } from '../src/phone/service.js';
+import { describeSnsElapsed, PhoneService } from '../src/phone/service.js';
 import { SqlitePhoneUnreadStore } from '../src/phone/unread-store.js';
 import { SnsRateLimiter } from '../src/sns/rate-limiter.js';
 import type { ISnsWriteActivityCounter } from '../src/sns/types.js';
@@ -289,6 +289,15 @@ describe('PhoneService', () => {
     const store = await createUnreadStore();
     const service = new PhoneService({ agent: makeAgent(), commands: {}, unreadStore: store });
     expect(await service.buildStatusSection()).toBeNull();
+  });
+
+  it('describes SNS elapsed time with threshold-based wording, not raw minutes (#109)', () => {
+    const now = new Date('2026-07-12T12:00:00.000Z');
+    expect(describeSnsElapsed(new Date('2026-07-12T11:30:00.000Z'), now)).toBe('さっき通知を確認したばかり');
+    expect(describeSnsElapsed(new Date('2026-07-12T06:00:00.000Z'), now)).toBe('数時間ほど通知を見ていない');
+    expect(describeSnsElapsed(new Date('2026-07-11T22:00:00.000Z'), now)).toBe('半日ほど通知を見ていない');
+    // 実機で観測された 2,739 分（約 46 時間）相当
+    expect(describeSnsElapsed(new Date('2026-07-10T14:00:00.000Z'), now)).toBe('丸一日以上通知を見ていない');
   });
 
   it('post_sns skips the LLM turn when the post budget is exhausted', async () => {

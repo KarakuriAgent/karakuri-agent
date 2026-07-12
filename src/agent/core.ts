@@ -157,6 +157,8 @@ export class KarakuriAgent implements IAgent {
   private readonly perceptionBuffer: PerceptionBuffer | undefined;
   /** M8: 世界内行為統合（PhoneService）。agent 生成後に setPhoneIntegration で接続する */
   private phoneIntegration: PhoneIntegration | undefined;
+  /** SNS 未確認圧（#109）の再起動シード: lastFetchedAt が空のときの基準時刻 */
+  private readonly startedAt = new Date();
   private readonly loopDetector: LoopDetector | undefined;
   private readonly actionLedger: IActionLedgerStore | undefined;
   private readonly appraisalService: AppraisalService | undefined;
@@ -744,6 +746,12 @@ export class KarakuriAgent implements IAgent {
     if (!kwNotLoggedIn && isKarakuriWorldMode && userId != null) {
       // 自分が発行したコマンド（own_action）も一次資料に残す
       const commandInput = extractKarakuriWorldCommandInput(result);
+      // 行動選択の可視化（#109）: 提示された選択肢と選択されたコマンドのペアを
+      // 恒常的に記録し、check_phone / browse_sns / post_sns 等の選択率を後から集計できるようにする
+      logger.info('KW action selection', {
+        presented: karakuriWorldNotification!.notification.choices.map((choice) => choice.command),
+        chosen: commandInput?.command ?? null,
+      });
       if (commandInput != null) {
         const ownActionEvent = normalizeKwOwnAction({
           botId: userId,
@@ -1091,10 +1099,26 @@ export class KarakuriAgent implements IAgent {
             },
           }
         : undefined;
+      // SNS 未確認圧（#109）: 最後の通知確認時刻（provider 横断で最新）を渡す。
+      // lastFetchedAt はメモリ上の値なので、再起動直後（未確認）は起動時刻を
+      // シードにする — null のまま抑止すると「圧が湧かないから確認しない →
+      // 確認しないから永遠に湧かない」という、この機能が壊すはずのデッドロックが再発する
+      let snsLastCheckedAt: Date | null | undefined;
+      if (this.snsRateLimiters != null && this.snsRateLimiters.size > 0) {
+        snsLastCheckedAt = null;
+        for (const limiter of this.snsRateLimiters.values()) {
+          const at = limiter.lastFetchedAt('notifications');
+          if (at != null && (snsLastCheckedAt == null || at > snsLastCheckedAt)) {
+            snsLastCheckedAt = at;
+          }
+        }
+        snsLastCheckedAt ??= this.startedAt;
+      }
       const description = await buildDrivesDescription(state, this.actionLedger, receivedAt, {
         ...(this.satiationThreshold != null ? { satiationThreshold: this.satiationThreshold } : {}),
         ...(options.includeTopicBias != null ? { includeTopicBias: options.includeTopicBias } : {}),
         ...(shareUrge != null ? { shareUrge } : {}),
+        ...(snsLastCheckedAt !== undefined ? { snsLastCheckedAt } : {}),
       });
       if (description == null) {
         return null;

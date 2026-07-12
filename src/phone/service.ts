@@ -141,8 +141,10 @@ export class PhoneService implements PhoneIntegration {
       const lines: string[] = [`チャット未読: ${pending} 件`];
       for (const [provider, limiter] of this.options.rateLimiters ?? []) {
         const lastChecked = limiter.lastFetchedAt('notifications');
+        // 経過は生の分数ではなく閾値ベースの言葉にする（#109 — 実機で 2,739 分まで
+        // 増える数値提示は一度も行動を誘発しなかった。数値は言葉に変換して注入する）
         lines.push(lastChecked != null
-          ? `SNS (${provider}): 前回の通知確認から ${formatMinutesSince(lastChecked, this.now())} 分`
+          ? `SNS (${provider}): ${describeSnsElapsed(lastChecked, this.now())}`
           : `SNS (${provider}): 起動後まだ通知を確認していない`);
       }
       return [
@@ -427,8 +429,19 @@ function formatTimeline(posts: SnsPost[]): string {
     .join('\n');
 }
 
-function formatMinutesSince(from: Date, now: Date): number {
-  return Math.max(0, Math.round((now.getTime() - from.getTime()) / 60_000));
+/** SNS 通知の未確認経過を閾値ベースで言語化する（#109） */
+export function describeSnsElapsed(lastChecked: Date, now: Date): string {
+  const minutes = Math.max(0, Math.round((now.getTime() - lastChecked.getTime()) / 60_000));
+  if (minutes < 120) {
+    return 'さっき通知を確認したばかり';
+  }
+  if (minutes < 12 * 60) {
+    return '数時間ほど通知を見ていない';
+  }
+  if (minutes < 24 * 60) {
+    return '半日ほど通知を見ていない';
+  }
+  return '丸一日以上通知を見ていない';
 }
 
 function truncate(text: string, maxChars: number): string {
