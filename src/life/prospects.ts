@@ -36,6 +36,17 @@ export interface IProspectStore {
   listOpen(limit?: number): Promise<Prospect[]>;
   /** 同一本文の open prospect が既にあるか（重複登録防止） */
   hasOpenWithBody(body: string): Promise<boolean>;
+  /**
+   * 同趣旨の open prospect を探す（#105）。正規化後の完全一致は全 open を対象、
+   * 字面類似は直近 recentHours 以内に登録されたものだけを対象にする
+   */
+  findSimilarOpen(body: string, options?: { recentHours?: number; now?: Date }): Promise<Prospect | null>;
+  /** 「まだその意図が生きている」ことの記録として updated_at を更新する */
+  touch(id: number): Promise<void>;
+  /** open の総数（上限判定用 — #105） */
+  countOpen(): Promise<number>;
+  /** 指定 kind の最も古い open（上限あふれ時の自動 abandoned 対象 — #105） */
+  findOldestOpenByKind(kind: ProspectKind): Promise<Prospect | null>;
   /** status は状態遷移（open からのみ遷移可能）。純粋なログ導出ではない（M7 参照） */
   updateStatus(id: number, status: ProspectStatus): Promise<boolean>;
   close(): Promise<void>;
@@ -117,6 +128,51 @@ export class SqliteProspectStore implements IProspectStore {
     return Promise.resolve(row != null);
   }
 
+  async findSimilarOpen(body: string, options: { recentHours?: number; now?: Date } = {}): Promise<Prospect | null> {
+    const recentHours = options.recentHours ?? 24;
+    const now = options.now ?? new Date();
+    const normalized = normalizeProspectBody(body);
+    if (normalized.length === 0) {
+      return null;
+    }
+    const open = await this.listOpen(200);
+    const recentSince = now.getTime() - recentHours * 3_600_000;
+    for (const prospect of open) {
+      const existingNormalized = normalizeProspectBody(prospect.body);
+      if (existingNormalized === normalized) {
+        return prospect;
+      }
+      // 字面類似は直近登録分だけを対象にする（古い意図との偶然の類似で
+      // 新しい意図を握りつぶさない）
+      if (new Date(prospect.createdAt).getTime() < recentSince) {
+        continue;
+      }
+      if (prospectBodiesLookSimilar(normalized, existingNormalized)) {
+        return prospect;
+      }
+    }
+    return null;
+  }
+
+  async touch(id: number): Promise<void> {
+    this.db.prepare("UPDATE prospects SET updated_at = ? WHERE id = ? AND status = 'open'")
+      .run(new Date().toISOString(), id);
+    return Promise.resolve();
+  }
+
+  async countOpen(): Promise<number> {
+    const row = this.db.prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM prospects WHERE status = 'open'").get();
+    return Promise.resolve(row?.n ?? 0);
+  }
+
+  async findOldestOpenByKind(kind: ProspectKind): Promise<Prospect | null> {
+    const row = this.db.prepare<[string], ProspectRow>(`
+      SELECT * FROM prospects WHERE status = 'open' AND kind = ?
+      ORDER BY created_at ASC, id ASC LIMIT 1
+    `).get(kind);
+    return Promise.resolve(row != null ? mapRow(row) : null);
+  }
+
   async updateStatus(id: number, status: ProspectStatus): Promise<boolean> {
     // 状態遷移は open からのみ（再処理で fulfilled が open に戻ることを防ぐ経路依存の値）
     const result = this.db.prepare(`
@@ -148,6 +204,57 @@ function mapRow(row: ProspectRow): Prospect {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+/**
+ * 重複判定用の本文正規化（#105）: 空白・句読点と、意図表現の語尾ゆらぎ
+ * （「〜する必要がある」「〜するつもりだ」等）を落とす。決定論のみ（LLM 不使用）
+ */
+export function normalizeProspectBody(body: string): string {
+  return body
+    .trim()
+    .replace(/[\s　]+/g, '')
+    .replace(/[。．、，・！!？?]/g, '')
+    .replace(/(する必要があ(?:る|ります)|する予定(?:である|だ|です)|するつもり(?:である|だ|です)|しようとしてい(?:る|ます)|するべき(?:だ|です)|したい(?:です)?|し続け(?:る|ます)|を検討中(?:である|です)|を検討してい(?:る|ます))$/u, 'する')
+    .replace(/(である|です|ます|だ)$/u, '');
+}
+
+/**
+ * 3-gram の Dice 係数と包含関係による決定論の字面類似判定（#105）。
+ * 閾値は「同じ相手名を含むだけの別意図」（例: 「kbx-100からの手紙を読む」と
+ * 「kbx-100からの依頼を断る」 ≈ 0.62）を弾き、実機で観測された言い換え重複
+ * （「…譲渡提案を処理する」と「…譲渡提案について判断する」 ≈ 0.68）を拾う位置に置く
+ */
+const PROSPECT_SIMILARITY_DICE_THRESHOLD = 0.65;
+
+export function prospectBodiesLookSimilar(normalizedA: string, normalizedB: string): boolean {
+  if (normalizedA.length === 0 || normalizedB.length === 0) {
+    return false;
+  }
+  if (normalizedA.includes(normalizedB) || normalizedB.includes(normalizedA)) {
+    return true;
+  }
+  const a = trigrams(normalizedA);
+  const b = trigrams(normalizedB);
+  if (a.size === 0 || b.size === 0) {
+    return false;
+  }
+  let shared = 0;
+  for (const gram of a) {
+    if (b.has(gram)) {
+      shared += 1;
+    }
+  }
+  const dice = (2 * shared) / (a.size + b.size);
+  return dice >= PROSPECT_SIMILARITY_DICE_THRESHOLD;
+}
+
+function trigrams(text: string): Set<string> {
+  const grams = new Set<string>();
+  for (let i = 0; i + 3 <= text.length; i += 1) {
+    grams.add(text.slice(i, i + 3));
+  }
+  return grams;
 }
 
 function parseNumberArray(text: string): number[] {
