@@ -3340,6 +3340,43 @@ describe('KarakuriAgent', () => {
       expect(injectedSystems).toEqual([]);
     });
 
+    it('applies a deterministic fell_asleep transition when the agent issues a sleep action (#102)', async () => {
+      const innerStateStore = new InMemoryInnerStateStore();
+      const innerStateService = new InnerStateService({ store: innerStateStore, timezone: 'Asia/Tokyo' });
+      const sleepToolInput = { command: 'action', params: { action_id: 'action-sleep', duration_minutes: 360 }, comment: 'おやすみ！' };
+      const sleepResult = {
+        text: 'ignored kw mode text',
+        steps: [{
+          toolCalls: [{ toolName: 'karakuri_world_command', input: sleepToolInput }],
+          toolResults: [{
+            toolName: 'karakuri_world_command',
+            output: { ok: true, message: 'Sleep started.', command: 'action', data: {} },
+          }],
+        }],
+        response: { id: 'response-id', modelId: 'gpt-4o', timestamp: new Date(), messages: [] },
+      };
+
+      const agent = new KarakuriAgent({
+        config: {
+          ...baseConfig,
+          karakuriWorldBotIds: ['kw-bot-1'],
+          karakuriWorld: { apiBaseUrl: 'https://example.com/world', apiKey: 'world-key' },
+        },
+        memoryStore: new MemoryStoreStub(),
+        sessionManager: new SessionManagerStub(),
+        innerStateService,
+        generateTextFn: vi.fn(async () => sleepResult) as unknown as typeof import('ai').generateText,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+      stubKarakuriWorldNotificationFetch();
+
+      await agent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+      await vi.waitFor(async () => {
+        const state = await innerStateStore.get();
+        expect(state?.sleeping).toBe(true);
+      });
+    });
+
     it('propagates the experience_log id to KW appraisal for provenance', async () => {
       const appraisalService = {
         enqueue: vi.fn(async () => {}),

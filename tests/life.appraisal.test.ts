@@ -11,6 +11,7 @@ import {
   appraiseEvent,
   deltaLevelToNumber,
   isDeclarativeText,
+  resolveSleepTransition,
   salvageAppraisalOutput,
   SqliteAppraisalLogStore,
   type AppraisalOutput,
@@ -145,6 +146,69 @@ describe('applyAppraisalGuardrails', () => {
     expect(guarded.relationCandidates).toHaveLength(1);
     expect(guarded.prospectCandidates).toHaveLength(1);
     expect(guarded.rejections.length).toBe(2);
+  });
+
+  it('halves positive social desire on a satisfying conversational event (#102)', () => {
+    const guarded = applyAppraisalGuardrails(makeOutput({
+      valence_delta: 'small_up',
+      social_delta: 'small_up',
+    }), LIFE_TUNING, { eventKind: 'conversation' });
+    expect(guarded.deltas.social).toBeCloseTo(deltaLevelToNumber('small_up') / 2, 10);
+    expect(guarded.rejections.length).toBe(1);
+  });
+
+  it('keeps positive social desire on non-conversational events and on negative-valence conversations (#102)', () => {
+    const worldEvent = applyAppraisalGuardrails(makeOutput({
+      valence_delta: 'small_up',
+      social_delta: 'small_up',
+    }), LIFE_TUNING, { eventKind: 'world_event' });
+    expect(worldEvent.deltas.social).toBeCloseTo(deltaLevelToNumber('small_up'), 10);
+
+    const rejectedChat = applyAppraisalGuardrails(makeOutput({
+      valence_delta: 'small_down',
+      social_delta: 'small_up',
+    }), LIFE_TUNING, { eventKind: 'conversation' });
+    expect(rejectedChat.deltas.social).toBeCloseTo(deltaLevelToNumber('small_up'), 10);
+  });
+});
+
+describe('resolveSleepTransition', () => {
+  it('detects sleep actions deterministically and overrides the LLM output (#102)', () => {
+    const sleepAction = makeEvent({
+      kind: 'own_action',
+      payload: { command: 'action', params: { action_id: 'action-sleep', duration_minutes: 360 } },
+    });
+    const resolved = resolveSleepTransition(sleepAction, false, 'no_change');
+    expect(resolved.sleep).toBe('fell_asleep');
+    expect(resolved.rejection).toContain('front rule');
+  });
+
+  it('treats an action-completed boundary while sleeping as waking up (#102)', () => {
+    const completed = makeEvent({
+      kind: 'world_event',
+      payload: { notification: { kind: 'action_completed', summary: '「寝る」が完了しました。' } },
+    });
+    expect(resolveSleepTransition(completed, true, 'no_change').sleep).toBe('woke_up');
+    // 起きているときの行動完了は睡眠遷移に影響しない
+    expect(resolveSleepTransition(completed, false, 'no_change').sleep).toBe('no_change');
+  });
+
+  it('leaves conversations while sleeping to the LLM judgement (#102)', () => {
+    const talk = makeEvent({
+      kind: 'conversation',
+      payload: { notification: { kind: 'conversation_message', summary: '誰かが話しかけてきた' } },
+    });
+    // よほどのことがなければ起きない — LLM が no_change ならそのまま
+    expect(resolveSleepTransition(talk, true, 'no_change').sleep).toBe('no_change');
+    // LLM が woke_up と判定したら受け入れる（睡眠中なので整合する）
+    expect(resolveSleepTransition(talk, true, 'woke_up').sleep).toBe('woke_up');
+  });
+
+  it('corrects inconsistent transitions to no_change (#102)', () => {
+    const event = makeEvent();
+    expect(resolveSleepTransition(event, false, 'woke_up')).toMatchObject({ sleep: 'no_change' });
+    expect(resolveSleepTransition(event, true, 'fell_asleep')).toMatchObject({ sleep: 'no_change' });
+    expect(resolveSleepTransition(event, false, 'no_change')).toMatchObject({ sleep: 'no_change', rejection: null });
   });
 });
 

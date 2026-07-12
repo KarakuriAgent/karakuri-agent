@@ -474,11 +474,23 @@ async function refresh() {
     tz + ' · ' + fmtTime(s.now, tz) + ' 時点 · ' + s.dataDir + '/life.db (read-only) · 10s ごと更新';
 
   const cur = s.innerState.current;
+  // 端値張り付きの可視化（#102）: 現在値が端にあるとき、履歴を遡って連続時間を出す
+  const fmtDur = (ms) => { const h = Math.floor(ms / 3600000); return h >= 1 ? h + '時間' : Math.max(1, Math.round(ms / 60000)) + '分'; };
+  const pinned = (key, lo, hi) => {
+    const v = cur[key];
+    const bound = v <= lo + 0.02 ? lo : v >= hi - 0.02 ? hi : null;
+    if (bound == null) return '';
+    let since = null;
+    for (let i = s.history.length - 1; i >= 0; i--) {
+      if (Math.abs(s.history[i][key] - bound) <= 0.02) since = s.history[i].recorded_at; else break;
+    }
+    return since ? ' · ⚠️ 端に' + fmtDur(Date.now() - new Date(since).getTime()) + '張り付き' : '';
+  };
   const tiles = [
-    ['気分 (valence)', pct(cur.valence), '-1〜1'],
-    ['元気 (energy)', pct(cur.energy), '0〜1'],
-    ['空腹 (hunger)', pct(cur.hunger), '0〜1'],
-    ['社交欲 (social)', pct(cur.social), '0〜1'],
+    ['気分 (valence)', pct(cur.valence), '-1〜1' + pinned('valence', -1, 1)],
+    ['元気 (energy)', pct(cur.energy), '0〜1' + pinned('energy', 0, 1)],
+    ['空腹 (hunger)', pct(cur.hunger), '0〜1' + pinned('hunger', 0, 1)],
+    ['社交欲 (social)', pct(cur.social), '0〜1' + pinned('social', 0, 1)],
     ['睡眠', cur.sleeping ? '😴 中' : '起きている', '最終更新 ' + fmtTime(s.innerState.stored.updatedAt, tz)],
     ['体験ログ', s.stats.experienceLog, 'appraisal ' + s.stats.appraisals + ' 件'],
     ['エピソード', s.stats.episodes, 'ドラフト ' + s.stats.openDrafts + ' / 埋込待ち ' + s.stats.embeddingPending],

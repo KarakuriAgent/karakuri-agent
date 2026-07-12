@@ -11,6 +11,7 @@ import type { IRelationStore } from '../life/relations.js';
 import { describeInnerState, type InnerStateService } from '../life/inner-state.js';
 import { buildOwnActionKey, extractOwnActionTarget, type LoopDetector } from '../life/loop-detector.js';
 import {
+  detectKwSleepActionStart,
   kwChannel,
   normalizeDiscordChatTurn,
   normalizeDiscordOwnResponse,
@@ -720,20 +721,36 @@ export class KarakuriAgent implements IAgent {
       // 自分が発行したコマンド（own_action）も一次資料に残す
       const commandInput = extractKarakuriWorldCommandInput(result);
       if (commandInput != null) {
-        void this.experienceRecorder?.record(normalizeKwOwnAction({
+        const ownActionEvent = normalizeKwOwnAction({
           botId: userId,
           command: commandInput.command,
           params: commandInput.params,
           ...(commandInput.comment != null ? { comment: commandInput.comment } : {}),
           notificationId: karakuriWorldNotification!.notification_id,
           receivedAt: new Date(),
-        }));
+        });
+        void this.experienceRecorder?.record(ownActionEvent);
+        const commandStarted = karakuriWorldCommandStarted(result);
 
         // 世界内行為フック（M8）: カスタムコマンド（check_phone 等）の開始を検知して
         // チャット・SNS のパイプラインを非同期に実行する（KW 応答をブロックしない）。
         // busy 拒否・API エラー時は「世界内で行動していない」ため発火しない
-        if (this.phoneIntegration != null && karakuriWorldCommandStarted(result)) {
+        if (this.phoneIntegration != null && commandStarted) {
           this.phoneIntegration.onWorldCommand(commandInput.command);
+        }
+
+        // 睡眠遷移の前段ルール（#102）: own_action は appraisal に流れないため、
+        // 睡眠アクションの発行をここで検知して決定論で fell_asleep にする
+        // （LLM は fell_asleep をほぼ出さない — 実機 0/382）
+        if (this.innerStateService != null && commandStarted && detectKwSleepActionStart(ownActionEvent)) {
+          void this.innerStateService.applyAppraisal({
+            receivedAt: new Date(),
+            deltas: { valence: 0, energy: 0, hunger: 0, social: 0 },
+            sleep: 'fell_asleep',
+            trigger: `${kwChannel(userId)}/own_action(sleep-rule)`,
+          }).catch((error: unknown) => {
+            logger.warn('Failed to apply deterministic sleep transition', error);
+          });
         }
 
         // 反復対策（M1）: own_action から頻度台帳と連続カウンタを更新する

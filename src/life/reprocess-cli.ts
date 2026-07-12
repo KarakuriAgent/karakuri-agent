@@ -18,7 +18,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig } from '../config.js';
 import { createConfiguredOpenAiModelFactory } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
-import { applyAppraisalGuardrails, appraiseEvent } from './appraisal.js';
+import { applyAppraisalGuardrails, appraiseEvent, resolveSleepTransition } from './appraisal.js';
 import { openLifeDatabase } from './db.js';
 import { OpenAiEmbeddingProvider } from './embeddings.js';
 import { SqliteEpisodeStore } from './episodes.js';
@@ -135,7 +135,17 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
             providerOptions: noThinkingProviderOptions(selector.api),
             abortSignal: AbortSignal.timeout(60_000),
           });
-          return output != null ? applyAppraisalGuardrails(output) : null;
+          if (output == null) {
+            return null;
+          }
+          const guarded = applyAppraisalGuardrails(output, undefined, { eventKind: event.kind });
+          // 睡眠アクションの決定論検出（#102）: 稼働時の core.ts 発行時フックと
+          // 分節化境界（fell_asleep → 全ドラフト close）の判定を揃える。
+          // 経路依存の sleeping 状態はリプレイで追跡しないため stateless な規則のみ
+          const sleepResolution = resolveSleepTransition(event, false, guarded.sleep);
+          return sleepResolution.sleep !== guarded.sleep
+            ? { ...guarded, sleep: sleepResolution.sleep, deltas: { ...guarded.deltas, energy: Math.max(0, guarded.deltas.energy) } }
+            : guarded;
         },
       });
       const result = await reprocessor.reprocessEpisodes(from, to);

@@ -51,7 +51,8 @@ export const LIFE_TUNING: LifeTuning = {
 };
 
 /** appraisal 処理系バージョン。プロンプト版 + モデル + チューニングセット */
-export const APPRAISAL_PROMPT_VERSION = 'appraisal-v1';
+// v2: social 方向の定義（満たされた交流で減る）・valence 正バイアス校正・sleep 遷移の定義を明確化（#102）
+export const APPRAISAL_PROMPT_VERSION = 'appraisal-v2';
 
 export function buildAppraisalProcVersion(model: string): string {
   return `${APPRAISAL_PROMPT_VERSION}/${model}/${LIFE_TUNING_VERSION}`;

@@ -283,7 +283,7 @@ export class InnerStateService {
       const decayed = decayInnerState(stored, receivedAt, this.timezone, this.tuning);
       const next: InnerState = {
         updatedAt: decayed.updatedAt,
-        valence: clampValence(decayed.valence + deltas.valence),
+        valence: clampValence(decayed.valence + softSaturateValenceDelta(decayed.valence, deltas.valence)),
         energy: clampUnit(decayed.energy + deltas.energy),
         hunger: clampUnit(decayed.hunger + deltas.hunger),
         social: clampUnit(decayed.social + deltas.social),
@@ -294,6 +294,18 @@ export class InnerStateService {
       return next;
     });
   }
+}
+
+/**
+ * 気分の同符号ソフトサチュレーション（#102）: 気分が端に近いほど同方向の
+ * 変化を効きにくくして張り付き（実機で 1.0 飽和）を防ぐ。逆方向の変化は
+ * 全額効く — 最高潮の気分でも悪い出来事はちゃんと下げる。
+ */
+export function softSaturateValenceDelta(current: number, delta: number): number {
+  if (delta === 0 || Math.sign(delta) !== Math.sign(current)) {
+    return delta;
+  }
+  return delta * (1 - Math.min(1, Math.abs(current)));
 }
 
 /**

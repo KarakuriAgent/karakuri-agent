@@ -66,6 +66,29 @@ export function extractKwRawKindFromEvent(event: NormalizedEvent): string | null
   return extractKwRawKind(event.payload);
 }
 
+/**
+ * own_action（KW コマンド）からの睡眠開始検出（M2 の前段ルール — #102）。
+ * LLM は fell_asleep をほぼ出さない（実機 0/382）ため、行動 ID の写像で
+ * 決定論に検出する。写像にない睡眠表現は LLM 判定に委ねる。
+ */
+const KW_SLEEP_ACTION_PATTERN = /sleep|nap|就寝|寝る/i;
+
+export function detectKwSleepActionStart(event: NormalizedEvent): boolean {
+  if (event.kind !== EVENT_KINDS.ownAction || !event.channel.startsWith('kw:')) {
+    return false;
+  }
+  const payload = event.payload;
+  if (typeof payload !== 'object' || payload == null) {
+    return false;
+  }
+  const params = (payload as { params?: unknown }).params;
+  if (typeof params !== 'object' || params == null) {
+    return false;
+  }
+  const actionId = (params as { action_id?: unknown }).action_id;
+  return typeof actionId === 'string' && KW_SLEEP_ACTION_PATTERN.test(actionId);
+}
+
 export interface NormalizeKwNotificationOptions {
   botId: string;
   /** get_notification のレスポンス封筒ごと逐語で。strict 検証はしない（未知フィールドも素通し） */

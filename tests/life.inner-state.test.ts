@@ -10,6 +10,7 @@ import {
   defaultInnerState,
   describeInnerState,
   InnerStateService,
+  softSaturateValenceDelta,
   SqliteInnerStateStore,
   type InnerState,
 } from '../src/life/inner-state.js';
@@ -163,8 +164,10 @@ describe('InnerStateService', () => {
     );
 
     const state = await store.get();
-    // 5 回の +0.1 がすべて反映される（read-modify-write の競合で失われない）
-    expect(state?.valence).toBeCloseTo(0.5, 3);
+    // 5 回の +0.1 がすべて反映される（read-modify-write の競合で失われない）。
+    // 同符号ソフトサチュレーション（#102）が効くため単純和 0.5 ではなく
+    // 0.1, 0.19, 0.271, 0.3439, 0.40951 と逓減しながら積み上がる
+    expect(state?.valence).toBeCloseTo(0.40951, 2);
   });
 
   it('returns a decayed view without persisting via getCurrent', async () => {
@@ -205,5 +208,20 @@ describe('describeInnerState', () => {
 
   it('default state is usable', () => {
     expect(describeInnerState(defaultInnerState(new Date()))).toBeTruthy();
+  });
+});
+
+describe('softSaturateValenceDelta', () => {
+  it('damps same-sign deltas as valence approaches the bound (#102)', () => {
+    expect(softSaturateValenceDelta(0.9, 0.075)).toBeCloseTo(0.075 * 0.1, 10);
+    expect(softSaturateValenceDelta(1, 0.075)).toBe(0);
+    expect(softSaturateValenceDelta(-0.9, -0.075)).toBeCloseTo(-0.075 * 0.1, 10);
+  });
+
+  it('applies opposite-sign deltas in full (#102)', () => {
+    expect(softSaturateValenceDelta(0.9, -0.075)).toBe(-0.075);
+    expect(softSaturateValenceDelta(-0.9, 0.075)).toBe(0.075);
+    expect(softSaturateValenceDelta(0, 0.075)).toBe(0.075);
+    expect(softSaturateValenceDelta(0.5, 0)).toBe(0);
   });
 });
