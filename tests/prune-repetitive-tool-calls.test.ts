@@ -9,13 +9,13 @@ function userMessage(content: string): ModelMessage {
 
 function assistantToolCallMessage(
   toolCallId: string,
-  toolName = 'recallDiary',
+  toolName = 'recallEpisodes',
   input: unknown = { target: 'core' },
 ): ModelMessage {
   return { role: 'assistant', content: [{ type: 'tool-call', toolCallId, toolName, input }] };
 }
 
-function toolResultMessage(toolCallId: string, toolName = 'recallDiary'): ModelMessage {
+function toolResultMessage(toolCallId: string, toolName = 'recallEpisodes'): ModelMessage {
   return {
     role: 'tool',
     content: [{ type: 'tool-result', toolCallId, toolName, output: { type: 'text', value: 'saved' } }],
@@ -82,7 +82,7 @@ describe('pruneRepetitiveToolCallsFromMessages', () => {
         role: 'assistant',
         content: [
           { type: 'text', text: 'checking...' },
-          { type: 'tool-call', toolCallId: 'call-1', toolName: 'recallDiary', input: { target: 'core' } },
+          { type: 'tool-call', toolCallId: 'call-1', toolName: 'recallEpisodes', input: { target: 'core' } },
         ],
       },
       toolResultMessage('call-1'),
@@ -90,7 +90,7 @@ describe('pruneRepetitiveToolCallsFromMessages', () => {
         role: 'assistant',
         content: [
           { type: 'text', text: 'checking again...' },
-          { type: 'tool-call', toolCallId: 'call-2', toolName: 'recallDiary', input: { target: 'core' } },
+          { type: 'tool-call', toolCallId: 'call-2', toolName: 'recallEpisodes', input: { target: 'core' } },
         ],
       },
       toolResultMessage('call-2'),
@@ -108,11 +108,11 @@ describe('pruneRepetitiveToolCallsFromMessages', () => {
 
   it('tracks distinct signatures independently', () => {
     const messages = [
-      assistantToolCallMessage('call-1', 'recallDiary', { target: 'core' }),
+      assistantToolCallMessage('call-1', 'recallEpisodes', { target: 'core' }),
       toolResultMessage('call-1'),
       assistantToolCallMessage('call-2', 'webFetch', { url: 'https://example.com' }),
       toolResultMessage('call-2', 'webFetch'),
-      assistantToolCallMessage('call-3', 'recallDiary', { target: 'core' }),
+      assistantToolCallMessage('call-3', 'recallEpisodes', { target: 'core' }),
       toolResultMessage('call-3'),
       assistantToolCallMessage('call-4', 'webFetch', { url: 'https://example.com' }),
       toolResultMessage('call-4', 'webFetch'),
@@ -122,7 +122,7 @@ describe('pruneRepetitiveToolCallsFromMessages', () => {
 
     expect(result.prunedToolCallIds.sort()).toEqual(['call-1', 'call-2']);
     expect(result.messages).toEqual([
-      assistantToolCallMessage('call-3', 'recallDiary', { target: 'core' }),
+      assistantToolCallMessage('call-3', 'recallEpisodes', { target: 'core' }),
       toolResultMessage('call-3'),
       assistantToolCallMessage('call-4', 'webFetch', { url: 'https://example.com' }),
       toolResultMessage('call-4', 'webFetch'),
@@ -131,9 +131,9 @@ describe('pruneRepetitiveToolCallsFromMessages', () => {
 
   it('treats input key order as equivalent when building the duplicate signature', () => {
     const messages = [
-      assistantToolCallMessage('call-1', 'recallDiary', { a: 1, b: 2 }),
+      assistantToolCallMessage('call-1', 'recallEpisodes', { a: 1, b: 2 }),
       toolResultMessage('call-1'),
-      assistantToolCallMessage('call-2', 'recallDiary', { b: 2, a: 1 }),
+      assistantToolCallMessage('call-2', 'recallEpisodes', { b: 2, a: 1 }),
       toolResultMessage('call-2'),
     ];
 
@@ -145,9 +145,9 @@ describe('pruneRepetitiveToolCallsFromMessages', () => {
 
   it('treats different array element order in input as a distinct signature', () => {
     const messages = [
-      assistantToolCallMessage('call-1', 'recallDiary', { ids: [1, 2] }),
+      assistantToolCallMessage('call-1', 'recallEpisodes', { ids: [1, 2] }),
       toolResultMessage('call-1'),
-      assistantToolCallMessage('call-2', 'recallDiary', { ids: [2, 1] }),
+      assistantToolCallMessage('call-2', 'recallEpisodes', { ids: [2, 1] }),
       toolResultMessage('call-2'),
     ];
 
@@ -158,7 +158,7 @@ describe('pruneRepetitiveToolCallsFromMessages', () => {
 
   it('does not treat calls with the same toolCallId-independent name/input as duplicates when toolName differs', () => {
     const messages = [
-      assistantToolCallMessage('call-1', 'recallDiary', { target: 'core' }),
+      assistantToolCallMessage('call-1', 'recallEpisodes', { target: 'core' }),
       toolResultMessage('call-1'),
       assistantToolCallMessage('call-2', 'webFetch', { target: 'core' }),
       toolResultMessage('call-2', 'webFetch'),

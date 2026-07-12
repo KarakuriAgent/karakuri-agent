@@ -104,7 +104,6 @@ const baseConfig: Config = {
   selfImageInjectionEnabled: true,
   drivesInjectionEnabled: true,
   prospectsInjectionEnabled: true,
-  postResponseEvaluatorEnabled: true,
 };
 
 const agentStub: IAgent = {

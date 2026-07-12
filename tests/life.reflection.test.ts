@@ -20,8 +20,7 @@ import {
   type WeeklyReflectionOutput,
 } from '../src/life/reflection.js';
 import { ReflectionRunner } from '../src/life/reflection-runner.js';
-import { importLegacyStores, importSeedMemories } from '../src/life/seed.js';
-import type { DiaryEntry, IDiaryStore, IMemoryStore } from '../src/memory/types.js';
+import { importSeedMemories } from '../src/life/seed.js';
 
 const temporaryDirectories: string[] = [];
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -661,7 +660,7 @@ describe('ReflectionRunner', () => {
   });
 });
 
-describe('seed and legacy import', () => {
+describe('seed import', () => {
   it('imports seed memories once with experience_log provenance', async () => {
     const env = await createEnv();
     await writeFile(join(env.dataDir, 'seed-memories.json'), JSON.stringify({
@@ -698,33 +697,4 @@ describe('seed and legacy import', () => {
     })).toBeNull();
   });
 
-  it('imports legacy diary and core memory as pre-migration records', async () => {
-    const env = await createEnv();
-    const diaryStore: IDiaryStore = {
-      readDiary: async (date: string) => (date === '2026-06-01' ? '古い日記の内容。' : null),
-      writeDiary: async () => {},
-      replaceDiary: async () => {},
-      deleteDiary: async () => false,
-      getRecentDiaries: async (): Promise<DiaryEntry[]> => [],
-      listDiaryDates: async () => ['2026-06-01'],
-      close: async () => {},
-    };
-    const memoryStore = {
-      readCoreMemory: async () => '重要な長期方針: 毎週レポートを送る。',
-    } as unknown as IMemoryStore;
-
-    const result = await importLegacyStores({
-      db: env.db,
-      experienceLogStore: env.experienceLogStore,
-      beliefStore: env.beliefStore,
-      narrativeStore: env.narrativeStore,
-      memoryStore,
-      diaryStore,
-    });
-
-    expect(result).toEqual({ diaries: 1, coreMemory: true, profiles: 0 });
-    expect(await env.narrativeStore.listByPeriod('diary', '2026-06-01', '2026-06-01')).toHaveLength(1);
-    const legacyEvents = await env.experienceLogStore.getRecent(10, { kind: 'legacy_import' });
-    expect(legacyEvents).toHaveLength(2);
-  });
 });

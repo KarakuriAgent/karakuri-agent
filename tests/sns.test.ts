@@ -32,13 +32,6 @@ function createPublicLookup(): LookupFn {
   return vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]);
 }
 
-async function flushPromises(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
 async function waitFor(predicate: () => boolean, attempts = 50): Promise<void> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (predicate()) {
@@ -296,14 +289,12 @@ describe('sns tools', () => {
       close: vi.fn(async () => {}),
     };
     const userStore = { ensureUser: vi.fn(async () => ({ userId: 'sns:mastodon:acct-1' })) };
-    const evaluateUser = vi.fn();
     const reportError = vi.fn();
     const tools = createSnsTools({
       ...SNS_OPTIONS,
       fetch,
       activityStore,
       userStore: userStore as never,
-      evaluateUser,
       reportError,
     });
 
@@ -319,54 +310,9 @@ describe('sns tools', () => {
     expect(reportError).toHaveBeenCalledWith(expect.stringContaining('sns_like'));
     expect(reportError).toHaveBeenCalledWith(expect.stringContaining('sns_repost'));
     expect(userStore.ensureUser).toHaveBeenCalled();
-    expect(evaluateUser).toHaveBeenCalledTimes(1);
   });
 
-  it('caps user evaluations at MAX_USER_EVALUATIONS_PER_TURN', async () => {
-    const users = ['alice', 'bob', 'carol', 'dave'].map((name, i) => ({
-      id: `acct-${i + 1}`,
-      display_name: name,
-      username: name,
-      acct: `${name}@example.com`,
-      url: `https://social.example/@${name}`,
-    }));
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    for (const [i, user] of users.entries()) {
-      fetch.mockResolvedValueOnce(new Response(JSON.stringify(
-        createStatus({ id: `post-${i + 1}`, account: user }),
-      ), { status: 200 }));
-    }
-    const activityStore: ISnsActivityStore = {
-      recordPost: vi.fn(async () => {}),
-      recordLike: vi.fn(async () => {}),
-      recordRepost: vi.fn(async () => {}),
-      hasLiked: vi.fn(async () => false),
-      hasReposted: vi.fn(async () => false),
-      hasReplied: vi.fn(async () => false),
-      hasQuoted: vi.fn(async () => false),
-      getRecentActivities: vi.fn(async () => []),
-      getLastNotificationId: vi.fn(async () => null),
-      setLastNotificationId: vi.fn(async () => {}),
-      close: vi.fn(async () => {}),
-    };
-    const evaluateUser = vi.fn();
-    const tools = createSnsTools({
-      ...SNS_OPTIONS,
-      fetch,
-      activityStore,
-      userStore: { ensureUser: vi.fn(async () => ({})) } as never,
-      evaluateUser,
-    });
-
-    for (let i = 0; i < 4; i++) {
-      await tools.sns_get_post!.execute!({ post_id: `post-${i + 1}` }, DEFAULT_OPTIONS);
-    }
-
-    // MAX_USER_EVALUATIONS_PER_TURN = 3, so the 4th user should be skipped
-    expect(evaluateUser).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not register or evaluate the bot from its own newly created post', async () => {
+  it('does not register the bot from its own newly created post', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(createStatus({ id: 'post-self' })), { status: 200 }));
@@ -384,13 +330,11 @@ describe('sns tools', () => {
       close: vi.fn(async () => {}),
     };
     const userStore = { ensureUser: vi.fn(async () => ({ userId: 'sns:mastodon:acct-1' })) };
-    const evaluateUser = vi.fn();
     const tools = createSnsTools({
       ...SNS_OPTIONS,
       fetch,
       activityStore,
       userStore: userStore as never,
-      evaluateUser,
     });
 
     await expect(tools.sns_post!.execute!({ text: 'hello' }, DEFAULT_OPTIONS)).resolves.toEqual(
@@ -398,7 +342,6 @@ describe('sns tools', () => {
     );
 
     expect(userStore.ensureUser).not.toHaveBeenCalled();
-    expect(evaluateUser).not.toHaveBeenCalled();
   });
 
   it('serializes duplicate-protected SNS actions across concurrent executions', async () => {

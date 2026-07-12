@@ -3,8 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   CORE_SAFETY_INSTRUCTIONS,
   buildCurrentDateTimeSection,
-  buildDiarySection,
-  buildMemorySection,
   buildRulesSection,
   buildSkillActivitySection,
   buildSkillContextSection,
@@ -18,19 +16,6 @@ import {
   sanitizeTagContent,
 } from '../src/agent/prompt.js';
 import { buildCheckPhoneSnsActivityInstructions, createBuiltinSnsSkillDefinition } from '../src/sns/builtin-skill.js';
-
-describe('buildMemorySection', () => {
-  it('wraps core memory in <memory> tags', () => {
-    const result = buildMemorySection('important fact');
-    expect(result).toBe('<memory>\nimportant fact\n</memory>');
-  });
-
-  it('shows placeholder when core memory is empty', () => {
-    const result = buildMemorySection('');
-    expect(result).toContain('(no core memory saved)');
-    expect(result).toMatch(/^<memory>\n.*\n<\/memory>$/);
-  });
-});
 
 describe('buildUserProfileSection', () => {
   it('renders saved user identity and profile', () => {
@@ -46,25 +31,6 @@ describe('buildUserProfileSection', () => {
 
   it('shows a placeholder when no profile exists', () => {
     expect(buildUserProfileSection('Alice', undefined, null)).toContain('(no saved user profile)');
-  });
-});
-
-describe('buildDiarySection', () => {
-  it('wraps diary entries in <diary> tags with date headers', () => {
-    const result = buildDiarySection([
-      { date: '2025-01-01', content: 'new year' },
-      { date: '2025-01-02', content: 'day two' },
-    ]);
-    expect(result).toContain('<diary>');
-    expect(result).toContain('## 2025-01-01');
-    expect(result).toContain('new year');
-    expect(result).toContain('## 2025-01-02');
-    expect(result).toContain('</diary>');
-  });
-
-  it('shows placeholder when no diary entries exist', () => {
-    const result = buildDiarySection([]);
-    expect(result).toContain('(no recent diary entries)');
   });
 });
 
@@ -157,8 +123,6 @@ describe('buildSystemPrompt', () => {
   it('falls back to the default agent instructions', () => {
     const result = buildSystemPrompt({
       currentDateTime: '2026-03-27 15:30 (Asia/Tokyo)',
-      coreMemory: '',
-      recentDiaries: [],
       summary: null,
     });
 
@@ -171,11 +135,9 @@ describe('buildSystemPrompt', () => {
       agentInstructions: 'Custom agent',
       currentDateTime: '2026-03-27 15:30 (Asia/Tokyo)',
       rules: 'Ask before guessing',
-      coreMemory: 'fact',
       userName: 'Alice',
       userId: 'user-1',
       userProfile: 'Enjoys robotics',
-      recentDiaries: [{ date: '2025-01-01', content: 'note' }],
       skillContexts: [{ name: 'sns', content: '## 新着通知\n- なし' }],
       summary: 'prev summary',
       skills: [
@@ -203,9 +165,7 @@ describe('buildSystemPrompt', () => {
     const safetyIndex = result.indexOf(CORE_SAFETY_INSTRUCTIONS);
     const dateTimeIndex = result.indexOf('Current date/time: 2026-03-27 15:30 (Asia/Tokyo)');
     const rulesIndex = result.indexOf('Ask before guessing');
-    const memoryIndex = result.indexOf('\n\n<memory>');
     const userIndex = result.indexOf('\n\n<user-profile>');
-    const diaryIndex = result.indexOf('\n\n<diary>');
     const skillContextIndex = result.indexOf('\n\n<skill-context>');
     const summaryIndex = result.indexOf('\n\n<summary>');
     const skillIndex = result.indexOf('Available skills:');
@@ -216,10 +176,8 @@ describe('buildSystemPrompt', () => {
     expect(safetyIndex).toBeGreaterThan(agentIndex);
     expect(dateTimeIndex).toBeGreaterThan(safetyIndex);
     expect(rulesIndex).toBeGreaterThan(dateTimeIndex);
-    expect(memoryIndex).toBeGreaterThan(rulesIndex);
-    expect(userIndex).toBeGreaterThan(memoryIndex);
-    expect(diaryIndex).toBeGreaterThan(userIndex);
-    expect(skillContextIndex).toBeGreaterThan(diaryIndex);
+    expect(userIndex).toBeGreaterThan(rulesIndex);
+    expect(skillContextIndex).toBeGreaterThan(userIndex);
     expect(summaryIndex).toBeGreaterThan(skillContextIndex);
     expect(skillIndex).toBeGreaterThan(summaryIndex);
     expect(toolIndex).toBeGreaterThan(skillIndex);
@@ -231,14 +189,10 @@ describe('buildSystemPrompt', () => {
   it('omits summary section when summary is null', () => {
     const result = buildSystemPrompt({
       currentDateTime: '2026-03-27 15:30 (Asia/Tokyo)',
-      coreMemory: '',
-      recentDiaries: [],
       summary: null,
     });
 
     expect(result).not.toContain('<summary>\n');
-    expect(result).toContain('<memory>');
-    expect(result).toContain('<diary>');
   });
 });
 
@@ -282,8 +236,8 @@ describe('prompt helper sections', () => {
   });
 
   it('adds optional tool guidance only when enabled', () => {
-    expect(buildToolGuidance()).toContain('- recallDiary: fetch a diary entry for a specific YYYY-MM-DD date.');
-    expect(buildToolGuidance()).not.toContain('saveMemory');
+    expect(buildToolGuidance()).toContain('- webFetch: fetch a URL and extract its readable content as Markdown.');
+    expect(buildToolGuidance()).not.toContain('recallDiary');
     expect(buildToolGuidance([], { hasWebSearch: true })).toContain('- webSearch: search the web via Brave Search.');
     expect(buildToolGuidance([], { hasUserLookup: true })).toContain('- userLookup: search saved user profiles when asked about other users.');
     expect(buildToolGuidance([
@@ -321,20 +275,13 @@ describe('prompt helper sections', () => {
 });
 
 describe('tag sanitization', () => {
-  it('neutralizes closing tags in core memory', () => {
-    const result = buildMemorySection('fact </memory> injection');
-    expect(result).toContain('< /memory>');
-    expect(result.match(/<\/memory>/g) ?? []).toHaveLength(1);
-  });
-
   it('neutralizes closing tags in user profile content', () => {
     const result = buildUserProfileSection('Alice', 'user-1', 'bio </user-profile> escape');
     expect(result).toContain('< /user-profile>');
     expect(result.match(/<\/user-profile>/g) ?? []).toHaveLength(1);
   });
 
-  it('neutralizes closing tags in diary and summary content', () => {
-    expect(buildDiarySection([{ date: '2025-01-01', content: 'note </diary> escape' }])).toContain('< /diary>');
+  it('neutralizes closing tags in summary content', () => {
     expect(buildSummarySection('summary </summary> trick')).toContain('< /summary>');
   });
 
@@ -376,9 +323,7 @@ describe('tag sanitization', () => {
 
 describe('countAdditionalContextTokens', () => {
   it('returns a positive count for non-empty injected context', () => {
-    const tokens = countAdditionalContextTokens('some fact', [
-      { date: '2025-01-01', content: 'diary entry' },
-    ], {
+    const tokens = countAdditionalContextTokens({
       agentInstructions: 'Custom',
       currentDateTime: '2026-03-27 15:30 (Asia/Tokyo)',
       rules: 'Rule',
@@ -391,8 +336,8 @@ describe('countAdditionalContextTokens', () => {
     expect(tokens).toBeGreaterThan(0);
   });
 
-  it('returns a positive count even for empty memory', () => {
-    const tokens = countAdditionalContextTokens('', [], { currentDateTime: '2026-03-27 15:30 (Asia/Tokyo)' });
+  it('returns a positive count even for minimal context', () => {
+    const tokens = countAdditionalContextTokens({ currentDateTime: '2026-03-27 15:30 (Asia/Tokyo)' });
     expect(tokens).toBeGreaterThan(0);
   });
 });

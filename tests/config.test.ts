@@ -32,8 +32,6 @@ describe('loadConfig', () => {
     expect(config.tokenBudget).toBe(80_000);
     expect(config.port).toBe(3_000);
     expect(config.heartbeatIntervalMinutes).toBe(120);
-    expect(config.memoryMaintenanceIntervalMinutes).toBeUndefined();
-    expect(config.memoryMaintenanceRecentDiaryDays).toBeUndefined();
     expect(config.snsRateLimits.defaults).toEqual({
       postPerHour: 3,
       postPerDay: 20,
@@ -62,8 +60,6 @@ describe('loadConfig', () => {
       REPORT_CHANNEL_ID: 'report-1',
       ADMIN_USER_IDS: 'admin-1, admin-2',
       HEARTBEAT_INTERVAL_MINUTES: '15',
-      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '45',
-      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '120',
     });
 
     expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
@@ -71,8 +67,6 @@ describe('loadConfig', () => {
     expect(config.reportChannelId).toBe('report-1');
     expect(config.adminUserIds).toEqual(['admin-1', 'admin-2']);
     expect(config.heartbeatIntervalMinutes).toBe(15);
-    expect(config.memoryMaintenanceIntervalMinutes).toBe(45);
-    expect(config.memoryMaintenanceRecentDiaryDays).toBe(120);
   });
 
   it('treats an empty REPORT_CHANNEL_ID as omitted', () => {
@@ -85,24 +79,6 @@ describe('loadConfig', () => {
     expect(config.reportChannelId).toBeUndefined();
     expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
     expect(config.allowedChannelIds).toEqual(['channel-1', 'channel-2']);
-  });
-
-  it('treats an empty MEMORY_MAINTENANCE_INTERVAL_MINUTES as undefined', () => {
-    const config = loadConfig({
-      ...validEnv,
-      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '',
-    });
-
-    expect(config.memoryMaintenanceIntervalMinutes).toBeUndefined();
-  });
-
-  it('treats an empty MEMORY_MAINTENANCE_RECENT_DIARY_DAYS as undefined', () => {
-    const config = loadConfig({
-      ...validEnv,
-      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '',
-    });
-
-    expect(config.memoryMaintenanceRecentDiaryDays).toBeUndefined();
   });
 
   it('keeps report-only channels out of the postMessage allowlist', () => {
@@ -275,48 +251,6 @@ describe('loadConfig', () => {
     });
 
     expect(config.tokenBudget).toBe(4_000);
-  });
-
-  it('parses optional post-response LLM settings', () => {
-    const config = loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_MODEL: 'openai/gpt-4o-mini',
-      POST_RESPONSE_LLM_API_KEY: 'post-key',
-      POST_RESPONSE_LLM_BASE_URL: 'https://example.com/post/',
-    });
-
-    expect(config.postResponseLlmModel).toBe('openai/gpt-4o-mini');
-    expect(config.postResponseLlmModelSelector?.selector).toBe('openai/gpt-4o-mini');
-    expect(config.postResponseLlmApiKey).toBe('post-key');
-    expect(config.postResponseLlmBaseUrl).toBe('https://example.com/post');
-  });
-
-  it('treats blank post-response LLM settings as undefined', () => {
-    const config = loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_MODEL: '   ',
-      POST_RESPONSE_LLM_API_KEY: '   ',
-      POST_RESPONSE_LLM_BASE_URL: '   ',
-    });
-
-    expect(config.postResponseLlmModel).toBeUndefined();
-    expect(config.postResponseLlmModelSelector).toBeUndefined();
-    expect(config.postResponseLlmApiKey).toBeUndefined();
-    expect(config.postResponseLlmBaseUrl).toBeUndefined();
-  });
-
-  it('rejects invalid POST_RESPONSE_LLM_BASE_URL with correct label', () => {
-    expect(() => loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_BASE_URL: 'not-a-url',
-    })).toThrow('POST_RESPONSE_LLM_BASE_URL must be a valid URL');
-  });
-
-  it('rejects POST_RESPONSE_LLM_BASE_URL with credentials', () => {
-    expect(() => loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_BASE_URL: 'https://user:pass@example.com',
-    })).toThrow('POST_RESPONSE_LLM_BASE_URL must not include credentials');
   });
 
   it('accepts BRAVE_API_KEY as an optional setting', () => {
@@ -691,6 +625,12 @@ describe('loadConfig', () => {
       ...validEnv,
       SNS_LOOP_MIN_INTERVAL_MINUTES: '240',
       SNS_PROVIDER: 'mastodon',
+      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '45',
+      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '120',
+      POST_RESPONSE_LLM_MODEL: 'openai/gpt-4o-mini',
+      POST_RESPONSE_LLM_API_KEY: 'post-key',
+      POST_RESPONSE_LLM_BASE_URL: 'https://example.com/post/',
+      POST_RESPONSE_EVALUATOR_ENABLED: 'true',
     });
     expect(config.llmModel).toBe('openai/gpt-4o');
   });
