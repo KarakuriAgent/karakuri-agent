@@ -126,4 +126,20 @@ describe('LoopDetector', () => {
     await detector.restore(store, 'kw:bot-1');
     expect(detector.getConsecutiveCount('kw:bot-1')).toBe(1);
   });
+
+  it('tracks consecutive command failures across different targets and warns (#103)', () => {
+    const detector = new LoopDetector({ threshold: 3 });
+
+    // 対象が交互（12-13 と building-station）でも失敗が続けばカウントされる
+    expect(detector.recordCommandFailure('kw:bot-1')).toBe(1);
+    expect(detector.recordCommandFailure('kw:bot-1')).toBe(2);
+    expect(detector.buildFailureWarning('kw:bot-1')).toBeNull();
+    expect(detector.recordCommandFailure('kw:bot-1')).toBe(3);
+    expect(detector.buildFailureWarning('kw:bot-1')).toContain('行動失敗警告');
+
+    // 成功で解消される
+    detector.resetCommandFailures('kw:bot-1');
+    expect(detector.getFailureCount('kw:bot-1')).toBe(0);
+    expect(detector.buildFailureWarning('kw:bot-1')).toBeNull();
+  });
 });

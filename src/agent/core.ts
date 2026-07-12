@@ -51,6 +51,7 @@ import { hasAdminToolAccess } from './tools/admin-auth.js';
 import { filterSkillsToAvailableTools } from './tools/gated-tools.js';
 import {
   createKarakuriWorldTools,
+  extractKarakuriWorldCurrentNode,
   fetchKarakuriWorldNotification,
   isKarakuriWorldNotificationFetchError,
   type KarakuriWorldNotificationResponse,
@@ -454,6 +455,10 @@ export class KarakuriAgent implements IAgent {
       const loopWarning = isKarakuriWorldMode && this.config.loopWarningEnabled && this.loopDetector != null && userId != null
         ? this.loopDetector.buildWarning(kwChannel(userId))
         : null;
+      // 連続失敗の警告（#103）: 対象が交互でも失敗が続いていれば注入する
+      const failureWarning = isKarakuriWorldMode && this.config.loopWarningEnabled && this.loopDetector != null && userId != null
+        ? this.loopDetector.buildFailureWarning(kwChannel(userId))
+        : null;
       // 最新の行動選択用通知を untrusted タグ内で注入（Perception Buffer）
       const kwPerceptionSection = isKarakuriWorldMode
         && this.config.kwPerceptionBufferEnabled
@@ -510,6 +515,7 @@ export class KarakuriAgent implements IAgent {
         options?.extraSystemPrompt,
         isKarakuriWorldMode ? buildKarakuriWorldModeInstructions() : undefined,
         loopWarning,
+        failureWarning,
         innerStateSection,
         selfImageSection,
         drivesSection,
@@ -598,11 +604,29 @@ export class KarakuriAgent implements IAgent {
         messageCount: session.messages.length,
       });
       logger.debug(`System prompt:\n${systemPrompt}`);
+      const kwCurrentNode = isKarakuriWorldMode && karakuriWorldNotification != null
+        ? extractKarakuriWorldCurrentNode(karakuriWorldNotification)
+        : null;
       const tools = isKarakuriWorldMode && this.config.karakuriWorld != null
         ? createKarakuriWorldTools({
             ...this.config.karakuriWorld,
             notificationId: karakuriWorldNotification!.notification_id,
             allowedCommands: karakuriWorldNotification!.notification.choices.map((choice) => choice.command),
+            // 事前検証と失敗ストリーク（#103）
+            expiresAt: karakuriWorldNotification!.expires_at,
+            ...(kwCurrentNode != null ? { currentNode: kwCurrentNode } : {}),
+            ...(this.loopDetector != null && userId != null
+              ? {
+                  onCommandOutcome: ({ failed }: { command: string; failed: boolean }) => {
+                    const channel = kwChannel(userId);
+                    if (failed) {
+                      this.loopDetector!.recordCommandFailure(channel);
+                    } else {
+                      this.loopDetector!.resetCommandFailures(channel);
+                    }
+                  },
+                }
+              : {}),
           })
         : createAgentTools({
           memoryStore: this.memoryStore,

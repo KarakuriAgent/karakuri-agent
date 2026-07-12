@@ -30,6 +30,8 @@ export interface LoopDetectorOptions {
 export class LoopDetector {
   private readonly threshold: number;
   private readonly streaks = new Map<string, Streak>();
+  /** チャネル別の連続コマンド失敗回数（対象を問わない — #103） */
+  private readonly failureStreaks = new Map<string, number>();
 
   constructor({ threshold = DEFAULT_LOOP_DETECTOR_THRESHOLD }: LoopDetectorOptions = {}) {
     this.threshold = Math.max(2, threshold);
@@ -49,6 +51,40 @@ export class LoopDetector {
 
   getConsecutiveCount(channel: string): number {
     return this.streaks.get(channel)?.count ?? 0;
+  }
+
+  /**
+   * コマンド実行の失敗を記録し、現在の連続失敗回数を返す（#103）。
+   * 同一対象への反復と違い、対象が交互でも「失敗し続けている」状況を検出する
+   * （実機で 12-13 と building-station を交互に失敗し続け、同一対象判定を
+   * すり抜けた事例への対策）。
+   */
+  recordCommandFailure(channel: string): number {
+    const next = (this.failureStreaks.get(channel) ?? 0) + 1;
+    this.failureStreaks.set(channel, next);
+    return next;
+  }
+
+  /** コマンドが成功したら失敗ストリークを解消する */
+  resetCommandFailures(channel: string): void {
+    this.failureStreaks.delete(channel);
+  }
+
+  getFailureCount(channel: string): number {
+    return this.failureStreaks.get(channel) ?? 0;
+  }
+
+  /** 連続失敗が閾値以上のときの警告文（trusted・untrusted 引用なし） */
+  buildFailureWarning(channel: string): string | null {
+    const count = this.failureStreaks.get(channel) ?? 0;
+    if (count < this.threshold) {
+      return null;
+    }
+
+    return [
+      `【行動失敗警告】直前の行動は ${count} 回連続で失敗している。`,
+      '同じ内容を繰り返しても失敗し続ける。get_available_actions や get_map で状況を確認してから、別の種類の行動・別の対象を選ぶこと。',
+    ].join('\n');
   }
 
   /**

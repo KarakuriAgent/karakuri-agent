@@ -82,6 +82,49 @@ export interface CreateKarakuriWorldToolsOptions extends ApiCredentials {
   notificationId: string;
   allowedCommands?: readonly string[];
   fetch?: typeof fetch;
+  /** 通知の応答期限（ms epoch）。期限切れなら API を呼ばず案内を返す（#103） */
+  expiresAt?: number | undefined;
+  /** 現在地（通知の perception 由来）。move の same_node を API を呼ばず検出する（#103） */
+  currentNode?: KarakuriWorldCurrentNode | undefined;
+  /**
+   * コマンド実行の成否フック（失敗ストリーク検出用 — #103）。
+   * - 成功 → failed: false（ストリーク解消）
+   * - same_node の事前検出・API エラー → failed: true（無効だった試み）
+   * - busy / not_logged_in / stale の事前検出 → フックを呼ばない（中立。
+   *   正当な状態や積み残し通知の期限切れでストリークを消しも増やしもしない）
+   */
+  onCommandOutcome?: ((outcome: { command: string; failed: boolean }) => void) | undefined;
+  now?: (() => Date) | undefined;
+}
+
+export interface KarakuriWorldCurrentNode {
+  nodeId?: string | undefined;
+  buildingId?: string | undefined;
+  label?: string | undefined;
+}
+
+/** 通知の perception から現在地を取り出す（無ければ null。構造は変わりうるため安全に辿る） */
+export function extractKarakuriWorldCurrentNode(
+  notificationResponse: KarakuriWorldNotificationResponse,
+): KarakuriWorldCurrentNode | null {
+  const perception = notificationResponse.notification.perception;
+  if (typeof perception !== 'object' || perception == null) {
+    return null;
+  }
+  const currentNode = (perception as { current_node?: unknown }).current_node;
+  if (typeof currentNode !== 'object' || currentNode == null) {
+    return null;
+  }
+  const node = currentNode as { node_id?: unknown; building_id?: unknown; location_label?: unknown; label?: unknown };
+  const nodeId = typeof node.node_id === 'string' ? node.node_id : undefined;
+  const buildingId = typeof node.building_id === 'string' ? node.building_id : undefined;
+  const label = typeof node.location_label === 'string'
+    ? node.location_label
+    : typeof node.label === 'string' ? node.label : undefined;
+  if (nodeId == null && buildingId == null) {
+    return null;
+  }
+  return { nodeId, buildingId, label };
 }
 
 export interface FetchKarakuriWorldNotificationOptions extends ApiCredentials {
@@ -436,12 +479,29 @@ export async function fetchKarakuriWorldNotification({
   });
 }
 
+interface ExecuteCommandGuards {
+  expiresAt?: number | undefined;
+  currentNode?: KarakuriWorldCurrentNode | undefined;
+  onCommandOutcome?: ((outcome: { command: string; failed: boolean }) => void) | undefined;
+  now?: (() => Date) | undefined;
+}
+
 async function executeKarakuriWorldCommand(
   notificationId: string,
   input: Record<string, unknown>,
   context: RequestContext,
   allowedCommands: ReadonlySet<string> | null,
+  guards: ExecuteCommandGuards = {},
 ): Promise<unknown> {
+  const command = typeof input['command'] === 'string' ? input['command'] : 'unknown';
+  const reportOutcome = (failed: boolean): void => {
+    try {
+      guards.onCommandOutcome?.({ command, failed });
+    } catch (hookError) {
+      logger.warn('Command outcome hook failed', { error: hookError });
+    }
+  };
+
   try {
     const parsed = karakuriWorldCommandInputSchema.parse(input);
     if (allowedCommands != null && !allowedCommands.has(parsed.command)) {
@@ -453,7 +513,46 @@ async function executeKarakuriWorldCommand(
       throw new Error(`karakuri-world command is not allowed by this notification: ${parsed.command}`);
     }
 
-    return await requestJson({
+    // 事前検証（#103）: API を呼ばずに無効な試みを案内へ変換する
+    const nowMs = (guards.now?.() ?? new Date()).getTime();
+    // expires_at は ms epoch（実 API で確認済み）。単位が疑わしい小さな値は
+    // 誤判定（全コマンド停止）を避けるため検査しない
+    const expiresAtLooksLikeMs = guards.expiresAt != null && guards.expiresAt > 1_000_000_000_000;
+    if (expiresAtLooksLikeMs && nowMs > guards.expiresAt!) {
+      logger.info('Notification is already expired, returning informational response', {
+        notificationId,
+        expiresAt: guards.expiresAt,
+      });
+      // 積み残し通知の期限切れはエージェントの選択の失敗ではないため中立
+      return {
+        status: 'stale',
+        message: 'この通知は応答期限切れです。この通知への応答は不要です。最新の通知を待って行動してください。',
+      };
+    }
+    if (parsed.command === 'move' && guards.currentNode != null) {
+      const targetNode = parsed.params['target_node_id'];
+      const targetBuilding = parsed.params['target_building_id'];
+      const sameNode = guards.currentNode.nodeId != null && targetNode === guards.currentNode.nodeId;
+      // 建物一致は target_node_id の指定が無いときだけ見る（建物内の別ノードへの
+      // 移動は正当なため誤ブロックしない）
+      const sameBuilding = targetNode == null
+        && guards.currentNode.buildingId != null
+        && targetBuilding === guards.currentNode.buildingId;
+      if (sameNode || sameBuilding) {
+        logger.info('Move to the current location prevented, returning informational response', {
+          notificationId,
+          targetNode,
+          targetBuilding,
+        });
+        reportOutcome(true);
+        return {
+          status: 'same_node',
+          message: `既に${guards.currentNode.label != null ? `「${guards.currentNode.label}」` : 'その場所'}にいます。移動は不要です。get_available_actions で実行可能なアクションを確認するか、現在地と異なる場所を選んでください。`,
+        };
+      }
+    }
+
+    const response = await requestJson({
       ...context,
       operation: 'command',
       method: 'POST',
@@ -465,9 +564,12 @@ async function executeKarakuriWorldCommand(
       },
       responseSchema: z.unknown(),
     });
+    reportOutcome(false);
+    return response;
   } catch (error) {
     if (error instanceof z.ZodError) {
       logger.error('Tool input validation failed', { operation: 'command', issues: error.issues });
+      reportOutcome(true);
       throw error;
     }
 
@@ -476,6 +578,7 @@ async function executeKarakuriWorldCommand(
         status: error.status,
         code: error.code,
       });
+      // busy = 世界内で行動が進行中という正当な状態。中立（ストリークを消しも増やしもしない）
       return {
         status: 'busy',
         message: error.apiMessage,
@@ -495,6 +598,7 @@ async function executeKarakuriWorldCommand(
     }
 
     logger.error('Tool execution failed', { operation: 'command', error });
+    reportOutcome(true);
     throw error;
   }
 }
@@ -505,8 +609,13 @@ export function createKarakuriWorldTools({
   notificationId,
   allowedCommands,
   fetch: fetchImpl = (...args) => globalThis.fetch(...args),
+  expiresAt,
+  currentNode,
+  onCommandOutcome,
+  now,
 }: CreateKarakuriWorldToolsOptions): ToolSet {
   const context: RequestContext = { apiBaseUrl, apiKey, fetchImpl };
+  const guards: ExecuteCommandGuards = { expiresAt, currentNode, onCommandOutcome, now };
   const normalizedAllowedCommands = normalizeAllowedCommands(allowedCommands);
   const allowedCommandSet = normalizedAllowedCommands.length > 0 ? new Set(normalizedAllowedCommands) : null;
   const allowedCommandDescription = normalizedAllowedCommands.length > 0
@@ -520,7 +629,7 @@ export function createKarakuriWorldTools({
         'get_notification 済みの保存済み通知に対して、notification.choices[] から選んだ command を最大1回だけ実行する。notification_id はシステム側で固定されるため入力しない。params は JSON object にする。'
         + allowedCommandDescription,
       inputSchema,
-      execute: async (input) => executeKarakuriWorldCommand(notificationId, input, context, allowedCommandSet),
+      execute: async (input) => executeKarakuriWorldCommand(notificationId, input, context, allowedCommandSet, guards),
     }),
   };
 }
