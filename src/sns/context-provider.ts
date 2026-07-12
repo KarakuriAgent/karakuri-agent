@@ -32,12 +32,16 @@ export interface SnsSkillContextProviderOptions {
 
 const logger = createLogger('SnsSkillContextProvider');
 const MAX_CONTEXT_NOTIFICATION_PAGES = 5;
+/** incomplete フェッチでカーソルが前進できなかった連続回数がこの値に達したら report する */
+const INCOMPLETE_FETCH_REPORT_THRESHOLD = 3;
 
 export class SnsSkillContextProvider implements SkillContextProvider {
   private readonly mutex = new KeyedMutex();
   private readonly notificationLimit: number;
   private readonly trendLimit: number;
   private readonly recentActivityLimit: number;
+  /** カーソルが前進できなかった incomplete フェッチの連続回数（停滞の可視化用） */
+  private incompleteFetchStreak = 0;
 
   constructor(private readonly options: SnsSkillContextProviderOptions) {
     this.notificationLimit = Math.max(1, options.notificationLimit ?? 5);
@@ -86,7 +90,34 @@ export class SnsSkillContextProvider implements SkillContextProvider {
             void this.options.appraisalService?.enqueue(event, undefined, eventId ?? undefined);
           }
         }
-        latestNotificationId = complete ? notifications[0]?.id : undefined;
+        // カーソル前進の規則:
+        // - カーソル保存済み（sinceId != null）: 取り漏らし防止のため complete な
+        //   フェッチのみ前進する
+        // - 初回（sinceId == null）: 履歴が limit を超えると complete にならず
+        //   永遠にブートストラップできないため、incomplete でも最新 id へ前進する。
+        //   セマンティクスは「導入時点より過去はまとめて既読、以後の差分から追跡」
+        latestNotificationId = complete || sinceId == null ? notifications[0]?.id : undefined;
+        if (!complete && sinceId != null) {
+          // 正当な前進見送り（取り漏らし防止）だが、続くと同じ通知を再取得し続ける。
+          // 停滞の可視化のため連続回数を数えて report する。
+          // 通知 0 件の incomplete はレート制限等の一時的な取得縮退で「同じ通知の
+          // 再取得」は起きていないため、数えも消しもしない
+          if (notifications.length > 0) {
+            this.incompleteFetchStreak += 1;
+            if (this.incompleteFetchStreak >= INCOMPLETE_FETCH_REPORT_THRESHOLD) {
+              logger.warn('SNS notification cursor is stalling on incomplete fetches', {
+                provider: this.options.provider,
+                streak: this.incompleteFetchStreak,
+              });
+              this.options.reportError?.(
+                `⚠️ [${this.options.provider}] SNS 通知カーソルが ${this.incompleteFetchStreak} 回連続で前進できていません（incomplete フェッチ）。同じ通知を再取得し続けている可能性があります`,
+              );
+              this.incompleteFetchStreak = 0;
+            }
+          }
+        } else {
+          this.incompleteFetchStreak = 0;
+        }
         if (
           latestNotificationId != null
           && this.options.activityStore.reserveLastNotificationId != null

@@ -203,4 +203,40 @@ describe('SnsSkillContextProvider', () => {
     expect(context.onSuccess).toBeUndefined();
     expect(context.text).toContain('Partial reply text');
   });
+
+  it('bootstraps the cursor on the first fetch even when results are partial (#101)', async () => {
+    // カーソル未保存（初回）: 履歴が limit を超えて complete=false でも最新 id へ前進する
+    const activityStore = createActivityStore({ getLastNotificationId: vi.fn(async () => null) });
+    const snsProvider = createProvider({
+      getNotifications: vi.fn(async () => createNotificationResult([
+        { id: 'notif-9', type: 'reply', createdAt: '2025-01-02T00:00:00.000Z', accountId: 'acct-2', accountName: 'Bob', accountHandle: 'bob@example.com', post: createPost('post-9', 'Old backlog reply') },
+      ], false)),
+    });
+
+    const provider = new SnsSkillContextProvider({ activityStore, snsProvider });
+    const context = await provider.getContext();
+    await context.onSuccess?.();
+
+    expect(activityStore.reserveLastNotificationId).toHaveBeenCalledWith('notif-9');
+    expect(activityStore.commitLastNotificationReservation).toHaveBeenCalledWith('reservation-1');
+  });
+
+  it('reports when the cursor stalls on consecutive incomplete fetches (#101)', async () => {
+    const reportError = vi.fn();
+    const activityStore = createActivityStore({ getLastNotificationId: vi.fn(async () => 'notif-1') });
+    const snsProvider = createProvider({
+      getNotifications: vi.fn(async () => createNotificationResult([
+        { id: 'notif-2', type: 'reply', createdAt: '2025-01-02T00:00:00.000Z', accountId: 'acct-2', accountName: 'Bob', accountHandle: 'bob@example.com', post: createPost('post-2', 'Stalled reply') },
+      ], false)),
+    });
+
+    const provider = new SnsSkillContextProvider({ activityStore, snsProvider, reportError, provider: 'x' });
+    await provider.getContext();
+    await provider.getContext();
+    expect(reportError).not.toHaveBeenCalled();
+    await provider.getContext();
+
+    expect(reportError).toHaveBeenCalledTimes(1);
+    expect(reportError.mock.calls[0]?.[0]).toContain('前進できていません');
+  });
 });
