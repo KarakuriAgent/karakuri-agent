@@ -125,12 +125,17 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
     return true;
   };
 
+  // KW bot とのスレッドではステータスリアクションを付けない（#104）:
+  // 高頻度 system turn のリアクション付け外しが Discord 429 と恒常的に衝突する
+  const statusReactionEnabledFor = (message: Message): boolean =>
+    !(config.karakuriWorldBotIds ?? []).includes(message.author.userId);
+
   const handleNewThread = async (thread: Thread, message: Message): Promise<void> => {
     if (await divertToUnread(thread, message, true)) {
       return;
     }
 
-    const controller = createStatusReactionController(thread, message);
+    const controller = createStatusReactionController(thread, message, statusReactionEnabledFor(message));
     if (hasProcessableText(message)) {
       controller.setQueued();
     }
@@ -175,7 +180,7 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
       return;
     }
 
-    const controller = createStatusReactionController(thread, message);
+    const controller = createStatusReactionController(thread, message, statusReactionEnabledFor(message));
     if (hasProcessableText(message)) {
       controller.setQueued();
     }
@@ -463,8 +468,15 @@ function hasProcessableText(message: Message): boolean {
   return message.text.trim().length > 0;
 }
 
-function createStatusReactionController(thread: Thread, message: Message): StatusReactionController {
-  return new StatusReactionController(thread.adapter, message.threadId, message.id);
+function createStatusReactionController(thread: Thread, message: Message, enabled = true): StatusReactionController {
+  return new StatusReactionController(
+    thread.adapter,
+    message.threadId,
+    message.id,
+    undefined,
+    undefined,
+    enabled,
+  );
 }
 
 async function safePost(thread: Thread, text: string): Promise<void> {

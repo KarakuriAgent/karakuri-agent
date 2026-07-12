@@ -17,6 +17,8 @@ export const STATUS_EMOJI = {
 export const DONE_REACTION_DURATION_MS = 2_000;
 export const DEBOUNCE_MS = 700;
 export const TERMINAL_RECONCILE_MAX_RETRIES = 3;
+/** terminal リコンサイル再試行の基準待ち時間（回数に比例して伸ばす — 429 への配慮） */
+export const TERMINAL_RETRY_BASE_DELAY_MS = 1_000;
 
 export interface ReactionAdapter {
   addReaction(threadId: string, messageId: string, emoji: string): Promise<void>;
@@ -67,6 +69,9 @@ export class StatusReactionController {
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private debouncePromise: Promise<void> | null = null;
   private resolveDebounce: (() => void) | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryPromise: Promise<void> | null = null;
+  private resolveRetry: (() => void) | null = null;
 
   constructor(
     private readonly adapter: ReactionAdapter,
@@ -74,6 +79,12 @@ export class StatusReactionController {
     private readonly messageId: string,
     private readonly doneDisplayMs = DONE_REACTION_DURATION_MS,
     private readonly debounceMs = DEBOUNCE_MS,
+    /**
+     * false で全操作を no-op にする（#104）。KW の高頻度 system turn では
+     * 進行状態を見る人間がいない一方、ターンごとのリアクション付け外しが
+     * Discord のレート制限（429）と恒常的に衝突するため無効化する
+     */
+    private readonly enabled = true,
   ) {}
 
   setQueued(): void {
@@ -94,25 +105,27 @@ export class StatusReactionController {
   }
 
   done(): void {
-    if (this.terminalStatus === 'done' || this.terminalStatus === 'error') {
+    if (!this.enabled || this.terminalStatus === 'done' || this.terminalStatus === 'error') {
       return;
     }
 
     this.terminalStatus = 'done';
     this.cancelDoneTimer();
     this.cancelDebounce();
+    this.cancelRetryTimer();
     this.desiredEmoji = STATUS_EMOJI.done;
     this.triggerReconcile();
   }
 
   error(): void {
-    if (this.terminalStatus === 'error') {
+    if (!this.enabled || this.terminalStatus === 'error') {
       return;
     }
 
     this.terminalStatus = 'error';
     this.cancelDoneTimer();
     this.cancelDebounce();
+    this.cancelRetryTimer();
     this.desiredEmoji = STATUS_EMOJI.error;
     this.triggerReconcile();
   }
@@ -129,6 +142,9 @@ export class StatusReactionController {
       if (this.debouncePromise != null) {
         tasks.push(this.debouncePromise);
       }
+      if (this.retryPromise != null) {
+        tasks.push(this.retryPromise);
+      }
 
       if (tasks.length === 0) {
         return;
@@ -139,7 +155,7 @@ export class StatusReactionController {
   }
 
   private setDesiredEmoji(emoji: string): void {
-    if (this.terminalStatus != null || this.desiredEmoji === emoji) {
+    if (!this.enabled || this.terminalStatus != null || this.desiredEmoji === emoji) {
       return;
     }
 
@@ -207,6 +223,9 @@ export class StatusReactionController {
               this.desiredEmoji = this.appliedEmoji;
               return;
             }
+            // 即時再試行はレート制限（429）を叩き続けるため、回数比例で間を空ける
+            this.startTerminalRetryDelay(this.terminalRetryCount * TERMINAL_RETRY_BASE_DELAY_MS);
+            return;
           }
           this.triggerReconcile();
         } else {
@@ -266,6 +285,34 @@ export class StatusReactionController {
     if (this.desiredEmoji === expectedDesiredEmoji) {
       this.desiredEmoji = this.appliedEmoji;
     }
+  }
+
+  private startTerminalRetryDelay(delayMs: number): void {
+    // 旧タイマーの取り残し（早すぎる再試行・waitForCompletion の取りこぼし）を防ぐ
+    this.cancelRetryTimer();
+    this.retryPromise = new Promise<void>((resolve) => {
+      this.resolveRetry = resolve;
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
+        this.retryPromise = null;
+        this.resolveRetry = null;
+        this.triggerReconcile();
+        resolve();
+      }, delayMs);
+    });
+  }
+
+  private cancelRetryTimer(): void {
+    if (this.retryTimer == null) {
+      return;
+    }
+
+    clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.retryPromise = null;
+    const resolveRetry = this.resolveRetry;
+    this.resolveRetry = null;
+    resolveRetry?.();
   }
 
   private startDoneTimer(): void {

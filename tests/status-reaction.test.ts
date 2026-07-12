@@ -6,6 +6,7 @@ import {
   STATUS_EMOJI,
   StatusReactionController,
   TERMINAL_RECONCILE_MAX_RETRIES,
+  TERMINAL_RETRY_BASE_DELAY_MS,
   type ReactionAdapter,
 } from '../src/status-reaction.js';
 
@@ -372,7 +373,10 @@ describe('StatusReactionController', () => {
     await controller.waitForCompletion();
 
     controller.error();
-    await controller.waitForCompletion();
+    // terminal 再試行は回数比例のバックオフ付き（#104）
+    const completion = controller.waitForCompletion();
+    await vi.advanceTimersByTimeAsync(TERMINAL_RETRY_BASE_DELAY_MS);
+    await completion;
 
     expect(operations).toEqual([
       `add:${STATUS_EMOJI.thinking}`,
@@ -399,7 +403,10 @@ describe('StatusReactionController', () => {
     await controller.waitForCompletion();
 
     controller.error();
-    await controller.waitForCompletion();
+    const completion = controller.waitForCompletion();
+    // 回数比例バックオフ（1x + 2x + 3x）の合計以上を前進させる
+    await vi.advanceTimersByTimeAsync(TERMINAL_RETRY_BASE_DELAY_MS * 10);
+    await completion;
 
     // 1 initial + TERMINAL_RECONCILE_MAX_RETRIES retries
     const removeCalls = operations.filter((op) => op.startsWith('remove:'));
@@ -465,5 +472,22 @@ describe('StatusReactionController', () => {
       'message-1',
       STATUS_EMOJI.error,
     );
+  });
+  it('performs no reactions at all when disabled (#104)', async () => {
+    const adapter: ReactionAdapter = {
+      addReaction: vi.fn(async () => {}),
+      removeReaction: vi.fn(async () => {}),
+    };
+    const controller = new StatusReactionController(adapter, 'thread-1', 'message-1', undefined, undefined, false);
+
+    controller.setQueued();
+    controller.setThinking();
+    controller.setTool('userLookup');
+    controller.done();
+    controller.error();
+    await controller.waitForCompletion();
+
+    expect(adapter.addReaction).not.toHaveBeenCalled();
+    expect(adapter.removeReaction).not.toHaveBeenCalled();
   });
 });
