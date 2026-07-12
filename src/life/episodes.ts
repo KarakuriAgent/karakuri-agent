@@ -43,6 +43,8 @@ export interface EpisodeDraft {
   /** ビートごとの気分変化量（感情推移） */
   emotions: number[];
   provenance: number[];
+  /** ビート追加時に観測した importance/salience ラベルの最大値（low/medium/high）。確定時の importance に反映する */
+  maxImportanceLabel?: string | null | undefined;
 }
 
 export interface IEpisodeStore {
@@ -106,6 +108,7 @@ interface DraftRow {
   participants: string;
   emotions: string;
   provenance: string;
+  max_importance_label: string | null;
 }
 
 export class SqliteEpisodeStore implements IEpisodeStore {
@@ -282,14 +285,15 @@ export class SqliteEpisodeStore implements IEpisodeStore {
 
   async upsertDraft(draft: Omit<EpisodeDraft, 'id'>): Promise<void> {
     this.db.prepare(`
-      INSERT INTO episode_drafts (channel, thread_key, started_at, last_event_at, beats, participants, emotions, provenance)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO episode_drafts (channel, thread_key, started_at, last_event_at, beats, participants, emotions, provenance, max_importance_label)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (channel, thread_key) DO UPDATE SET
         last_event_at = excluded.last_event_at,
         beats = excluded.beats,
         participants = excluded.participants,
         emotions = excluded.emotions,
-        provenance = excluded.provenance
+        provenance = excluded.provenance,
+        max_importance_label = excluded.max_importance_label
     `).run(
       draft.channel,
       draft.threadKey,
@@ -299,6 +303,7 @@ export class SqliteEpisodeStore implements IEpisodeStore {
       JSON.stringify(draft.participants),
       JSON.stringify(draft.emotions),
       JSON.stringify(draft.provenance),
+      draft.maxImportanceLabel ?? null,
     );
     return Promise.resolve();
   }
@@ -344,6 +349,7 @@ function mapDraftRow(row: DraftRow): EpisodeDraft {
     participants: parseJsonArray(row.participants).filter((value): value is string => typeof value === 'string'),
     emotions: parseJsonArray(row.emotions).filter((value): value is number => typeof value === 'number'),
     provenance: parseJsonArray(row.provenance).filter((value): value is number => typeof value === 'number'),
+    maxImportanceLabel: row.max_importance_label,
   };
 }
 

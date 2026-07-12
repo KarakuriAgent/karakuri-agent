@@ -265,6 +265,14 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       CREATE INDEX idx_phone_unread_pending ON phone_unread(processed_at, thread_id, id);
     `,
   },
+  {
+    version: 10,
+    up: `
+      -- エピソード importance の経路修復（#100）: LLM の final_importance / salience は
+      -- close の瞬間以外にも出るため、ドラフトに最大ラベルを蓄積して確定時に反映する
+      ALTER TABLE episode_drafts ADD COLUMN max_importance_label TEXT;
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {

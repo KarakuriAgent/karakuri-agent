@@ -295,4 +295,163 @@ describe('SegmentationEngine', () => {
     });
     expect(await store.listDrafts()).toHaveLength(1);
   });
+
+  it('carries importance labels observed mid-draft into the finalized episode (#100)', async () => {
+    const { store, engine } = await createEngine();
+
+    // open 時に medium が観測される（従来は close 以外のラベルは捨てられていた）
+    await engine.handleEvent({
+      event: makeEvent({ receivedAt: new Date('2026-07-05T03:00:00.000Z') }),
+      guarded: makeGuarded({
+        segmentation: [{ target: 'action', decision: 'open', beat: '友達と偶然会った', final_importance: 'medium' }],
+      }),
+    });
+    // close にはラベルなし・感情もフラット
+    await engine.handleEvent({
+      event: makeEvent({ receivedAt: new Date('2026-07-05T04:00:00.000Z') }),
+      guarded: makeGuarded({
+        segmentation: [{ target: 'action', decision: 'close', final_body: '友達と偶然会って少し話した。' }],
+      }),
+    });
+
+    const episodes = await store.listRecent(1);
+    expect(episodes[0]!.importance).toBeCloseTo(0.6, 5);
+  });
+
+  it('uses appraisal salience as an importance floor (#100)', async () => {
+    const { store, engine } = await createEngine();
+
+    await engine.handleEvent({
+      event: makeEvent(),
+      guarded: makeGuarded({
+        salience: 'medium',
+        segmentation: [{ target: 'action', decision: 'open', beat: '珍しい出来事に遭遇した' }],
+      }),
+    });
+    await engine.handleEvent({
+      event: makeEvent({ receivedAt: new Date('2026-07-05T04:00:00.000Z') }),
+      guarded: makeGuarded({
+        salience: 'none',
+        segmentation: [{ target: 'action', decision: 'close', final_body: '珍しい出来事があった。' }],
+      }),
+    });
+
+    const episodes = await store.listRecent(1);
+    expect(episodes[0]!.importance).toBeCloseTo(0.6, 5);
+  });
+
+  it('falls back to the beat text for oneshot decisions without final_body (#100)', async () => {
+    const { store, engine } = await createEngine();
+    await engine.handleEvent({
+      event: makeEvent(),
+      guarded: makeGuarded({
+        segmentation: [{ target: 'action', decision: 'oneshot', beat: '虹を見た', final_importance: 'medium' }],
+      }),
+    });
+
+    expect(await store.count()).toBe(1);
+    const episodes = await store.listRecent(1);
+    expect(episodes[0]).toMatchObject({ body: '虹を見た' });
+    expect(episodes[0]!.importance).toBeCloseTo(0.6, 5);
+  });
+
+  it('demotes close decisions for nonexistent drafts to a oneshot when final_body exists (#100)', async () => {
+    const { store, engine } = await createEngine();
+    await engine.handleEvent({
+      event: makeEvent(),
+      guarded: makeGuarded({
+        segmentation: [{
+          target: 'action',
+          decision: 'close',
+          final_body: '長い散歩を終えて帰宅した。',
+          final_importance: 'medium',
+        }],
+      }),
+    });
+
+    expect(await store.count()).toBe(1);
+    const episodes = await store.listRecent(1);
+    expect(episodes[0]).toMatchObject({ body: '長い散歩を終えて帰宅した。' });
+    expect(episodes[0]!.importance).toBeCloseTo(0.6, 5);
+  });
+
+  it('still rejects close decisions for nonexistent drafts without final_body', async () => {
+    const { store, engine } = await createEngine();
+    await engine.handleEvent({
+      event: makeEvent(),
+      guarded: makeGuarded({
+        segmentation: [{ target: 'action', decision: 'close' }],
+      }),
+    });
+
+    expect(await store.count()).toBe(0);
+  });
+
+  it('does not double-record when a front rule already closed the thread in the same event (#100)', async () => {
+    const { store, engine } = await createEngine();
+
+    // 会話ドラフトを開く
+    await engine.handleEvent({
+      event: makeEvent({ actor: 'npc-1', payload: { notification: { kind: 'conversation_message' } } }),
+      guarded: makeGuarded({
+        segmentation: [{ target: 'conversation', decision: 'open', beat: 'npc-1 と話し始めた' }],
+      }),
+    });
+
+    // conversation_end イベント: 前段ルールが forceClose し、同一イベントの
+    // LLM close 判定（final_body あり）は oneshot へ降格してはならない
+    await engine.handleEvent({
+      event: makeEvent({
+        actor: 'npc-1',
+        receivedAt: new Date('2026-07-05T04:00:00.000Z'),
+        payload: { notification: { kind: 'conversation_ended' } },
+      }),
+      guarded: makeGuarded({
+        segmentation: [{
+          target: 'conversation',
+          decision: 'close',
+          final_body: 'npc-1 との会話を終えた。',
+        }],
+      }),
+    });
+
+    expect(await store.count()).toBe(1);
+  });
+
+  it('does not leak the closing importance label into the next draft on close_and_open (#100)', async () => {
+    const { store, engine } = await createEngine();
+
+    await engine.handleEvent({
+      event: makeEvent(),
+      guarded: makeGuarded({
+        segmentation: [{ target: 'action', decision: 'open', beat: '大事な出来事があった' }],
+      }),
+    });
+    await engine.handleEvent({
+      event: makeEvent({ receivedAt: new Date('2026-07-05T04:00:00.000Z') }),
+      guarded: makeGuarded({
+        segmentation: [{
+          target: 'action',
+          decision: 'close_and_open',
+          beat: '次の行動へ移った',
+          final_body: '大事な出来事を締めくくった。',
+          final_importance: 'high',
+        }],
+      }),
+    });
+    // 2 本目のドラフトを平凡なまま閉じる
+    await engine.handleEvent({
+      event: makeEvent({ receivedAt: new Date('2026-07-05T05:00:00.000Z') }),
+      guarded: makeGuarded({
+        segmentation: [{ target: 'action', decision: 'close', final_body: '特に何もなかった。' }],
+      }),
+    });
+
+    const episodes = await store.listRecent(2);
+    const closedFirst = episodes.find((episode) => episode.body === '大事な出来事を締めくくった。');
+    const closedSecond = episodes.find((episode) => episode.body === '特に何もなかった。');
+    expect(closedFirst!.importance).toBeCloseTo(0.9, 5);
+    // high ラベルが次のエピソードへ漏れない（salience low 由来の 0.3 のまま）
+    expect(closedSecond!.importance).toBeCloseTo(0.3, 5);
+  });
 });

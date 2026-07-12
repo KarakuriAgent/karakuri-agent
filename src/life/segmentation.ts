@@ -83,19 +83,25 @@ export class SegmentationEngine {
   async handleEvent({ event, eventId, guarded }: SegmentationEventInput): Promise<void> {
     const receivedAtIso = event.receivedAt.toISOString();
 
-    // 1. 前段ルール（決定論）
+    // 1. 前段ルール（決定論）。close 済みスレッドを記録し、同一イベント内の
+    // LLM close 判定が oneshot へ降格して二重記録しないようにする
+    const frontClosedThreads = new Set<string>();
     const rawKind = event.channel.startsWith('kw:') ? extractKwRawKindFromEvent(event) : null;
     const boundary = classifyKwBoundary(rawKind);
     if (guarded.sleep === 'fell_asleep') {
-      await this.closeAllDrafts(event.channel, receivedAtIso, guarded);
+      const closedKeys = await this.closeAllDrafts(event.channel, receivedAtIso, guarded);
+      for (const key of closedKeys) {
+        frontClosedThreads.add(key);
+      }
     } else if (boundary === 'conversation_end') {
       const threadKey = this.conversationThreadKey(event);
       await this.forceClose(event.channel, threadKey, receivedAtIso, guarded, 'conversation_end');
+      frontClosedThreads.add(threadKey);
     }
 
     // 2. LLM 判定（appraisal の segmentation 出力）
     for (const decision of guarded.segmentation) {
-      await this.applyDecision(event, eventId, guarded, decision, receivedAtIso);
+      await this.applyDecision(event, eventId, guarded, decision, receivedAtIso, frontClosedThreads);
     }
 
     // 3. 後段ガードレール: 最大ビート数 / 最大継続時間で強制 close
@@ -141,66 +147,98 @@ export class SegmentationEngine {
     guarded: GuardedAppraisal,
     decision: GuardedAppraisal['segmentation'][number],
     receivedAtIso: string,
+    frontClosedThreads: ReadonlySet<string>,
   ): Promise<void> {
     const threadKey = this.threadKeyFor(event, decision.target);
     const existing = await this.store.getDraft(event.channel, threadKey);
+    // ラベルはビート追加のたびに最大値を蓄積する（close の瞬間以外の
+    // final_importance / salience を捨てない — #100）
+    const observedLabel = maxImportanceLabel(decision.final_importance, salienceAsImportanceLabel(guarded.salience));
 
     switch (decision.decision) {
       case 'open': {
         if (existing != null) {
           // 既にドラフトがある場合は continue として扱う（重複 open の矯正）
-          await this.appendBeat(existing, event, eventId, guarded, decision.beat, receivedAtIso);
+          await this.appendBeat(existing, event, eventId, guarded, decision.beat, receivedAtIso, observedLabel);
           return;
         }
-        await this.openDraft(event, eventId, guarded, threadKey, decision.beat, receivedAtIso);
+        await this.openDraft(event, eventId, guarded, threadKey, decision.beat, receivedAtIso, observedLabel);
         return;
       }
       case 'continue': {
         if (existing == null) {
           // 存在しないドラフトへの判定: open として救済する（ビートを失わない）
-          await this.openDraft(event, eventId, guarded, threadKey, decision.beat, receivedAtIso);
+          await this.openDraft(event, eventId, guarded, threadKey, decision.beat, receivedAtIso, observedLabel);
           return;
         }
-        await this.appendBeat(existing, event, eventId, guarded, decision.beat, receivedAtIso);
+        await this.appendBeat(existing, event, eventId, guarded, decision.beat, receivedAtIso, observedLabel);
         return;
       }
       case 'close': {
         if (existing == null) {
+          // 前段ルールが同一イベント内で close 済みのスレッドは、同じ体験の
+          // 二重記録になるため降格しない
+          if (frontClosedThreads.has(threadKey)) {
+            logger.debug('Close decision skipped; thread already closed by front rule', { threadKey });
+            return;
+          }
+          // 存在しないドラフトへの close: final_body があれば oneshot 相当に
+          // 降格して確定する（記憶に値すると判定された内容を捨てない — #100）
+          const body = decision.final_body?.trim();
+          if (body != null && body.length > 0) {
+            await this.insertOneshot(event, eventId, guarded, body, observedLabel, receivedAtIso);
+            return;
+          }
           logger.debug('Close decision for a nonexistent draft rejected', { threadKey });
           return;
         }
-        await this.closeDraft(existing, event, eventId, guarded, decision, receivedAtIso);
+        await this.closeDraft(existing, event, eventId, guarded, decision, receivedAtIso, observedLabel);
         return;
       }
       case 'close_and_open': {
         if (existing != null) {
-          await this.closeDraft(existing, event, eventId, guarded, decision, receivedAtIso);
+          await this.closeDraft(existing, event, eventId, guarded, decision, receivedAtIso, observedLabel);
         }
-        await this.openDraft(event, eventId, guarded, threadKey, decision.beat, receivedAtIso);
+        // final_importance は close 側のエピソードを修飾するラベル。
+        // 新しいドラフトには salience 由来のぶんだけを種にする
+        await this.openDraft(event, eventId, guarded, threadKey, decision.beat, receivedAtIso, salienceAsImportanceLabel(guarded.salience));
         return;
       }
       case 'oneshot': {
-        const body = decision.final_body?.trim();
+        // final_body 欠落時は beat にフォールバックする（全棄却しない — #100）
+        const body = decision.final_body?.trim() || decision.beat?.trim();
         if (body == null || body.length === 0) {
-          logger.debug('Oneshot decision without final_body rejected');
+          logger.debug('Oneshot decision without final_body/beat rejected');
           return;
         }
-        const episodeId = await this.store.insert({
-          occurredAt: receivedAtIso,
-          channel: event.channel,
-          body,
-          importance: this.resolveImportance(decision.final_importance, [guarded.deltas.valence]),
-          emotion: { valenceDeltas: [guarded.deltas.valence] },
-          participants: event.actor != null ? [event.actor] : [],
-          provenance: eventId != null ? [eventId] : [],
-          procVersion: this.procVersion,
-        });
-        this.onEpisodeFinalized?.(episodeId, body);
+        await this.insertOneshot(event, eventId, guarded, body, observedLabel, receivedAtIso);
         return;
       }
       default:
         return;
     }
+  }
+
+  /** 単発イベントをそのままエピソードとして確定する（oneshot / close 降格の共通経路） */
+  private async insertOneshot(
+    event: NormalizedEvent,
+    eventId: number | undefined,
+    guarded: GuardedAppraisal,
+    body: string,
+    importanceLabel: string | null,
+    receivedAtIso: string,
+  ): Promise<void> {
+    const episodeId = await this.store.insert({
+      occurredAt: receivedAtIso,
+      channel: event.channel,
+      body,
+      importance: this.resolveImportance(importanceLabel, [guarded.deltas.valence]),
+      emotion: { valenceDeltas: [guarded.deltas.valence] },
+      participants: event.actor != null ? [event.actor] : [],
+      provenance: eventId != null ? [eventId] : [],
+      procVersion: this.procVersion,
+    });
+    this.onEpisodeFinalized?.(episodeId, body);
   }
 
   private async openDraft(
@@ -210,6 +248,7 @@ export class SegmentationEngine {
     threadKey: string,
     beat: string | undefined,
     receivedAtIso: string,
+    importanceLabel: string | null,
   ): Promise<void> {
     const beatText = beat?.trim();
     if (beatText == null || beatText.length === 0) {
@@ -225,6 +264,7 @@ export class SegmentationEngine {
       participants: event.actor != null ? [event.actor] : [],
       emotions: [guarded.deltas.valence],
       provenance: eventId != null ? [eventId] : [],
+      maxImportanceLabel: importanceLabel,
     });
   }
 
@@ -235,6 +275,7 @@ export class SegmentationEngine {
     guarded: GuardedAppraisal,
     beat: string | undefined,
     receivedAtIso: string,
+    importanceLabel: string | null,
   ): Promise<void> {
     const beatText = beat?.trim();
     await this.store.upsertDraft({
@@ -249,6 +290,7 @@ export class SegmentationEngine {
       participants: mergeParticipants(draft.participants, event.actor),
       emotions: [...draft.emotions, guarded.deltas.valence],
       provenance: eventId != null ? [...draft.provenance, eventId] : draft.provenance,
+      maxImportanceLabel: maxImportanceLabel(draft.maxImportanceLabel, importanceLabel),
     });
   }
 
@@ -259,6 +301,7 @@ export class SegmentationEngine {
     guarded: GuardedAppraisal,
     decision: GuardedAppraisal['segmentation'][number],
     receivedAtIso: string,
+    importanceLabel: string | null,
   ): Promise<void> {
     const withFinalBeat: EpisodeDraft = {
       ...draft,
@@ -273,16 +316,20 @@ export class SegmentationEngine {
     await this.finalizeDraft(
       withFinalBeat,
       body != null && body.length > 0 ? body : buildMechanicalBody(withFinalBeat),
-      decision.final_importance ?? null,
+      importanceLabel,
       receivedAtIso,
     );
   }
 
-  private async closeAllDrafts(channel: string, receivedAtIso: string, _guarded: GuardedAppraisal): Promise<void> {
+  /** チャネルの全ドラフトを機械的に close し、閉じた threadKey 列を返す */
+  private async closeAllDrafts(channel: string, receivedAtIso: string, _guarded: GuardedAppraisal): Promise<string[]> {
     const drafts = await this.store.listDrafts();
+    const closed: string[] = [];
     for (const draft of drafts.filter((candidate) => candidate.channel === channel)) {
       await this.finalizeDraft(draft, buildMechanicalBody(draft), null, receivedAtIso);
+      closed.push(draft.threadKey);
     }
+    return closed;
   }
 
   private async forceClose(
@@ -324,7 +371,11 @@ export class SegmentationEngine {
     importanceLabel: string | null,
     _closedAtIso: string,
   ): Promise<void> {
-    const importance = this.resolveImportance(importanceLabel, draft.emotions);
+    // ドラフトに蓄積した最大ラベル（過去ビートの final_importance / salience）も反映する
+    const importance = this.resolveImportance(
+      maxImportanceLabel(draft.maxImportanceLabel, importanceLabel),
+      draft.emotions,
+    );
     const episodeId = await this.store.insert({
       occurredAt: draft.startedAt,
       channel: draft.channel,
@@ -357,6 +408,28 @@ function mergeParticipants(participants: string[], actor: string | undefined): s
     return participants;
   }
   return [...participants, actor];
+}
+
+const IMPORTANCE_LABEL_RANK: Record<string, number> = { low: 1, medium: 2, high: 3 };
+
+/** low/medium/high のうち最大のラベルを返す（未知のラベル・null は無視） */
+function maxImportanceLabel(...labels: Array<string | null | undefined>): string | null {
+  let best: string | null = null;
+  for (const label of labels) {
+    if (label == null) {
+      continue;
+    }
+    const rank = IMPORTANCE_LABEL_RANK[label];
+    if (rank != null && (best == null || rank > IMPORTANCE_LABEL_RANK[best]!)) {
+      best = label;
+    }
+  }
+  return best;
+}
+
+/** appraisal の salience を importance ラベルの floor として扱う（none は寄与しない） */
+function salienceAsImportanceLabel(salience: GuardedAppraisal['salience']): string | null {
+  return salience === 'none' ? null : salience;
 }
 
 /** LLM を介さない機械的な確定本文（強制 close・クラッシュ回復用） */

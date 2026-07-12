@@ -6,7 +6,9 @@
  * LIFE_TUNING_VERSION を上げること。
  */
 
-export const LIFE_TUNING_VERSION = 'tuning-v1';
+// v2: importance ラベル/salience のドラフト蓄積を確定時の importance に反映（#100）、
+//     valence の同符号ソフトサチュレーション（#102）
+export const LIFE_TUNING_VERSION = 'tuning-v2';
 
 export interface LifeTuning {
   valenceHalfLifeHours: number;
