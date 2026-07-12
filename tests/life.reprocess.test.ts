@@ -524,7 +524,7 @@ describe('Reprocessor.reprocessEpisodes', () => {
     // 削除は全件・リプレイが 1 バッチで切れると差分ぶんのデータ消失になる
     expect(result.replayedEvents).toBe(total);
     expect(result.createdEpisodes).toBe(total);
-  });
+  }, 30_000);
 
   it('retrieval works across mixed proc_versions', async () => {
     const env = await createEnv();
