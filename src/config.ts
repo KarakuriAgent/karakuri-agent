@@ -70,6 +70,7 @@ const configSchema = z.object({
   reportChannelId: z.string().trim().min(1).optional(),
   adminUserIds: z.string().optional(),
   karakuriWorldBotIds: z.string().optional(),
+  agentSelfNames: z.string().optional(),
   llmEnableThinking: z.string().trim().optional(),
   llmDisableThinkingRequestParam: z.string().trim().optional(),
   kwPerceptionBufferEnabled: z.string().trim().optional(),
@@ -196,6 +197,8 @@ export interface Config {
   reportChannelId?: string | undefined;
   adminUserIds?: string[] | undefined;
   karakuriWorldBotIds?: string[] | undefined;
+  /** 自己を指す別名（エージェント名など）。relations の自己 ID 正規化に使う（#106） */
+  agentSelfNames?: string[] | undefined;
   llmEnableThinking: boolean;
   /** OpenAI 互換サーバー固有の `enable_thinking: false` リクエストパラメータを送る */
   llmDisableThinkingRequestParam: boolean;
@@ -299,6 +302,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     reportChannelId: normalizeOptionalString(env.REPORT_CHANNEL_ID),
     adminUserIds: env.ADMIN_USER_IDS,
     karakuriWorldBotIds: env.KARAKURI_WORLD_BOT_IDS,
+    agentSelfNames: env.AGENT_SELF_NAMES,
     llmEnableThinking: env.LLM_ENABLE_THINKING,
     llmDisableThinkingRequestParam: env.LLM_DISABLE_THINKING_REQUEST_PARAM,
     kwPerceptionBufferEnabled: env.KW_PERCEPTION_BUFFER_ENABLED,
@@ -490,6 +494,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       reportChannelId,
       adminUserIds: parseIdList(parsed.adminUserIds),
       karakuriWorldBotIds,
+      agentSelfNames: parseIdList(parsed.agentSelfNames),
       ...(karakuriWorld != null ? { karakuriWorld } : {}),
       worldActionCommands,
       snsRateLimits,

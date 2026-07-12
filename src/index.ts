@@ -11,7 +11,7 @@ import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from '
 import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import { SqliteActionLedgerStore } from './life/action-ledger.js';
-import { AppraisalService, SqliteAppraisalLogStore } from './life/appraisal.js';
+import { AppraisalService, buildSelfLabelSet, SqliteAppraisalLogStore } from './life/appraisal.js';
 import { SqliteBeliefStore } from './life/beliefs.js';
 import { openLifeDatabase } from './life/db.js';
 import { SqliteNarrativeStore } from './life/narratives.js';
@@ -22,7 +22,7 @@ import { EpisodeEmbeddingIndex, OpenAiEmbeddingProvider } from './life/embedding
 import { SqliteEpisodeStore } from './life/episodes.js';
 import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
 import { SqliteProspectStore } from './life/prospects.js';
-import { SqliteRelationStore } from './life/relations.js';
+import { migrateRelationVocabularyOnce, SqliteRelationStore } from './life/relations.js';
 import { EpisodeRetrievalService } from './life/retrieval.js';
 import { applyTraitsToTuning, loadTraits, satiationThresholdFor } from './life/traits.js';
 import { getLifeMeta, setLifeMeta } from './life/db.js';
@@ -216,6 +216,18 @@ async function main(): Promise<void> {
   } catch (error) {
     logger.warn('Legacy alias migration failed (continuing startup)', error);
   }
+  // #106: 自由記述の関係ラベルを制御語彙へ、自己の表記ゆらぎを 'self' へ一度だけ移行する
+  try {
+    const migration = migrateRelationVocabularyOnce(lifeDb, {
+      selfLabels: buildSelfLabelSet(config.agentSelfNames ?? []),
+      procVersion: 'relation-vocab-migration-v1',
+    });
+    if (migration != null && (migration.rewritten > 0 || migration.merged > 0)) {
+      logger.info('Relation vocabulary migration applied', migration);
+    }
+  } catch (error) {
+    logger.warn('Relation vocabulary migration failed (continuing startup)', error);
+  }
   try {
     await importSeedMemories({
       db: lifeDb,
@@ -291,6 +303,7 @@ async function main(): Promise<void> {
           segmentation: segmentationEngine,
           prospectStore,
           relationStore,
+          ...(config.agentSelfNames != null ? { selfAliases: config.agentSelfNames } : {}),
           tuning: lifeTuning,
           ...(messageSink != null ? { messageSink } : {}),
           ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),

@@ -20,6 +20,67 @@ const STRENGTH_INCREMENT = 0.1;
 /** affect は指数移動平均で累積する */
 const AFFECT_SMOOTHING = 0.3;
 
+/**
+ * 関係の制御語彙（#106）。「継続的な関係の種類」だけを持ち、1 回の行為の説明
+ * （"is chatting with" 等）は関係にしない。実機で 75 エッジに 60 種以上の
+ * 自由記述が発生し UNIQUE(subject, relation, object) の観測累積が機能しなかった
+ * 問題への対応。写像にない表現は acquaintance に落とす（情報の残滓は
+ * experience_log にあり、写像改善は reprocessing / 再移行で遡及できる）。
+ */
+export const RELATION_VOCABULARY = [
+  'acquaintance',
+  'friend',
+  'close_friend',
+  'family',
+  'housemate',
+  'coworker',
+  'rival',
+  'dislikes',
+] as const;
+
+const RELATION_VOCABULARY_SET = new Set<string>(RELATION_VOCABULARY);
+
+const RELATION_LABEL_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/housemate|cohabit|shared?[_ ]home|roommate|同居|ルームメイト/i, 'housemate'],
+  [/close[_ ]?friend|best[_ ]?friend|親友/i, 'close_friend'],
+  [/family|家族|親子|兄弟|姉妹|きょうだい/i, 'family'],
+  [/coworker|colleague|同僚|仕事仲間/i, 'coworker'],
+  [/rival|competitor|ライバル|競争相手/i, 'rival'],
+  [/dislike|dismissive|hostile|hate|unfriendly|unkind|敵対|嫌い|険悪|不仲/i, 'dislikes'],
+  [/friend|friendly|goodwill|仲良|友人|友達|好意/i, 'friend'],
+];
+
+/**
+ * 否定表現の検出: 「友好的ではない」等が positive パターンの部分一致で
+ * friend へ反転しないよう、positive 写像の前に中立へ落とす
+ */
+const NEGATED_LABEL_PATTERN = /ではない|でない|くない|\bnot\b|\bno longer\b/i;
+
+/** 自由記述の関係ラベルを制御語彙へ写像する（決定論。写像にないものは acquaintance） */
+export function normalizeRelationLabel(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === ALIAS_RELATION) {
+    return ALIAS_RELATION;
+  }
+  if (RELATION_VOCABULARY_SET.has(trimmed)) {
+    return trimmed;
+  }
+  // 明確な敵対・嫌悪（friend 以外）は否定検査より先に判定する
+  for (const [pattern, vocabulary] of RELATION_LABEL_PATTERNS) {
+    if (vocabulary !== 'friend' && pattern.test(trimmed)) {
+      return vocabulary;
+    }
+  }
+  if (NEGATED_LABEL_PATTERN.test(trimmed)) {
+    return 'acquaintance';
+  }
+  const friendEntry = RELATION_LABEL_PATTERNS.find(([, vocabulary]) => vocabulary === 'friend');
+  if (friendEntry != null && friendEntry[0].test(trimmed)) {
+    return 'friend';
+  }
+  return 'acquaintance';
+}
+
 export interface RelationEdge {
   id: number;
   subjectId: string;
@@ -197,6 +258,103 @@ export class SqliteRelationStore implements IRelationStore {
 
     return Promise.resolve();
   }
+}
+
+const RELATION_VOCAB_MIGRATED_KEY = 'relation_vocab_migrated';
+
+/**
+ * 既存 relations 行の一括移行（#106・一度だけ）: 自由記述の relation を制御語彙へ、
+ * 自己を指す表記ゆらぎ（エージェント名・agent 等）を 'self' へ正規化し、
+ * 統合で衝突する行は strength 合算（上限 1）・affect 加重平均・observed_at 最新・
+ * provenance 和集合で 1 行にまとめる。alias_of エッジは対象外。
+ */
+export function migrateRelationVocabularyOnce(
+  db: Database.Database,
+  options: { selfLabels: ReadonlySet<string>; procVersion: string },
+): { merged: number; rewritten: number } | null {
+  const migratedAt = db.prepare<[string], { value: string }>('SELECT value FROM life_meta WHERE key = ?')
+    .get(RELATION_VOCAB_MIGRATED_KEY);
+  if (migratedAt != null) {
+    return null;
+  }
+
+  const normalizeParty = (label: string): string =>
+    options.selfLabels.has(label.trim().toLowerCase()) ? 'self' : label.trim();
+
+  const rows = db.prepare<[], RelationRow>('SELECT * FROM relations').all();
+  const groups = new Map<string, { subject: string; relation: string; object: string; rows: RelationRow[] }>();
+  let rewritten = 0;
+  for (const row of rows) {
+    if (row.relation === ALIAS_RELATION) {
+      continue;
+    }
+    const subject = normalizeParty(row.subject_id);
+    const object = normalizeParty(row.object_id);
+    const relation = normalizeRelationLabel(row.relation);
+    if (subject !== row.subject_id || object !== row.object_id || relation !== row.relation) {
+      rewritten += 1;
+    }
+    const key = JSON.stringify([subject, relation, object]);
+    const group = groups.get(key);
+    if (group != null) {
+      group.rows.push(row);
+    } else {
+      groups.set(key, { subject, relation, object, rows: [row] });
+    }
+  }
+
+  let merged = 0;
+  const run = db.transaction(() => {
+    for (const { subject, relation, object, rows: group } of groups.values()) {
+      const unchanged = group.length === 1
+        && group[0]!.subject_id === subject
+        && group[0]!.relation === relation
+        && group[0]!.object_id === object;
+      if (unchanged) {
+        continue;
+      }
+      // strength 合算（上限 1）・affect は strength による加重平均・observed_at 最新
+      let strengthSum = 0;
+      let affectWeighted = 0;
+      let affectWeight = 0;
+      let latestObservedAt = '';
+      const provenance: number[] = [];
+      for (const row of group) {
+        const strength = row.strength ?? 0;
+        strengthSum += strength;
+        if (row.affect != null) {
+          const weight = Math.max(strength, 0.01);
+          affectWeighted += row.affect * weight;
+          affectWeight += weight;
+        }
+        if (row.observed_at > latestObservedAt) {
+          latestObservedAt = row.observed_at;
+        }
+        provenance.push(...parseNumberArray(row.provenance));
+      }
+      db.prepare(`DELETE FROM relations WHERE id IN (${group.map(() => '?').join(',')})`)
+        .run(...group.map((row) => row.id));
+      db.prepare(`
+        INSERT INTO relations (subject_id, relation, object_id, strength, affect, observed_at, provenance, proc_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        subject,
+        relation,
+        object,
+        Math.min(1, strengthSum),
+        affectWeight > 0 ? affectWeighted / affectWeight : null,
+        latestObservedAt,
+        JSON.stringify([...new Set(provenance)].slice(-50)),
+        options.procVersion,
+      );
+      merged += group.length > 1 ? group.length : 0;
+    }
+    db.prepare('INSERT OR REPLACE INTO life_meta (key, value) VALUES (?, ?)')
+      .run(RELATION_VOCAB_MIGRATED_KEY, new Date().toISOString());
+  });
+  run();
+  logger.info('Relation vocabulary migrated', { rewritten, merged });
+  return { merged, rewritten };
 }
 
 function mapRow(row: RelationRow): RelationEdge {

@@ -34,7 +34,7 @@ import {
 import { openLifeDatabase } from './db.js';
 import { classifyKwBoundary, detectKwSleepActionStart, extractKwRawKindFromEvent } from './normalize.js';
 import type { IProspectStore } from './prospects.js';
-import type { IRelationStore } from './relations.js';
+import { normalizeRelationLabel, RELATION_VOCABULARY, type IRelationStore } from './relations.js';
 import type { SegmentationEngine } from './segmentation.js';
 import { LIFE_TUNING, type LifeTuning } from './tuning.js';
 import type { NormalizedEvent } from './types.js';
@@ -168,14 +168,28 @@ export function applyAppraisalGuardrails(
     socialDelta /= 2;
   }
 
-  const relationCandidates = output.relation_candidates.filter((candidate) => {
-    const texts = [candidate.subject, candidate.relation, candidate.object, candidate.note ?? ''];
-    const declarative = texts.every((text) => text.length === 0 || isDeclarativeText(text));
-    if (!declarative) {
-      rejections.push(`relation candidate rejected as non-declarative: ${candidate.relation}`);
-    }
-    return declarative;
-  });
+  const relationCandidates = output.relation_candidates
+    .filter((candidate) => {
+      const texts = [candidate.subject, candidate.relation, candidate.object, candidate.note ?? ''];
+      const declarative = texts.every((text) => text.length === 0 || isDeclarativeText(text));
+      if (!declarative) {
+        rejections.push(`relation candidate rejected as non-declarative: ${candidate.relation}`);
+      }
+      return declarative;
+    })
+    // 関係ラベルの制御語彙化（#106）: 自由記述は UNIQUE の観測累積を壊すため、
+    // 決定論の写像で語彙へ落とす。元の表現は note に退避する
+    .map((candidate) => {
+      const vocabulary = normalizeRelationLabel(candidate.relation);
+      if (vocabulary === candidate.relation) {
+        return candidate;
+      }
+      return {
+        ...candidate,
+        relation: vocabulary,
+        note: candidate.note != null ? `${candidate.relation} / ${candidate.note}` : candidate.relation,
+      };
+    });
 
   const prospectCandidates = output.prospect_candidates.filter((candidate) => {
     const declarative = isDeclarativeText(candidate.body)
@@ -418,7 +432,7 @@ export async function appraiseEvent({
     '- valence_delta, energy_delta, hunger_delta, social_delta: each one of "large_down" | "down" | "small_down" | "none" | "small_up" | "up" | "large_up"',
     '- sleep: "fell_asleep" | "woke_up" | "no_change"',
     '- salience: "none" | "low" | "medium" | "high"',
-    '- relation_candidates: array of objects {subject, relation, object, note?} (all strings)',
+    `- relation_candidates: array of objects {subject, relation, object, note?}; relation must be one of ${RELATION_VOCABULARY.map((label) => `"${label}"`).join(' | ')} — the enduring TYPE of relationship, never a description of this event (put event details in note)`,
     '- prospect_candidates: array of objects {kind: "promise" | "intention" | "goal", body, counterpart?, due_at?}',
     '- segmentation: array of objects {target: "action" | "conversation", decision: "open" | "continue" | "close" | "close_and_open" | "oneshot", beat?, final_body?, final_importance?: "low" | "medium" | "high"}',
     '- Never rename keys or invent enum values (e.g. "slight_up" is invalid — use "small_up").',
@@ -504,6 +518,8 @@ export interface AppraisalServiceOptions {
   prospectStore?: IProspectStore | undefined;
   /** M6: 関係グラフ。設定時は appraisal の relation_candidates を観測として累積する */
   relationStore?: IRelationStore | undefined;
+  /** 自己を指す別名（エージェント名など）。relation の主語/目的語を 'self' へ正規化する（#106） */
+  selfAliases?: readonly string[] | undefined;
 }
 
 interface DailyStats {
@@ -521,8 +537,11 @@ interface DailyStats {
 export class AppraisalService {
   private tail: Promise<void> = Promise.resolve();
   private stats: DailyStats | null = null;
+  private readonly selfLabels: ReadonlySet<string>;
 
-  constructor(private readonly options: AppraisalServiceOptions) {}
+  constructor(private readonly options: AppraisalServiceOptions) {
+    this.selfLabels = buildSelfLabelSet(options.selfAliases ?? []);
+  }
 
   /**
    * イベントを appraisal キューへ追加する。返り値の Promise は
@@ -665,9 +684,9 @@ export class AppraisalService {
         for (const candidate of guarded.relationCandidates) {
           try {
             await this.options.relationStore.observe({
-              subjectId: normalizeSelfId(candidate.subject, event.actor),
+              subjectId: normalizeSelfId(candidate.subject, event.actor, this.selfLabels),
               relation: candidate.relation,
-              objectId: normalizeSelfId(candidate.object, event.actor),
+              objectId: normalizeSelfId(candidate.object, event.actor, this.selfLabels),
               affect: guarded.deltas.valence,
               observedAt: event.receivedAt,
               provenance: eventId != null ? [eventId] : [],
@@ -788,12 +807,23 @@ export class AppraisalService {
   }
 }
 
-const SELF_LABELS = new Set(['self', 'me', 'i', '自分', 'わたし', '私', 'エージェント']);
+const SELF_LABELS = new Set(['self', 'me', 'i', 'agent', '自分', 'わたし', '私', 'エージェント']);
+
+/**
+ * 自己判定ラベル集合（#106）: 既定の一般語に加えて、エージェント名などの
+ * 別名（config の AGENT_SELF_NAMES）を合成する。比較は小文字化して行う
+ */
+export function buildSelfLabelSet(aliases: readonly string[] = []): ReadonlySet<string> {
+  return new Set([
+    ...SELF_LABELS,
+    ...aliases.map((alias) => alias.trim().toLowerCase()).filter((alias) => alias.length > 0),
+  ]);
+}
 
 /** LLM の出す主語/目的語を正規化する。自分を指す語は 'self'、イベントの相手を指す語は actor ID を優先 */
-function normalizeSelfId(label: string, eventActor: string | undefined): string {
+function normalizeSelfId(label: string, eventActor: string | undefined, selfLabels: ReadonlySet<string> = SELF_LABELS): string {
   const normalized = label.trim();
-  if (SELF_LABELS.has(normalized.toLowerCase())) {
+  if (selfLabels.has(normalized.toLowerCase())) {
     return 'self';
   }
   // 相手そのものを指しているなら規約 ID に寄せる（ID の突合は alias_of / reprocessing で改善可能）

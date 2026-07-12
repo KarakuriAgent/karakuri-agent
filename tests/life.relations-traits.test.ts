@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { extractPostTopics } from '../src/agent/tools/sns.js';
-import { SqliteRelationStore } from '../src/life/relations.js';
+import { buildSelfLabelSet } from '../src/life/appraisal.js';
+import { openLifeDatabase } from '../src/life/db.js';
+import { migrateRelationVocabularyOnce, normalizeRelationLabel, SqliteRelationStore } from '../src/life/relations.js';
 import { applyTraitsToTuning, DEFAULT_TRAITS, loadTraits, satiationThresholdFor } from '../src/life/traits.js';
 import { LIFE_TUNING } from '../src/life/tuning.js';
 import { decayInnerState, type InnerState } from '../src/life/inner-state.js';
@@ -106,6 +108,61 @@ describe('SqliteRelationStore', () => {
 
     const twoHops = await store.neighbors('sns:mastodon:b-acct', 2);
     expect(twoHops).toEqual(expect.arrayContaining(['kw:agent:agent-b', 'kw:agent:agent-c']));
+  });
+});
+
+describe('relation vocabulary (#106)', () => {
+  it('maps free-text relation labels onto the controlled vocabulary', () => {
+    expect(normalizeRelationLabel('friendly')).toBe('friend');
+    expect(normalizeRelationLabel('is having a technical conversation with')).toBe('acquaintance');
+    expect(normalizeRelationLabel('cohabits_with')).toBe('housemate');
+    expect(normalizeRelationLabel('dismissive towards')).toBe('dislikes');
+    expect(normalizeRelationLabel('acquaintance')).toBe('acquaintance');
+    expect(normalizeRelationLabel('alias_of')).toBe('alias_of');
+  });
+
+  it('does not invert negated positive labels into friend (#106)', () => {
+    expect(normalizeRelationLabel('unfriendly towards')).toBe('dislikes');
+    expect(normalizeRelationLabel('友好的ではない')).toBe('acquaintance');
+    expect(normalizeRelationLabel('is not a friend of')).toBe('acquaintance');
+    expect(normalizeRelationLabel('仲良くない')).toBe('acquaintance');
+  });
+
+  it('migrates existing rows once: vocabulary mapping, self-id unification, edge merging', async () => {
+    const dataDir = await createDataDir();
+    const db = openLifeDatabase({ dataDir });
+    cleanups.push(async () => {
+      if (db.open) {
+        db.close();
+      }
+    });
+    const insert = db.prepare(`
+      INSERT INTO relations (subject_id, relation, object_id, strength, affect, observed_at, provenance, proc_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    // 実機で観測された分裂パターン: 自己 3 表記 × 会話系の自由記述
+    insert.run('ちび花音', 'is chatting with', 'kbx-100', 0.2, 0.1, '2026-07-10T00:00:00.000Z', '[1]', 'v1');
+    insert.run('agent', 'is conversing with', 'kbx-100', 0.3, 0.2, '2026-07-11T00:00:00.000Z', '[2]', 'v1');
+    insert.run('Agent', 'had a conversation with', 'kbx-100', 0.1, null, '2026-07-12T00:00:00.000Z', '[3]', 'v1');
+    insert.run('kbx-001', 'alias_of', 'discord:1', 0.1, null, '2026-07-10T00:00:00.000Z', '[]', 'v1');
+
+    const result = migrateRelationVocabularyOnce(db, {
+      selfLabels: buildSelfLabelSet(['ちび花音']),
+      procVersion: 'migration-test',
+    });
+
+    expect(result).not.toBeNull();
+    const rows = db.prepare("SELECT * FROM relations WHERE relation != 'alias_of'").all() as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ subject_id: 'self', relation: 'acquaintance', object_id: 'kbx-100' });
+    // strength は合算（0.2+0.3+0.1=0.6）、observed_at は最新
+    expect(rows[0]!['strength']).toBeCloseTo(0.6, 5);
+    expect(rows[0]!['observed_at']).toBe('2026-07-12T00:00:00.000Z');
+    // alias_of は対象外
+    expect(db.prepare("SELECT COUNT(*) AS n FROM relations WHERE relation = 'alias_of'").get()).toMatchObject({ n: 1 });
+
+    // 2 回目は no-op
+    expect(migrateRelationVocabularyOnce(db, { selfLabels: buildSelfLabelSet(), procVersion: 'x' })).toBeNull();
   });
 });
 
