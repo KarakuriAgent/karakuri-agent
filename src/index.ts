@@ -1,4 +1,6 @@
+import { existsSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
@@ -10,6 +12,7 @@ import { loadConfig, resolveWriteRateLimits, type Config } from './config.js';
 import { createConfiguredOpenAiModelFactory, type OpenAiProviderOptions } from './llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-thinking-fetch.js';
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
+import type { IMessageSink } from './scheduler/types.js';
 import { SqliteActionLedgerStore } from './life/action-ledger.js';
 import { AppraisalService, buildSelfLabelSet, SqliteAppraisalLogStore } from './life/appraisal.js';
 import { SqliteBeliefStore } from './life/beliefs.js';
@@ -17,14 +20,14 @@ import { openLifeDatabase } from './life/db.js';
 import { SqliteNarrativeStore } from './life/narratives.js';
 import { buildReflectionProcVersion, ReflectionEngine } from './life/reflection.js';
 import { ReflectionRunner } from './life/reflection-runner.js';
-import { importLegacyStores, importSeedMemories } from './life/seed.js';
+import { importLegacyStores, importSeedMemories, SEED_MEMORIES_FILE } from './life/seed.js';
 import { EpisodeEmbeddingIndex, OpenAiEmbeddingProvider } from './life/embeddings.js';
 import { SqliteEpisodeStore } from './life/episodes.js';
 import { InnerStateService, SqliteInnerStateStore } from './life/inner-state.js';
 import { SqliteProspectStore } from './life/prospects.js';
 import { migrateRelationVocabularyOnce, SqliteRelationStore } from './life/relations.js';
 import { EpisodeRetrievalService } from './life/retrieval.js';
-import { applyTraitsToTuning, loadTraits, satiationThresholdFor } from './life/traits.js';
+import { applyTraitsToTuning, loadTraits, satiationThresholdFor, TRAITS_FILE } from './life/traits.js';
 import { getLifeMeta, setLifeMeta } from './life/db.js';
 import { SegmentationEngine } from './life/segmentation.js';
 import { buildAppraisalProcVersion } from './life/tuning.js';
@@ -134,6 +137,14 @@ async function main(): Promise<void> {
       logger,
     );
   }
+  // #108: 人格系ファイルの欠落を可視化する（従来は無言スキップで気づけなかった）。
+  // ログは毎回、report 通知は初回のみ（life_meta マーカー）
+  reportMissingPersonaFiles({
+    db: lifeDb,
+    config,
+    messageSink,
+  });
+
   // M1: 知覚分離（Perception Buffer）と反復対策（action_ledger + Loop Detector）
   const perceptionBuffer = new PerceptionBuffer();
   const loopDetector = new LoopDetector({ threshold: config.loopDetectorThreshold });
@@ -681,6 +692,47 @@ function closeServer(server: Server): Promise<void> {
       resolve();
     });
   });
+}
+
+/**
+ * 人格系ファイル（traits.json / seed-memories.json / HEARTBEAT.md）の欠落可視化（#108）。
+ * どれも「あれば使う」ファイルで欠落は正常系だが、旧 data/ ディレクトリの引き継ぎで
+ * 新ファイルが入っていないことに気づけない事故が実機で起きたため、状態を明示する。
+ */
+function reportMissingPersonaFiles({ db, config, messageSink }: {
+  db: import('better-sqlite3').Database;
+  config: Config;
+  messageSink: IMessageSink | undefined;
+}): void {
+  const missing: string[] = [];
+  if (!existsSync(join(config.dataDir, TRAITS_FILE))) {
+    logger.info('traits.json not found; using default traits (all coefficients = 1)', { dataDir: config.dataDir });
+    missing.push(`- ${TRAITS_FILE}: 気質はデフォルト値（全係数 1）で稼働します`);
+  }
+  if (!existsSync(join(config.dataDir, SEED_MEMORIES_FILE)) && getLifeMeta(db, 'seed_imported') == null) {
+    logger.info('seed-memories.json not found and no seed has been imported; starting with a blank identity', { dataDir: config.dataDir });
+    missing.push(`- ${SEED_MEMORIES_FILE}: seed 記憶なし（自己認識の白紙スタート）。後から置けば次回起動時に一度だけ取り込まれます`);
+  }
+  const hasPostChannels = (config.postMessageChannelIds?.length ?? 0) > 0;
+  if (hasPostChannels && !existsSync(join(config.dataDir, 'HEARTBEAT.md'))) {
+    logger.info('HEARTBEAT.md not found; heartbeat is disabled', { dataDir: config.dataDir });
+    missing.push('- HEARTBEAT.md: heartbeat は無効です（ファイルを置けば有効化されます）');
+  }
+  if (missing.length === 0) {
+    return;
+  }
+  // report 通知は初回のみ（毎起動でうるさくしない）
+  const NOTICE_KEY = 'persona_files_notice_sent';
+  if (getLifeMeta(db, NOTICE_KEY) != null) {
+    return;
+  }
+  setLifeMeta(db, NOTICE_KEY, new Date().toISOString());
+  void reportSafely(
+    messageSink,
+    config.reportChannelId,
+    `ℹ️ 人格系ファイルが見つかりません（data.example/ に雛形があります）:\n${missing.join('\n')}`,
+    logger,
+  );
 }
 
 if (process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href) {

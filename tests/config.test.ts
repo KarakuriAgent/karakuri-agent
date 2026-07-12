@@ -676,4 +676,22 @@ describe('loadConfig', () => {
       PORT: '65536',
     })).toThrow('Invalid configuration');
   });
+
+  it('parses AGENT_SELF_NAMES into agentSelfNames (#106)', () => {
+    const config = loadConfig({
+      ...validEnv,
+      AGENT_SELF_NAMES: 'ちび花音, kanon',
+    });
+    expect(config.agentSelfNames).toEqual(['ちび花音', 'kanon']);
+  });
+
+  it('warns about deprecated env vars without failing (#108)', () => {
+    // 廃止変数が設定されていても起動は成功する（警告のみ）
+    const config = loadConfig({
+      ...validEnv,
+      SNS_LOOP_MIN_INTERVAL_MINUTES: '240',
+      SNS_PROVIDER: 'mastodon',
+    });
+    expect(config.llmModel).toBe('openai/gpt-4o');
+  });
 });

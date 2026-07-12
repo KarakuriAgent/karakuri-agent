@@ -244,8 +244,27 @@ function assertValidTimezone(timezone: string): void {
   }
 }
 
+/**
+ * 廃止済み env の検出（#108）: 設定されていても効果が無い変数を起動時に警告する。
+ * 「設定したのに効かない」を無言にしない
+ */
+const DEPRECATED_ENV_KEYS: Record<string, string> = {
+  SNS_PROVIDER: 'Multi provider 化で廃止。MASTODON_* / X_* / ELYTH_* を使う',
+  SNS_LOOP_MIN_INTERVAL_MINUTES: 'M8 で SNS ループは削除済み（SNS 活動は世界内行為 post_sns / browse_sns / check_phone へ統合）',
+  SNS_LOOP_MAX_INTERVAL_MINUTES: 'M8 で SNS ループは削除済み（SNS 活動は世界内行為 post_sns / browse_sns / check_phone へ統合）',
+};
+
+function warnDeprecatedEnv(env: NodeJS.ProcessEnv): void {
+  for (const [key, note] of Object.entries(DEPRECATED_ENV_KEYS)) {
+    if (env[key] != null && env[key]!.trim().length > 0) {
+      logger.warn(`Deprecated environment variable is set and has no effect: ${key} — ${note}`);
+    }
+  }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   loadDotEnv({ quiet: true });
+  warnDeprecatedEnv(env);
 
   const rawConfig = {
     discordApplicationId: env.DISCORD_APPLICATION_ID,

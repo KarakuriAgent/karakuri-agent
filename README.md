@@ -41,6 +41,15 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 既存環境では、ローカルの `data/HEARTBEAT.md` も手動で見直す。以前の SNS 活動手順や legacy `loadSkill("sns")` 前提の記述が残っている場合は削除し、heartbeat には本来の監視・報告だけを残す（SNS 活動は M8 の世界内行為として実行される）。
 同様に KW モード移行後は、ローカルの `data/skills/karakuri-world/SKILL.md` と `data/system-skills/karakuri-world/SKILL.md` を削除する。これらの legacy ファイルは通常モードでは無視されるが、今後の運用混乱を避けるためにも手動で消しておく。
 
+### 既存 `data/` ディレクトリの移行チェックリスト
+
+旧バージョンから `data/` を引き継ぐ場合、新バージョンで追加されたファイルは自動生成されない（欠落は起動ログと初回 report 通知で知らせる）。`diff -rq data.example/ data/` で差分を確認し、以下を検討する:
+
+- `data/traits.json` — 気質（resilience / socialBaseline / curiosity）。無ければ全係数 1 のデフォルトで稼働する。人格定義（`data/AGENT.md`）と整合させる
+- `data/seed-memories.json` — 立ち上げ時の seed 記憶（beliefs / narratives）。無ければ自己認識の白紙から人生が始まる。後から置いても、まだ未取り込みなら次回起動時に一度だけ取り込まれる
+- `data/HEARTBEAT.md` — 無ければ heartbeat 自体が無効（`ALLOWED_CHANNEL_IDS` 等の設定だけでは動かない）
+- `.env` の廃止変数 — `SNS_PROVIDER` / `SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` は効果がない（起動時に警告が出る）。削除する
+
 Discord Developer Portal では `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` を取得し、
 Interactions Endpoint を `POST /webhooks/discord` に向ける。通常メッセージ受信には
 Gateway 接続も必要なため、`npm run dev` / `npm run start` は HTTP サーバーと
