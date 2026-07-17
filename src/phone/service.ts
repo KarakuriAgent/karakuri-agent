@@ -71,6 +71,8 @@ export interface PhoneIntegration {
   onWorldCommand(command: string): void;
   /** KW 行動選択プロンプトへ注入する未読メタ情報（件数のみ。無ければ null） */
   buildStatusSection(): Promise<string | null>;
+  /** 最古の未読チャット受信時刻（返信待ち圧の導出用。check_phone 未構成・未読なしは null） */
+  oldestPendingReceivedAt(): Promise<Date | null>;
 }
 
 export class PhoneService implements PhoneIntegration {
@@ -131,6 +133,18 @@ export class PhoneService implements PhoneIntegration {
     await Promise.allSettled([...this.inFlight]);
   }
 
+  async oldestPendingReceivedAt(): Promise<Date | null> {
+    if (this.options.commands.checkPhone == null) {
+      return null;
+    }
+    try {
+      return await this.options.unreadStore.oldestPendingReceivedAt();
+    } catch (error) {
+      logger.warn('Failed to read oldest pending unread', error);
+      return null;
+    }
+  }
+
   async buildStatusSection(): Promise<string | null> {
     if (this.options.commands.checkPhone == null) {
       return null;
@@ -138,7 +152,14 @@ export class PhoneService implements PhoneIntegration {
 
     try {
       const pending = await this.options.unreadStore.countPending();
-      const lines: string[] = [`チャット未読: ${pending} 件`];
+      // 実機で件数の提示だけでは check_phone がほぼ選ばれなかったため、
+      // 未読があるときは待たせ具合（閾値ベースの言葉）と返信手段を明示する
+      const oldest = pending > 0 ? await this.options.unreadStore.oldestPendingReceivedAt() : null;
+      const lines: string[] = [
+        oldest != null
+          ? `チャット未読: ${pending} 件（${describeUnreadWaiting(oldest, this.now())}）。返信するには ${this.options.commands.checkPhone} を選ぶ`
+          : `チャット未読: ${pending} 件`,
+      ];
       for (const [provider, limiter] of this.options.rateLimiters ?? []) {
         const lastChecked = limiter.lastFetchedAt('notifications');
         // 経過は生の分数ではなく閾値ベースの言葉にする（#109 — 実機で 2,739 分まで
@@ -427,6 +448,21 @@ function formatTimeline(posts: SnsPost[]): string {
   return posts
     .map((post) => `- "${post.text}" by @${post.authorHandle} (post_id: ${post.id}, likes: ${post.likeCount})`)
     .join('\n');
+}
+
+/** 未読チャットの待たせ具合を閾値ベースで言語化する（#109 と同じ「数値は言葉に」原則） */
+export function describeUnreadWaiting(oldestReceivedAt: Date, now: Date): string {
+  const minutes = Math.max(0, Math.round((now.getTime() - oldestReceivedAt.getTime()) / 60_000));
+  if (minutes < 120) {
+    return '届いたばかり';
+  }
+  if (minutes < 8 * 60) {
+    return '数時間待たせている';
+  }
+  if (minutes < 24 * 60) {
+    return '半日近く待たせている';
+  }
+  return '丸一日以上待たせている';
 }
 
 /** SNS 通知の未確認経過を閾値ベースで言語化する（#109） */

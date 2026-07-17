@@ -221,7 +221,10 @@ describe('SnsSkillContextProvider', () => {
     expect(activityStore.commitLastNotificationReservation).toHaveBeenCalledWith('reservation-1');
   });
 
-  it('reports when the cursor stalls on consecutive incomplete fetches (#101)', async () => {
+  it('force-advances the cursor after consecutive incomplete fetches (#101)', async () => {
+    // ページングを持たない provider（ELYTH）では sinceId がページから消えると
+    // 二度と complete にならず、同じ通知を永遠に再取得し続ける。閾値で
+    // 「それ以前はまとめて既読」セマンティクスに切り替えて復旧する
     const reportError = vi.fn();
     const activityStore = createActivityStore({ getLastNotificationId: vi.fn(async () => 'notif-1') });
     const snsProvider = createProvider({
@@ -234,9 +237,39 @@ describe('SnsSkillContextProvider', () => {
     await provider.getContext();
     await provider.getContext();
     expect(reportError).not.toHaveBeenCalled();
-    await provider.getContext();
+    expect(activityStore.reserveLastNotificationId).not.toHaveBeenCalled();
+    const context = await provider.getContext();
+    await context.onSuccess?.();
 
     expect(reportError).toHaveBeenCalledTimes(1);
-    expect(reportError.mock.calls[0]?.[0]).toContain('前進できていません');
+    expect(reportError.mock.calls[0]?.[0]).toContain('強制前進しました');
+    expect(activityStore.reserveLastNotificationId).toHaveBeenCalledWith('notif-2');
+    expect(activityStore.commitLastNotificationReservation).toHaveBeenCalled();
+  });
+
+  it('records and appraises a refetched notification only once (stall dedup)', async () => {
+    // カーソル停滞中の再取得は体験ログ・appraisal へ流さない — 実機で同一 5 件が
+    // 44 回再評価され、気分・社交欲求が実態から乖離した
+    const record = vi.fn(async () => 1);
+    const enqueue = vi.fn();
+    const activityStore = createActivityStore({ getLastNotificationId: vi.fn(async () => 'notif-1') });
+    const snsProvider = createProvider({
+      getNotifications: vi.fn(async () => createNotificationResult([
+        { id: 'notif-2', type: 'reply', createdAt: '2025-01-02T00:00:00.000Z', accountId: 'acct-2', accountName: 'Bob', accountHandle: 'bob@example.com', post: createPost('post-2', 'Stalled reply') },
+      ], false)),
+    });
+
+    const provider = new SnsSkillContextProvider({
+      activityStore,
+      snsProvider,
+      provider: 'x',
+      experienceRecorder: { record } as never,
+      appraisalService: { enqueue } as never,
+    });
+    await provider.getContext();
+    await provider.getContext();
+
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 });

@@ -714,7 +714,12 @@ export class KarakuriAgent implements IAgent {
         presented: karakuriWorldNotification!.notification.choices.map((choice) => choice.command),
         chosen: commandInput?.command ?? null,
       });
-      if (commandInput != null) {
+      // 実際に世界で開始されたコマンドだけを「自分の行動」として扱う。
+      // 以前は入力バリデーション失敗・409 拒否で実行されなかったコマンドも
+      // 無条件に記録しており、「待機した」等の偽の記憶が experience_log と
+      // 頻度台帳へ蓄積されていた（実機で確認）。失敗した試みの反復検知は
+      // onCommandOutcome の失敗ストリーク（#103）が別経路で担う
+      if (commandInput != null && karakuriWorldCommandStarted(result)) {
         const ownActionEvent = normalizeKwOwnAction({
           botId: userId,
           command: commandInput.command,
@@ -724,19 +729,17 @@ export class KarakuriAgent implements IAgent {
           receivedAt: new Date(),
         });
         void this.experienceRecorder?.record(ownActionEvent);
-        const commandStarted = karakuriWorldCommandStarted(result);
 
         // 世界内行為フック（M8）: カスタムコマンド（check_phone 等）の開始を検知して
-        // チャット・SNS のパイプラインを非同期に実行する（KW 応答をブロックしない）。
-        // busy 拒否・API エラー時は「世界内で行動していない」ため発火しない
-        if (this.phoneIntegration != null && commandStarted) {
+        // チャット・SNS のパイプラインを非同期に実行する（KW 応答をブロックしない）
+        if (this.phoneIntegration != null) {
           this.phoneIntegration.onWorldCommand(commandInput.command);
         }
 
         // 睡眠遷移の前段ルール（#102）: own_action は appraisal に流れないため、
         // 睡眠アクションの発行をここで検知して決定論で fell_asleep にする
         // （LLM は fell_asleep をほぼ出さない — 実機 0/382）
-        if (this.innerStateService != null && commandStarted && detectKwSleepActionStart(ownActionEvent)) {
+        if (this.innerStateService != null && detectKwSleepActionStart(ownActionEvent)) {
           void this.innerStateService.applyAppraisal({
             receivedAt: new Date(),
             deltas: { valence: 0, energy: 0, hunger: 0, social: 0 },
@@ -1036,11 +1039,17 @@ export class KarakuriAgent implements IAgent {
         }
         snsLastCheckedAt ??= this.startedAt;
       }
+      // 返信待ち圧: 最古の未読チャットの放置時間を欲求として注入する（check_phone 構成時のみ）
+      let chatOldestUnreadAt: Date | null | undefined;
+      if (this.phoneIntegration != null) {
+        chatOldestUnreadAt = await this.phoneIntegration.oldestPendingReceivedAt();
+      }
       const description = await buildDrivesDescription(state, this.actionLedger, receivedAt, {
         ...(this.satiationThreshold != null ? { satiationThreshold: this.satiationThreshold } : {}),
         ...(options.includeTopicBias != null ? { includeTopicBias: options.includeTopicBias } : {}),
         ...(shareUrge != null ? { shareUrge } : {}),
         ...(snsLastCheckedAt !== undefined ? { snsLastCheckedAt } : {}),
+        ...(chatOldestUnreadAt !== undefined ? { chatOldestUnreadAt } : {}),
       });
       if (description == null) {
         return null;

@@ -65,13 +65,19 @@ export const karakuriWorldNotificationResponseSchema = z
   })
   .passthrough();
 
+// 実サーバーのエラーボディは {error, message, details, hint, suggestions, ...} 形式。
+// 以前は .strict() だったため hint / suggestions 付きのボディがパース失敗し、
+// code=undefined に落ちて busy 変換が本番で一度も効かないバグがあった（未知キーは
+// 拒否せず受け流す）
 const errorResponseSchema = z
   .object({
     error: z.string().min(1),
     message: z.string().min(1),
     details: z.unknown().optional(),
+    hint: z.string().optional(),
+    suggestions: z.unknown().optional(),
   })
-  .strict();
+  .passthrough();
 
 export type KarakuriWorldCommandInput = z.infer<typeof karakuriWorldCommandInputSchema>;
 export type KarakuriWorldNotificationResponse = z.infer<typeof karakuriWorldNotificationResponseSchema>;
@@ -160,8 +166,7 @@ const TRANSIENT_FETCH_ERROR_CODES = new Set([
 ]);
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_RETRIES = 1;
-const BUSY_ERROR_CODES = new Set(['state_conflict', 'not_your_turn']);
-const BUSY_INSTRUCTION = '同じ通知で別 command を連続実行せず、次の通知を待ってください。';
+const BUSY_INSTRUCTION = 'このコマンドは実行されていません。行動が進行中か、世界の状態が変わったか、通知が新しいものに置き換わっています。同じ通知で command を再実行せず、次の通知で選び直してください。';
 
 function normalizeApiBaseUrl(apiBaseUrl: string): string {
   return apiBaseUrl.replace(/\/+$/, '');
@@ -285,6 +290,8 @@ export class KarakuriWorldApiError extends Error {
   readonly code: string | undefined;
   readonly apiMessage: string;
   readonly details: unknown;
+  /** サーバーが返す対処ヒント（例:「受諾または拒否を選んでください」）。あれば LLM へそのまま見せる */
+  readonly hint: string | undefined;
 
   constructor(
     operation: KarakuriWorldOperation,
@@ -293,6 +300,7 @@ export class KarakuriWorldApiError extends Error {
     message: string,
     code?: string,
     details?: unknown,
+    hint?: string,
   ) {
     super(`karakuri-world API returned ${status} for "${operation}" at ${url}: ${message}`);
     this.name = 'KarakuriWorldApiError';
@@ -302,6 +310,7 @@ export class KarakuriWorldApiError extends Error {
     this.apiMessage = message;
     this.code = code;
     this.details = details;
+    this.hint = hint;
   }
 }
 
@@ -395,6 +404,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
           operation,
           status: response.status,
           code: parsedError.data.error,
+          hint: parsedError.data.hint,
         });
         throw new KarakuriWorldApiError(
           operation,
@@ -403,6 +413,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
           parsedError.data.message,
           parsedError.data.error,
           parsedError.data.details,
+          parsedError.data.hint,
         );
       }
 
@@ -442,13 +453,18 @@ async function requestJson<TSchema extends JsonResponseSchema>({
   throw new KarakuriWorldNetworkError(operation, url, attempts, lastError);
 }
 
-function isBusyError(error: unknown): error is KarakuriWorldApiError {
+/**
+ * command への 409 は「世界側の状態と噛み合わなかった」正常系 — 行動の進行中、
+ * 会話/譲渡の応答待ち、通知の置き換え・失効（サーバー仕様で notification_id は
+ * 最新のもの以外無効になる）など。生の例外として LLM へ見せると「サーバーが
+ * 混んでいる」等と誤解釈して待機戦略を学習するため（実機で発生）、code の
+ * 有無によらず常に informational な結果へ変換する。
+ */
+function isCommandConflictError(error: unknown): error is KarakuriWorldApiError {
   return (
     error instanceof KarakuriWorldApiError
     && error.operation === 'command'
     && error.status === 409
-    && error.code !== undefined
-    && BUSY_ERROR_CODES.has(error.code)
   );
 }
 
@@ -573,15 +589,19 @@ async function executeKarakuriWorldCommand(
       throw error;
     }
 
-    if (isBusyError(error)) {
-      logger.info('Agent is busy, returning informational response', {
+    if (isCommandConflictError(error)) {
+      logger.info('Command conflicted with current world state, returning informational response', {
         status: error.status,
         code: error.code,
+        hint: error.hint,
       });
-      // busy = 世界内で行動が進行中という正当な状態。中立（ストリークを消しも増やしもしない）
+      // 進行中・応答待ち・通知置き換えは世界側の正当な状態。中立（ストリークを消しも増やしもしない）。
+      // サーバーの hint（「受諾または拒否を選んでください」等）は次の行動選択の
+      // 最重要情報なのでそのまま渡す
       return {
         status: 'busy',
         message: error.apiMessage,
+        ...(error.hint != null ? { hint: error.hint } : {}),
         instruction: BUSY_INSTRUCTION,
       };
     }

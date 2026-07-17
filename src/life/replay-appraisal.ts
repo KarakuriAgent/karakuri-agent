@@ -18,6 +18,7 @@ import { createConfiguredOpenAiModelFactory } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
 import {
   applyAppraisalGuardrails,
+  appraisalEventText,
   appraiseEvent,
 } from './appraisal.js';
 import { openLifeDatabase } from './db.js';
@@ -151,7 +152,10 @@ export async function runReplay(argv: string[]): Promise<void> {
         console.log(`#${row.id} [${row.received_at}] ${row.channel}/${row.kind} → (no structured output)`);
         continue;
       }
-      const guarded = applyAppraisalGuardrails(output);
+      const guarded = applyAppraisalGuardrails(output, undefined, {
+        eventKind: row.kind,
+        eventText: appraisalEventText(parsedPayload),
+      });
       console.log([
         `#${row.id} [${row.received_at}] ${row.channel}/${row.kind}`,
         `  deltas: valence=${guarded.deltas.valence.toFixed(3)} energy=${guarded.deltas.energy.toFixed(3)} hunger=${guarded.deltas.hunger.toFixed(3)} social=${guarded.deltas.social.toFixed(3)} sleep=${guarded.sleep}`,

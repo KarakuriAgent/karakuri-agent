@@ -1474,6 +1474,7 @@ describe('KarakuriAgent', () => {
     agent.setPhoneIntegration({
       onWorldCommand,
       buildStatusSection: async () => '<phone-status>\nチャット未読: 2 件\n</phone-status>',
+      oldestPendingReceivedAt: async () => null,
     });
 
     stubKarakuriWorldNotificationFetch();
@@ -1515,7 +1516,11 @@ describe('KarakuriAgent', () => {
       modelFactory: () => ({}) as LanguageModel,
     });
     const onWorldCommand = vi.fn();
-    agent.setPhoneIntegration({ onWorldCommand, buildStatusSection: async () => null });
+    agent.setPhoneIntegration({
+      onWorldCommand,
+      buildStatusSection: async () => null,
+      oldestPendingReceivedAt: async () => null,
+    });
 
     stubKarakuriWorldNotificationFetch();
 
@@ -1523,6 +1528,40 @@ describe('KarakuriAgent', () => {
     await agent.drainPendingEvaluations();
 
     expect(onWorldCommand).not.toHaveBeenCalled();
+  });
+
+  it('records own_action only when the world command actually started (偽記憶防止)', async () => {
+    // 409 拒否・バリデーション失敗で実行されなかったコマンドを記録すると
+    // 「待機した」等の偽の記憶が experience_log と頻度台帳へ蓄積される（実機で確認）
+    const makeAgent = (store: IExperienceLogStore, result: unknown) => {
+      const agent = new KarakuriAgent({
+        config: {
+          ...baseConfig,
+          karakuriWorldBotIds: ['kw-bot-1'],
+          karakuriWorld: { apiBaseUrl: 'https://example.com/world', apiKey: 'world-key' },
+        },
+        sessionManager: new SessionManagerStub(),
+        experienceRecorder: new ExperienceRecorder({ store }),
+        generateTextFn: vi.fn(async () => result) as unknown as typeof import('ai').generateText,
+        modelFactory: () => ({}) as LanguageModel,
+      });
+      stubKarakuriWorldNotificationFetch();
+      return agent;
+    };
+    const recordedKinds = (store: IExperienceLogStore): string[] =>
+      (store.append as ReturnType<typeof vi.fn>).mock.calls.map((call) => (call[0] as { kind: string }).kind);
+
+    const startedStore = createExperienceLogStoreStub(1);
+    const startedAgent = makeAgent(startedStore, makeKwModeGenerateTextResult('地図を見るよ。'));
+    await startedAgent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+    await startedAgent.drainPendingEvaluations();
+    expect(recordedKinds(startedStore)).toContain('own_action');
+
+    const rejectedStore = createExperienceLogStoreStub(2);
+    const rejectedAgent = makeAgent(rejectedStore, makeBusyKwModeGenerateTextResult('移動を試すよ。'));
+    await rejectedAgent.handleMessage('session-1', 'notification_id: notif-123', 'KWBot', { userId: 'kw-bot-1' });
+    await rejectedAgent.drainPendingEvaluations();
+    expect(recordedKinds(rejectedStore)).not.toContain('own_action');
   });
 
   it('falls back to a default completion reply when a karakuri-world tool call input has no comment', async () => {

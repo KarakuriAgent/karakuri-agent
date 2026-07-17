@@ -43,6 +43,8 @@ export interface IPhoneUnreadStore {
   listPendingThreads(maxThreads: number): Promise<UnreadThread[]>;
   markProcessed(ids: number[], processedAt: Date): Promise<void>;
   countPending(): Promise<number>;
+  /** 最も古い未処理メッセージの受信時刻（無ければ null）。返信待ち圧の導出に使う */
+  oldestPendingReceivedAt(): Promise<Date | null>;
   close(): Promise<void>;
 }
 
@@ -146,6 +148,11 @@ export class SqlitePhoneUnreadStore implements IPhoneUnreadStore {
   async countPending(): Promise<number> {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM phone_unread WHERE processed_at IS NULL').get() as { count: number };
     return Promise.resolve(row.count);
+  }
+
+  async oldestPendingReceivedAt(): Promise<Date | null> {
+    const row = this.db.prepare('SELECT MIN(received_at) AS oldest FROM phone_unread WHERE processed_at IS NULL').get() as { oldest: string | null };
+    return Promise.resolve(row.oldest != null ? new Date(row.oldest) : null);
   }
 
   async close(): Promise<void> {

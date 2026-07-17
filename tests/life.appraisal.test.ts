@@ -10,6 +10,7 @@ import {
   AppraisalService,
   appraiseEvent,
   deltaLevelToNumber,
+  hungerDeltaLevelToNumber,
   isDeclarativeText,
   resolveSleepTransition,
   salvageAppraisalOutput,
@@ -98,6 +99,17 @@ describe('deltaLevelToNumber', () => {
   });
 });
 
+describe('hungerDeltaLevelToNumber', () => {
+  it('scales recovery (negative) by maxHungerRecoveryPerEvent and increase by maxDeltaPerEvent', () => {
+    // 食事はしっかり満腹に近づく（回復のみ緩いクランプ）。空腹が進む方向は従来どおり
+    expect(hungerDeltaLevelToNumber('large_down')).toBe(-LIFE_TUNING.maxHungerRecoveryPerEvent);
+    expect(hungerDeltaLevelToNumber('down')).toBe(-LIFE_TUNING.maxHungerRecoveryPerEvent / 2);
+    expect(hungerDeltaLevelToNumber('none')).toBe(0);
+    expect(hungerDeltaLevelToNumber('large_up')).toBe(LIFE_TUNING.maxDeltaPerEvent);
+    expect(hungerDeltaLevelToNumber('up')).toBe(LIFE_TUNING.maxDeltaPerEvent / 2);
+  });
+});
+
 describe('isDeclarativeText', () => {
   it('accepts declarative statements', () => {
     expect(isDeclarativeText('B さんは映画が好きだ')).toBe(true);
@@ -129,6 +141,49 @@ describe('applyAppraisalGuardrails', () => {
       energy_delta: 'small_up',
     }));
     expect(guarded.deltas.energy).toBeGreaterThan(0);
+    expect(guarded.rejections).toEqual([]);
+  });
+
+  it('rejects hunger recovery when the event has no eating context', () => {
+    // 実機で idle_reminder・チケット購入・バイト完了にも hunger_down が出た誤爆対策
+    const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }), undefined, {
+      eventKind: 'world_event',
+      eventText: '{"summary":"「展望台チケットを買う」が完了しました。"}',
+    });
+    expect(guarded.deltas.hunger).toBe(0);
+    expect(guarded.rejections.some((rejection) => rejection.includes('no eating/refueling context'))).toBe(true);
+  });
+
+  it('keeps hunger recovery when the event mentions food', () => {
+    const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'large_down' }), undefined, {
+      eventKind: 'world_event',
+      eventText: '{"summary":"「パン詰め合わせを買う」が完了しました。","comment":"お腹満たしてエネルギーチャージするよ。"}',
+    });
+    expect(guarded.deltas.hunger).toBe(-LIFE_TUNING.maxHungerRecoveryPerEvent);
+    expect(guarded.rejections).toEqual([]);
+  });
+
+  it('treats recharging as a meal for machine bodies', () => {
+    const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }), undefined, {
+      eventKind: 'world_event',
+      eventText: '{"summary":"「充電スタンドで充電する」が完了しました。"}',
+    });
+    expect(guarded.deltas.hunger).toBeLessThan(0);
+    expect(guarded.rejections).toEqual([]);
+  });
+
+  it('keeps hunger increase regardless of eating context', () => {
+    const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'small_up' }), undefined, {
+      eventKind: 'world_event',
+      eventText: '{"summary":"長い移動が完了しました。"}',
+    });
+    expect(guarded.deltas.hunger).toBeGreaterThan(0);
+    expect(guarded.rejections).toEqual([]);
+  });
+
+  it('skips the eating-context gate when eventText is not provided (replay compatibility)', () => {
+    const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }));
+    expect(guarded.deltas.hunger).toBeLessThan(0);
     expect(guarded.rejections).toEqual([]);
   });
 

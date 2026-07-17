@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildOneshotCronExpression, createProspectReminderTool, MAX_PROSPECT_REMINDERS } from '../src/agent/tools/prospect-reminder.js';
 import { SqliteActionLedgerStore } from '../src/life/action-ledger.js';
-import { buildDrivesDescription, describeSatiationPressure, describeShareUrge, describeSnsCuriosity, describeStrongestDrive, type ShareUrgeDeps } from '../src/life/drives.js';
+import { buildDrivesDescription, describeChatReplyPressure, describeSatiationPressure, describeShareUrge, describeSnsCuriosity, describeStrongestDrive, type ShareUrgeDeps } from '../src/life/drives.js';
 import type { InnerState } from '../src/life/inner-state.js';
 import { formatProspectsForPrompt, normalizeProspectBody, prospectBodiesLookSimilar, SqliteProspectStore } from '../src/life/prospects.js';
 import type { CronJobDefinition, ISchedulerStore, RegisterCronJobInput } from '../src/scheduler/types.js';
@@ -180,6 +180,32 @@ describe('drives', () => {
       { snsLastCheckedAt: new Date('2026-07-11T00:00:00.000Z') },
     );
     expect(description).toContain('しばらくSNSを見ていない');
+  });
+
+  it('derives chat reply pressure from the oldest pending unread', () => {
+    const now = new Date('2026-07-12T12:00:00.000Z');
+    // 未読なし・閾値（2h）未満は注入しない
+    expect(describeChatReplyPressure(null, now)).toBeNull();
+    expect(describeChatReplyPressure(new Date('2026-07-12T11:00:00.000Z'), now)).toBeNull();
+    // 2h 超で「返事をしたい」圧、8h 超で強い文言
+    expect(describeChatReplyPressure(new Date('2026-07-12T08:00:00.000Z'), now)).toContain('返事をしたい');
+    expect(describeChatReplyPressure(new Date('2026-07-12T00:00:00.000Z'), now)).toContain('ずいぶん長いこと');
+  });
+
+  it('includes chat reply pressure in the drives description', async () => {
+    const now = new Date('2026-07-12T12:00:00.000Z');
+    const description = await buildDrivesDescription(
+      makeState({ social: 0.3, energy: 0.8, hunger: 0.3 }),
+      undefined,
+      now,
+      { chatOldestUnreadAt: new Date('2026-07-11T20:00:00.000Z') },
+    );
+    expect(description).toContain('スマホを確認して返事をしたい');
+  });
+
+  it('nudges eating carried food when hungry (パン持ち歩き問題)', () => {
+    expect(describeStrongestDrive(makeState({ hunger: 0.9 }))).toContain('持ち物に食べ物があるなら');
+    expect(describeStrongestDrive(makeState({ hunger: 0.6 }))).toContain('持ち物に食べ物があれば');
   });
 
   it('converts physiology into desires (strongest first)', () => {

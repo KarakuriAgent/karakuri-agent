@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { IAgent } from '../src/agent/core.js';
 import { openLifeDatabase } from '../src/life/db.js';
-import { describeSnsElapsed, PhoneService } from '../src/phone/service.js';
+import { describeSnsElapsed, describeUnreadWaiting, PhoneService } from '../src/phone/service.js';
 import { SqlitePhoneUnreadStore } from '../src/phone/unread-store.js';
 import { SnsRateLimiter } from '../src/sns/rate-limiter.js';
 import type { ISnsWriteActivityCounter } from '../src/sns/types.js';
@@ -70,6 +70,19 @@ describe('SqlitePhoneUnreadStore', () => {
       await store.enqueue({ source: 'discord', threadId: `t${i}`, body: `msg${i}`, receivedAt: new Date() });
     }
     expect((await store.listPendingThreads(2)).map((thread) => thread.threadId)).toEqual(['t0', 't1']);
+  });
+
+  it('returns the oldest pending received_at and null when nothing is pending', async () => {
+    const store = await createUnreadStore();
+    expect(await store.oldestPendingReceivedAt()).toBeNull();
+
+    await store.enqueue({ source: 'discord', threadId: 't1', body: '古い', receivedAt: new Date('2026-07-06T10:00:00Z') });
+    await store.enqueue({ source: 'discord', threadId: 't1', body: '新しい', receivedAt: new Date('2026-07-06T12:00:00Z') });
+    expect((await store.oldestPendingReceivedAt())?.toISOString()).toBe('2026-07-06T10:00:00.000Z');
+
+    const threads = await store.listPendingThreads(5);
+    await store.markProcessed(threads[0]!.messages.map((message) => message.id), new Date());
+    expect(await store.oldestPendingReceivedAt()).toBeNull();
   });
 });
 
@@ -289,6 +302,37 @@ describe('PhoneService', () => {
     const store = await createUnreadStore();
     const service = new PhoneService({ agent: makeAgent(), commands: {}, unreadStore: store });
     expect(await service.buildStatusSection()).toBeNull();
+  });
+
+  it('buildStatusSection describes how long the oldest unread has been waiting and how to reply', async () => {
+    // 件数だけの提示では check_phone がほぼ選ばれなかった（実機 631 提示で 2 回）
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: '本文', receivedAt: new Date('2026-07-12T00:00:00.000Z') });
+    const service = new PhoneService({
+      agent: makeAgent(),
+      commands: COMMANDS,
+      unreadStore: store,
+      now: () => new Date('2026-07-12T12:00:00.000Z'),
+    });
+
+    const section = await service.buildStatusSection();
+    expect(section).toContain('半日近く待たせている');
+    expect(section).toContain('返信するには check_phone を選ぶ');
+  });
+
+  it('describes unread waiting time with threshold-based wording', () => {
+    const now = new Date('2026-07-12T12:00:00.000Z');
+    expect(describeUnreadWaiting(new Date('2026-07-12T11:30:00.000Z'), now)).toBe('届いたばかり');
+    expect(describeUnreadWaiting(new Date('2026-07-12T07:00:00.000Z'), now)).toBe('数時間待たせている');
+    expect(describeUnreadWaiting(new Date('2026-07-12T00:00:00.000Z'), now)).toBe('半日近く待たせている');
+    expect(describeUnreadWaiting(new Date('2026-07-10T00:00:00.000Z'), now)).toBe('丸一日以上待たせている');
+  });
+
+  it('oldestPendingReceivedAt returns null when check_phone is not configured', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: '本文', receivedAt: new Date() });
+    const service = new PhoneService({ agent: makeAgent(), commands: {}, unreadStore: store });
+    expect(await service.oldestPendingReceivedAt()).toBeNull();
   });
 
   it('describes SNS elapsed time with threshold-based wording, not raw minutes (#109)', () => {

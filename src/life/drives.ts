@@ -23,6 +23,10 @@ export const DRIVES_DEFAULTS = {
   shareUrgeMinImportance: 0.6,
   /** SNS 未確認圧（#109）: この時間以上 SNS 通知を確認していないと「覗きたい」圧が湧く */
   snsCuriosityThresholdHours: 12,
+  /** 返信待ち圧: 最古の未読チャットがこの時間を超えると「返事をしたい」圧が湧く */
+  chatReplyThresholdHours: 2,
+  /** 返信待ち圧: この時間を超えると強い文言に切り替える */
+  chatReplyStrongThresholdHours: 8,
 } as const;
 
 /** 共有欲の判定に必要な読み取り依存（episodes と SNS 活動ログ） */
@@ -84,6 +88,33 @@ export function describeSnsCuriosity(
   return 'しばらくSNSを見ていない。ちょっと覗きたい気持ちがある。';
 }
 
+/**
+ * 返信待ち圧: 未読チャットの放置を欲求の言葉に変換して `<drives>` へ注入する
+ * （SNS 未確認圧 #109 と同型の決定論導出）。実機で `<phone-status>` の未読件数
+ * 提示だけでは check_phone がほぼ選ばれず（631 回提示で 2 回）、ユーザーの
+ * メッセージが 16〜30 時間放置された。check_phone の実行で未読が消化されて
+ * 自然に解消される。
+ */
+export function describeChatReplyPressure(
+  oldestUnreadReceivedAt: Date | null,
+  now: Date,
+  options: { thresholdHours?: number; strongThresholdHours?: number } = {},
+): string | null {
+  if (oldestUnreadReceivedAt == null) {
+    return null;
+  }
+  const thresholdHours = options.thresholdHours ?? DRIVES_DEFAULTS.chatReplyThresholdHours;
+  const strongThresholdHours = options.strongThresholdHours ?? DRIVES_DEFAULTS.chatReplyStrongThresholdHours;
+  const elapsedMs = now.getTime() - oldestUnreadReceivedAt.getTime();
+  if (elapsedMs < thresholdHours * 3_600_000) {
+    return null;
+  }
+  if (elapsedMs < strongThresholdHours * 3_600_000) {
+    return 'スマホにまだ読んでいないメッセージが届いている。そろそろ確認して返事をしたい。';
+  }
+  return 'ずいぶん長いこと返事を待たせてしまっているメッセージがある。何をおいてもまずスマホを確認して返事をしたい。';
+}
+
 interface DriveCandidate {
   strength: number;
   text: string;
@@ -102,7 +133,11 @@ export function describeStrongestDrive(state: InnerState): string | null {
   if (state.hunger > 0.55) {
     candidates.push({
       strength: state.hunger,
-      text: state.hunger > 0.8 ? 'かなりお腹が空いていて、まず何か食べたい。' : 'そろそろ何か食べたい。',
+      // 実機で「食べ物を持っているのに探し回る」が起きたため、持ち物の確認を促す
+      // 条件つきの一文を添える（持っているかどうかは本人が持ち物を見て判断する）
+      text: state.hunger > 0.8
+        ? 'かなりお腹が空いていて、まず何か食べたい。持ち物に食べ物があるなら、まずそれを食べてしまいたい。'
+        : 'そろそろ何か食べたい。持ち物に食べ物があればそれを食べたい。',
     });
   }
   if (state.energy < 0.45) {
@@ -178,6 +213,8 @@ export interface BuildDrivesOptions {
   shareUrge?: ShareUrgeDeps | undefined;
   /** SNS 未確認圧の判定に使う最後の通知確認時刻（SNS 構成時のみ。null = 起動後未確認） */
   snsLastCheckedAt?: Date | null | undefined;
+  /** 返信待ち圧の判定に使う最古の未読チャット受信時刻（check_phone 構成時のみ。null = 未読なし） */
+  chatOldestUnreadAt?: Date | null | undefined;
 }
 
 /** drives セクションの本文（untrusted タグは呼び出し側で付ける） */
@@ -218,6 +255,12 @@ export async function buildDrivesDescription(
     const snsCuriosity = describeSnsCuriosity(options.snsLastCheckedAt, now);
     if (snsCuriosity != null) {
       parts.push(snsCuriosity);
+    }
+  }
+  if (options.chatOldestUnreadAt !== undefined) {
+    const replyPressure = describeChatReplyPressure(options.chatOldestUnreadAt, now);
+    if (replyPressure != null) {
+      parts.push(replyPressure);
     }
   }
   return parts.length > 0 ? parts.join('') : null;

@@ -18,7 +18,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig } from '../config.js';
 import { createConfiguredOpenAiModelFactory } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
-import { applyAppraisalGuardrails, appraiseEvent, resolveSleepTransition } from './appraisal.js';
+import { applyAppraisalGuardrails, appraisalEventText, appraiseEvent, resolveSleepTransition } from './appraisal.js';
 import { openLifeDatabase } from './db.js';
 import { OpenAiEmbeddingProvider } from './embeddings.js';
 import { SqliteEpisodeStore } from './episodes.js';
@@ -138,7 +138,10 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
           if (output == null) {
             return null;
           }
-          const guarded = applyAppraisalGuardrails(output, undefined, { eventKind: event.kind });
+          const guarded = applyAppraisalGuardrails(output, undefined, {
+            eventKind: event.kind,
+            eventText: appraisalEventText(event.payload),
+          });
           // 睡眠アクションの決定論検出（#102）: 稼働時の core.ts 発行時フックと
           // 分節化境界（fell_asleep → 全ドラフト close）の判定を揃える。
           // 経路依存の sleeping 状態はリプレイで追跡しないため stateless な規則のみ

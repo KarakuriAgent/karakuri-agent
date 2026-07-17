@@ -32,8 +32,18 @@ export interface SnsSkillContextProviderOptions {
 
 const logger = createLogger('SnsSkillContextProvider');
 const MAX_CONTEXT_NOTIFICATION_PAGES = 5;
-/** incomplete フェッチでカーソルが前進できなかった連続回数がこの値に達したら report する */
-const INCOMPLETE_FETCH_REPORT_THRESHOLD = 3;
+/**
+ * incomplete フェッチでカーソルが前進できなかった連続回数がこの値に達したら、
+ * report した上でカーソルを最新へ強制前進する。ページングを持たない provider
+ * （ELYTH）では sinceId がページから消えた時点でそれ以前の通知はどのみち永遠に
+ * 取得できないため、待ち続ける利益がない — 放置すると同じページを毎回再取得して
+ * 体験ログ・appraisal へ重複再体験を流し込み続ける（実機で同一 5 件を 44 回
+ * 再評価し気分が飽和した）。ブートストラップと同じ「それ以前はまとめて既読」
+ * セマンティクスで復旧する。
+ */
+const INCOMPLETE_FETCH_FORCE_ADVANCE_THRESHOLD = 3;
+/** 記録済み通知 id を覚えておく上限（挿入順で古いものから捨てる） */
+const MAX_RECORDED_NOTIFICATION_IDS = 500;
 
 export class SnsSkillContextProvider implements SkillContextProvider {
   private readonly mutex = new KeyedMutex();
@@ -42,6 +52,13 @@ export class SnsSkillContextProvider implements SkillContextProvider {
   private readonly recentActivityLimit: number;
   /** カーソルが前進できなかった incomplete フェッチの連続回数（停滞の可視化用） */
   private incompleteFetchStreak = 0;
+  /**
+   * このプロセスで体験ログへ記録済みの通知 id。カーソルが前進できない間の
+   * 再取得（同一通知）を体験ログ・appraisal へ二重に流さないための重複排除。
+   * プロセス再起動で消えるため再起動を跨ぐ重複は残りうるが、raw ログの重複は
+   * 設計上許容されている（重複解決は後段・reprocessing の仕事）。
+   */
+  private readonly recordedNotificationIds = new Set<string>();
 
   constructor(private readonly options: SnsSkillContextProviderOptions) {
     this.notificationLimit = Math.max(1, options.notificationLimit ?? 5);
@@ -79,6 +96,11 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         // （kind / actor 同様、重複解決は後段・reprocessing の仕事）。
         if (this.options.provider != null && (this.options.experienceRecorder != null || this.options.appraisalService != null)) {
           for (const notification of notifications) {
+            // カーソル停滞中の再取得（同一通知）は記録も appraisal もスキップする。
+            // 同じ出来事を何度も「再体験」すると気分・社交欲求が実態から乖離するため
+            if (this.recordedNotificationIds.has(notification.id)) {
+              continue;
+            }
             const event = normalizeSnsNotification({
               provider: this.options.provider,
               notification,
@@ -88,6 +110,7 @@ export class SnsSkillContextProvider implements SkillContextProvider {
             const eventId = (await this.options.experienceRecorder?.record(event)) ?? null;
             // SNS はチャットに準ずる: 応答先行 → appraisal 事後（fire-and-forget）
             void this.options.appraisalService?.enqueue(event, undefined, eventId ?? undefined);
+            this.rememberRecordedNotificationId(notification.id);
           }
         }
         // カーソル前進の規則:
@@ -99,19 +122,21 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         latestNotificationId = complete || sinceId == null ? notifications[0]?.id : undefined;
         if (!complete && sinceId != null) {
           // 正当な前進見送り（取り漏らし防止）だが、続くと同じ通知を再取得し続ける。
-          // 停滞の可視化のため連続回数を数えて report する。
+          // 停滞の連続回数を数え、閾値に達したらカーソルを最新へ強制前進して復旧する。
           // 通知 0 件の incomplete はレート制限等の一時的な取得縮退で「同じ通知の
           // 再取得」は起きていないため、数えも消しもしない
           if (notifications.length > 0) {
             this.incompleteFetchStreak += 1;
-            if (this.incompleteFetchStreak >= INCOMPLETE_FETCH_REPORT_THRESHOLD) {
-              logger.warn('SNS notification cursor is stalling on incomplete fetches', {
+            if (this.incompleteFetchStreak >= INCOMPLETE_FETCH_FORCE_ADVANCE_THRESHOLD) {
+              logger.warn('SNS notification cursor stalled; force-advancing to the latest page', {
                 provider: this.options.provider,
                 streak: this.incompleteFetchStreak,
+                advanceTo: notifications[0]?.id,
               });
               this.options.reportError?.(
-                `⚠️ [${this.options.provider}] SNS 通知カーソルが ${this.incompleteFetchStreak} 回連続で前進できていません（incomplete フェッチ）。同じ通知を再取得し続けている可能性があります`,
+                `⚠️ [${this.options.provider}] SNS 通知カーソルが ${this.incompleteFetchStreak} 回連続で前進できなかったため、最新の通知へ強制前進しました。取得できていない過去の通知はまとめて既読扱いになります`,
               );
+              latestNotificationId = notifications[0]?.id;
               this.incompleteFetchStreak = 0;
             }
           }
@@ -190,6 +215,18 @@ export class SnsSkillContextProvider implements SkillContextProvider {
           : {}),
       };
     });
+  }
+
+  /** 記録済み通知 id を覚える（上限超過は挿入順で古いものから捨てる） */
+  private rememberRecordedNotificationId(notificationId: string): void {
+    this.recordedNotificationIds.add(notificationId);
+    while (this.recordedNotificationIds.size > MAX_RECORDED_NOTIFICATION_IDS) {
+      const oldest = this.recordedNotificationIds.values().next().value;
+      if (oldest == null) {
+        break;
+      }
+      this.recordedNotificationIds.delete(oldest);
+    }
   }
 
   private async loadNotifications(sinceId: string | null): Promise<NotificationFetchResult> {

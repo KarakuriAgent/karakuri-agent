@@ -417,4 +417,59 @@ describe('karakuri-world tools', () => {
     // busy はストリークを消しも増やしもしない（フック自体を呼ばない）
     expect(outcomes).toEqual([]);
   });
+
+  it('converts a production-shaped 409 body (hint / suggestions 付き) into an informational response', async () => {
+    // 実サーバーのエラーボディには hint / suggestions が付く。以前は .strict()
+    // スキーマがパース失敗 → code=undefined → busy 変換が効かず、生の例外が
+    // LLM へ届いて「サーバーが混んでいる」と誤解釈された（本番で 100+ 件）
+    const conflictFetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({
+      error: 'state_conflict',
+      message: 'Agent cannot wait in the current state.',
+      details: { state: 'conversation_pending' },
+      hint: '会話への応答待ちです。受諾または拒否を選んでください。',
+      suggestions: [{ command: 'conversation_accept' }, { command: 'conversation_reject' }],
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com/api',
+      apiKey: 'secret',
+      notificationId: 'notif-123',
+      fetch: conflictFetch,
+    });
+
+    await expect(tools.karakuri_world_command!.execute!({
+      command: 'wait',
+      params: { duration: 1 },
+      comment: '待機するよ。',
+    }, DEFAULT_OPTIONS)).resolves.toMatchObject({
+      status: 'busy',
+      message: 'Agent cannot wait in the current state.',
+      hint: '会話への応答待ちです。受諾または拒否を選んでください。',
+    });
+  });
+
+  it('converts a code-less command 409 into an informational response (notification superseded 等)', async () => {
+    // サーバー仕様で notification_id は最新以外無効になる。command への 409 は
+    // どの形でも「世界側の状態と噛み合わなかった」正常系なので例外にしない
+    const conflictFetch = vi.fn<typeof globalThis.fetch>(async () => new Response('Conflict', {
+      status: 409,
+      headers: { 'content-type': 'text/plain' },
+    }));
+    const tools = createKarakuriWorldTools({
+      apiBaseUrl: 'https://example.com/api',
+      apiKey: 'secret',
+      notificationId: 'notif-123',
+      fetch: conflictFetch,
+    });
+
+    const result = await tools.karakuri_world_command!.execute!({
+      command: 'wait',
+      params: { duration: 1 },
+      comment: '待機するよ。',
+    }, DEFAULT_OPTIONS) as { status?: string; instruction?: string };
+    expect(result.status).toBe('busy');
+    expect(result.instruction).toContain('次の通知で選び直してください');
+  });
 });
