@@ -282,7 +282,7 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
         throw new Error(`Notification reservation not found during commit (token: ${reservationToken})`);
       }
       const committed = this.getMetadataStatement.get(LAST_NOTIFICATION_ID_KEY)?.value ?? null;
-      const nextNotificationId = maxNotificationId(committed, reservation.notification_id);
+      const nextNotificationId = resolveCommittedNotificationId(committed, reservation.notification_id);
       if (nextNotificationId != null) {
         this.upsertMetadataStatement.run(LAST_NOTIFICATION_ID_KEY, nextNotificationId);
       }
@@ -350,22 +350,30 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
   }
 }
 
-function maxNotificationId(left: string | null, right: string | null): string | null {
-  if (left == null) {
-    return right;
+/**
+ * コミット時のカーソル解決。
+ * - 数値 id（X / Mastodon の snowflake）: 大小 = 新旧なので、並行 turn の
+ *   コミット順が入れ替わっても後退しないよう大きい方を採用する
+ * - 非数値 id（ELYTH の UUID）: id に順序が無いため、後から確定した予約を
+ *   そのまま採用する。localeCompare の見かけの順序でガードすると、たまたま
+ *   辞書順の大きい UUID に当たった時点でカーソルが永久に固着する
+ *   （実機で `f4655bdc…` に固着し、通常前進も強制前進も全て棄却されていた）。
+ *   稀な並行コミットの入れ替わりによる後退は、同じ通知の再取得（重複は
+ *   記録・表示の両方で確認済み扱い）として許容される
+ */
+function resolveCommittedNotificationId(committed: string | null, reserved: string | null): string | null {
+  if (committed == null) {
+    return reserved;
   }
-  if (right == null) {
-    return left;
+  if (reserved == null) {
+    return committed;
   }
-  return compareNotificationIds(left, right) >= 0 ? left : right;
-}
-
-function compareNotificationIds(left: string, right: string): number {
   const numericPattern = /^\d+$/;
-  if (numericPattern.test(left) && numericPattern.test(right)) {
-    if (left.length !== right.length) {
-      return left.length - right.length;
+  if (numericPattern.test(committed) && numericPattern.test(reserved)) {
+    if (committed.length !== reserved.length) {
+      return committed.length > reserved.length ? committed : reserved;
     }
+    return committed.localeCompare(reserved) >= 0 ? committed : reserved;
   }
-  return left.localeCompare(right);
+  return reserved;
 }

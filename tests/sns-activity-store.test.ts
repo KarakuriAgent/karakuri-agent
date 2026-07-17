@@ -124,6 +124,22 @@ describe('SqliteSnsActivityStore', () => {
     await store.close();
   });
 
+  it('commits non-numeric (UUID) notification cursors as last-write-wins', async () => {
+    // UUID には順序が無い。localeCompare の見かけの順序でガードすると、辞書順の
+    // 大きい UUID に当たった時点でカーソルが固着する（実機の ELYTH で発生 —
+    // 通常前進も強制前進も全てコミットで棄却され、同じページを再取得し続けた）
+    const dataDir = createDataDir('notification-reservation-uuid');
+    await mkdir(dataDir, { recursive: true });
+    const store = new SqliteSnsActivityStore({ dataDir });
+
+    await store.setLastNotificationId('f4655bdc-2d4f-4c5f-9cde-e1e2a7cc4b19');
+    const token = await store.reserveLastNotificationId?.('da592def-7179-4c48-92e6-b0dd3ab6bf6e');
+    await store.commitLastNotificationReservation?.(token!);
+    await expect(store.getLastNotificationId()).resolves.toBe('da592def-7179-4c48-92e6-b0dd3ab6bf6e');
+
+    await store.close();
+  });
+
 
 
   it('counts write actions per kind for rate limiting (M8)', async () => {
