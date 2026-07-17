@@ -458,6 +458,31 @@ describe('loadConfig', () => {
     })).toThrow('requires a Discord message sink');
   });
 
+  it('parses KW_COMMAND_SEND_MESSAGE and requires KW_COMMAND_CHECK_PHONE (M9 #110)', () => {
+    const config = loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://kw.example.com',
+      KARAKURI_WORLD_API_KEY: 'kw-key',
+      ALLOWED_CHANNEL_IDS: 'channel-1',
+      KW_COMMAND_CHECK_PHONE: 'check_phone',
+      KW_COMMAND_SEND_MESSAGE: 'send_message',
+    });
+    expect(config.worldActionCommands).toEqual({ checkPhone: 'check_phone', sendMessage: 'send_message' });
+
+    expect(() => loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://kw.example.com',
+      KARAKURI_WORLD_API_KEY: 'kw-key',
+      ALLOWED_CHANNEL_IDS: 'channel-1',
+      KW_COMMAND_SEND_MESSAGE: 'send_message',
+    })).toThrow('KW_COMMAND_SEND_MESSAGE requires KW_COMMAND_CHECK_PHONE');
+  });
+
+  it('parses APPRAISAL_TIMEOUT_MS', () => {
+    expect(loadConfig({ ...validEnv, APPRAISAL_TIMEOUT_MS: '600000' }).appraisalTimeoutMs).toBe(600_000);
+    expect(loadConfig({ ...validEnv }).appraisalTimeoutMs).toBeUndefined();
+  });
+
   it('throws on an invalid provider rate limit override', () => {
     expect(() => loadConfig({
       ...validEnv,

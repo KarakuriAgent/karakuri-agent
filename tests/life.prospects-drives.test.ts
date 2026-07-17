@@ -208,6 +208,37 @@ describe('drives', () => {
     expect(describeStrongestDrive(makeState({ hunger: 0.6 }))).toContain('持ち物に食べ物があれば');
   });
 
+  it('offers personal delivery alongside SNS when a share counterpart exists (M9 #110)', async () => {
+    const deps: ShareUrgeDeps = {
+      countSalientEpisodesSince: async () => 1,
+      getLastPostAt: async () => null,
+    };
+    const NOW = new Date('2026-07-12T12:00:00.000Z');
+    expect(await describeShareUrge(deps, NOW, { personalCounterpart: 'Yamashita' }))
+      .toContain('Yamashitaに直接伝えるのもいい');
+    // 相手がいなければ従来の文言のまま
+    expect(await describeShareUrge(deps, NOW)).not.toContain('直接伝える');
+  });
+
+  it('includes awaiting-reply concern in the drives description (M9 #110)', async () => {
+    const now = new Date('2026-07-12T12:00:00.000Z');
+    const description = await buildDrivesDescription(
+      makeState({ social: 0.3, energy: 0.8, hunger: 0.3 }),
+      undefined,
+      now,
+      { awaitingReplyCounterpart: 'Yamashita' },
+    );
+    expect(description).toContain('Yamashitaにメッセージを送ってから、まだ返事が来ていない');
+
+    const noConcern = await buildDrivesDescription(
+      makeState({ social: 0.3, energy: 0.8, hunger: 0.3 }),
+      undefined,
+      now,
+      { awaitingReplyCounterpart: null },
+    );
+    expect(noConcern).toBeNull();
+  });
+
   it('converts physiology into desires (strongest first)', () => {
     expect(describeStrongestDrive(makeState({ hunger: 0.9 }))).toContain('食べたい');
     expect(describeStrongestDrive(makeState({ energy: 0.1 }))).toContain('休みたい');

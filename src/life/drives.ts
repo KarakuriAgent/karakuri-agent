@@ -46,7 +46,13 @@ export interface ShareUrgeDeps {
 export async function describeShareUrge(
   deps: ShareUrgeDeps,
   now: Date,
-  options: { episodeWindowHours?: number; postCooldownHours?: number; minImportance?: number } = {},
+  options: {
+    episodeWindowHours?: number;
+    postCooldownHours?: number;
+    minImportance?: number;
+    /** M9 #110: 個別に伝えられる相手がいるとき、SNS と直接伝達の両方を選択肢として言語化する */
+    personalCounterpart?: string | undefined;
+  } = {},
 ): Promise<string | null> {
   const episodeWindowHours = options.episodeWindowHours ?? DRIVES_DEFAULTS.shareUrgeEpisodeWindowHours;
   const postCooldownHours = options.postCooldownHours ?? DRIVES_DEFAULTS.shareUrgePostCooldownHours;
@@ -63,7 +69,21 @@ export async function describeShareUrge(
     return null;
   }
 
+  if (options.personalCounterpart != null) {
+    return `最近、心が動く出来事があった。誰かに話したい気持ちがある。SNSに書くのもいいし、${options.personalCounterpart}に直接伝えるのもいい。`;
+  }
   return '最近、心が動く出来事があった。誰かに話したい気持ちがある。';
+}
+
+/**
+ * 返事待ちの気掛かり（M9 #110）: 自分が最後にメッセージを送ってから長時間返信が
+ * 無い相手への「どうしているかな」を言語化する。判定（待ち時間・催促クールダウン・
+ * 夜間ゲート）は phone service 側の決定論導出が済ませており、ここは言葉にするだけ。
+ * 相手の返信（last_incoming_at 更新）で自然に解消される。
+ */
+export function describeAwaitingReply(counterpartName: string | null): string {
+  const name = counterpartName ?? '相手';
+  return `${name}にメッセージを送ってから、まだ返事が来ていない。どうしているか少し気になる。`;
 }
 
 /**
@@ -215,6 +235,10 @@ export interface BuildDrivesOptions {
   snsLastCheckedAt?: Date | null | undefined;
   /** 返信待ち圧の判定に使う最古の未読チャット受信時刻（check_phone 構成時のみ。null = 未読なし） */
   chatOldestUnreadAt?: Date | null | undefined;
+  /** 返事待ちの気掛かり（M9）: 催促可能な相手の表示名（send_message 構成時のみ。null = 該当なし） */
+  awaitingReplyCounterpart?: string | null | undefined;
+  /** 個別共有（M9）: 共有欲が湧いたとき直接伝えられる相手の表示名（send_message 構成時のみ） */
+  shareUrgePersonalCounterpart?: string | null | undefined;
 }
 
 /** drives セクションの本文（untrusted タグは呼び出し側で付ける） */
@@ -246,10 +270,15 @@ export async function buildDrivesDescription(
     }
   }
   if (options.shareUrge != null) {
-    const shareUrge = await describeShareUrge(options.shareUrge, now).catch(() => null);
+    const shareUrge = await describeShareUrge(options.shareUrge, now, {
+      ...(options.shareUrgePersonalCounterpart != null ? { personalCounterpart: options.shareUrgePersonalCounterpart } : {}),
+    }).catch(() => null);
     if (shareUrge != null) {
       parts.push(shareUrge);
     }
+  }
+  if (options.awaitingReplyCounterpart !== undefined && options.awaitingReplyCounterpart !== null) {
+    parts.push(describeAwaitingReply(options.awaitingReplyCounterpart));
   }
   if (options.snsLastCheckedAt !== undefined) {
     const snsCuriosity = describeSnsCuriosity(options.snsLastCheckedAt, now);

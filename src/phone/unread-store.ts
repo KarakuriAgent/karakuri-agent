@@ -37,6 +37,24 @@ export interface UnreadThread {
   messages: UnreadMessage[];
 }
 
+/** スレッドごとの会話状態（M9 #110）: 催促判定・能動送信の礼儀ゲートの一次データ */
+export interface PhoneThreadState {
+  threadId: string;
+  counterpartId: string | null;
+  counterpartName: string | null;
+  lastIncomingAt: Date | null;
+  lastOutgoingAt: Date | null;
+  lastProactiveAt: Date | null;
+  lastNudgeAt: Date | null;
+}
+
+export interface NoteOutgoingOptions {
+  /** 能動送信（send_message）による発信。礼儀ゲート（最小間隔・日次上限）の基準になる */
+  proactive?: boolean;
+  /** 催促（返事待ちの追い送り）。同一スレッドのクールダウン基準になる */
+  nudge?: boolean;
+}
+
 export interface IPhoneUnreadStore {
   enqueue(message: NewUnreadMessage): Promise<number>;
   /** 未処理メッセージをスレッド単位にまとめて返す（古いスレッド順、maxThreads まで） */
@@ -45,6 +63,12 @@ export interface IPhoneUnreadStore {
   countPending(): Promise<number>;
   /** 最も古い未処理メッセージの受信時刻（無ければ null）。返信待ち圧の導出に使う */
   oldestPendingReceivedAt(): Promise<Date | null>;
+  /** 既知スレッドの会話状態を返す（M9）。着信は enqueue が自動更新する */
+  listThreadStates(): Promise<PhoneThreadState[]>;
+  /** 発信を記録する（check_phone 返信・send_message 送信成功時） */
+  noteOutgoing(threadId: string, at: Date, options?: NoteOutgoingOptions): Promise<void>;
+  /** since 以降に能動送信したスレッド数（日次上限ゲート用） */
+  countProactiveSince(since: Date): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -92,6 +116,21 @@ export class SqlitePhoneUnreadStore implements IPhoneUnreadStore {
       message.authorId ?? null,
       message.authorName ?? null,
       message.body,
+      message.receivedAt.toISOString(),
+    );
+    // 会話状態台帳（M9）: 着信を記録する。counterpart は分かるときだけ上書きし、
+    // last_incoming_at は後退させない
+    this.db.prepare(`
+      INSERT INTO phone_thread_state (thread_id, counterpart_id, counterpart_name, last_incoming_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        counterpart_id = COALESCE(excluded.counterpart_id, counterpart_id),
+        counterpart_name = COALESCE(excluded.counterpart_name, counterpart_name),
+        last_incoming_at = MAX(COALESCE(last_incoming_at, ''), excluded.last_incoming_at)
+    `).run(
+      message.threadId,
+      message.authorId ?? null,
+      message.authorName ?? null,
       message.receivedAt.toISOString(),
     );
     return Promise.resolve(Number(result.lastInsertRowid));
@@ -153,6 +192,55 @@ export class SqlitePhoneUnreadStore implements IPhoneUnreadStore {
   async oldestPendingReceivedAt(): Promise<Date | null> {
     const row = this.db.prepare('SELECT MIN(received_at) AS oldest FROM phone_unread WHERE processed_at IS NULL').get() as { oldest: string | null };
     return Promise.resolve(row.oldest != null ? new Date(row.oldest) : null);
+  }
+
+  async listThreadStates(): Promise<PhoneThreadState[]> {
+    const rows = this.db.prepare(`
+      SELECT thread_id, counterpart_id, counterpart_name, last_incoming_at, last_outgoing_at, last_proactive_at, last_nudge_at
+      FROM phone_thread_state
+    `).all() as Array<{
+      thread_id: string;
+      counterpart_id: string | null;
+      counterpart_name: string | null;
+      last_incoming_at: string | null;
+      last_outgoing_at: string | null;
+      last_proactive_at: string | null;
+      last_nudge_at: string | null;
+    }>;
+    return Promise.resolve(rows.map((row) => ({
+      threadId: row.thread_id,
+      counterpartId: row.counterpart_id,
+      counterpartName: row.counterpart_name,
+      lastIncomingAt: row.last_incoming_at != null ? new Date(row.last_incoming_at) : null,
+      lastOutgoingAt: row.last_outgoing_at != null ? new Date(row.last_outgoing_at) : null,
+      lastProactiveAt: row.last_proactive_at != null ? new Date(row.last_proactive_at) : null,
+      lastNudgeAt: row.last_nudge_at != null ? new Date(row.last_nudge_at) : null,
+    })));
+  }
+
+  async noteOutgoing(threadId: string, at: Date, options: NoteOutgoingOptions = {}): Promise<void> {
+    const iso = at.toISOString();
+    this.db.prepare(`
+      INSERT INTO phone_thread_state (thread_id, last_outgoing_at, last_proactive_at, last_nudge_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET
+        last_outgoing_at = MAX(COALESCE(last_outgoing_at, ''), excluded.last_outgoing_at),
+        last_proactive_at = COALESCE(excluded.last_proactive_at, last_proactive_at),
+        last_nudge_at = COALESCE(excluded.last_nudge_at, last_nudge_at)
+    `).run(
+      threadId,
+      iso,
+      options.proactive === true ? iso : null,
+      options.nudge === true ? iso : null,
+    );
+    return Promise.resolve();
+  }
+
+  async countProactiveSince(since: Date): Promise<number> {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS count FROM phone_thread_state WHERE last_proactive_at >= ?',
+    ).get(since.toISOString()) as { count: number };
+    return Promise.resolve(row.count);
   }
 
   async close(): Promise<void> {

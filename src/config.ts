@@ -52,6 +52,8 @@ const configSchema = z.object({
   kwCommandCheckPhone: z.string().trim().min(1).optional(),
   kwCommandBrowseSns: z.string().trim().min(1).optional(),
   kwCommandPostSns: z.string().trim().min(1).optional(),
+  kwCommandSendMessage: z.string().trim().min(1).optional(),
+  appraisalTimeoutMs: z.coerce.number().int().positive().optional(),
   snsRateLimitPostPerHour: z.coerce.number().int().min(0).default(3),
   snsRateLimitPostPerDay: z.coerce.number().int().min(0).default(20),
   snsRateLimitPostMinIntervalMinutes: z.coerce.number().min(0).default(15),
@@ -144,6 +146,8 @@ export interface WorldActionCommands {
   checkPhone?: string | undefined;
   browseSns?: string | undefined;
   postSns?: string | undefined;
+  /** M9 #110: 能動メッセージ（催促・個別共有）。checkPhone の設定が前提 */
+  sendMessage?: string | undefined;
 }
 
 export interface Config {
@@ -200,6 +204,8 @@ export interface Config {
   repetitiveToolCallRecoveryEnabled: boolean;
   /** M2: appraisal（統合判定）の有効化（切り分け・ロールバック用） */
   appraisalEnabled: boolean;
+  /** M2: appraisal LLM 呼び出しのタイムアウト（ms）。未指定はサービス既定（30 秒） */
+  appraisalTimeoutMs?: number | undefined;
   /** M2: 内部状態の自然言語注入の有効化（切り分け・ロールバック用） */
   innerStateInjectionEnabled: boolean;
   /** M3: 埋め込みモデル（OpenAI 互換で差し替え可能。未設定なら FTS のみで想起） */
@@ -292,6 +298,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     kwCommandCheckPhone: normalizeOptionalString(env.KW_COMMAND_CHECK_PHONE),
     kwCommandBrowseSns: normalizeOptionalString(env.KW_COMMAND_BROWSE_SNS),
     kwCommandPostSns: normalizeOptionalString(env.KW_COMMAND_POST_SNS),
+    kwCommandSendMessage: normalizeOptionalString(env.KW_COMMAND_SEND_MESSAGE),
+    appraisalTimeoutMs: env.APPRAISAL_TIMEOUT_MS,
     snsRateLimitPostPerHour: env.SNS_RATE_LIMIT_POST_PER_HOUR,
     snsRateLimitPostPerDay: env.SNS_RATE_LIMIT_POST_PER_DAY,
     snsRateLimitPostMinIntervalMinutes: env.SNS_RATE_LIMIT_POST_MIN_INTERVAL_MINUTES,
@@ -431,6 +439,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ...(parsed.kwCommandCheckPhone != null ? { checkPhone: parsed.kwCommandCheckPhone } : {}),
       ...(parsed.kwCommandBrowseSns != null ? { browseSns: parsed.kwCommandBrowseSns } : {}),
       ...(parsed.kwCommandPostSns != null ? { postSns: parsed.kwCommandPostSns } : {}),
+      ...(parsed.kwCommandSendMessage != null ? { sendMessage: parsed.kwCommandSendMessage } : {}),
     };
     const configuredWorldCommands = Object.values(worldActionCommands).filter((value) => value != null);
     if (configuredWorldCommands.length > 0 && karakuriWorld == null) {
@@ -440,7 +449,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
     }
     if (new Set(configuredWorldCommands).size !== configuredWorldCommands.length) {
-      throw new Error('KW_COMMAND_CHECK_PHONE / KW_COMMAND_BROWSE_SNS / KW_COMMAND_POST_SNS must be distinct command names.');
+      throw new Error('KW_COMMAND_CHECK_PHONE / KW_COMMAND_BROWSE_SNS / KW_COMMAND_POST_SNS / KW_COMMAND_SEND_MESSAGE must be distinct command names.');
     }
     // check_phone は未読を消費して返信を投稿する。投稿経路（Discord REST sink）が無い構成で
     // 迂回だけ有効になると、全ユーザーメッセージが応答されないまま消費される
@@ -449,6 +458,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         'KW_COMMAND_CHECK_PHONE requires a Discord message sink: set ALLOWED_CHANNEL_IDS or REPORT_CHANNEL_ID '
         + '(otherwise diverted chat messages could never be replied to).',
       );
+    }
+    // send_message は着信の追跡（phone_thread_state）が未読キュー経由の enqueue に
+    // 依存するため、check_phone（未読迂回モード）の設定を前提とする（M9 #110）
+    if (worldActionCommands.sendMessage != null && worldActionCommands.checkPhone == null) {
+      throw new Error('KW_COMMAND_SEND_MESSAGE requires KW_COMMAND_CHECK_PHONE (incoming tracking relies on the unread queue).');
     }
 
     const snsRateLimits: SnsRateLimitConfig = {
@@ -503,6 +517,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         true,
       ),
       appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
+      ...(parsed.appraisalTimeoutMs != null ? { appraisalTimeoutMs: parsed.appraisalTimeoutMs } : {}),
       innerStateInjectionEnabled: parseBooleanEnv(parsed.innerStateInjectionEnabled, 'INNER_STATE_INJECTION_ENABLED', true),
       embeddingModel: normalizeOptionalString(parsed.embeddingModel),
       embeddingApiKey: normalizeOptionalString(parsed.embeddingApiKey),

@@ -1041,8 +1041,14 @@ export class KarakuriAgent implements IAgent {
       }
       // 返信待ち圧: 最古の未読チャットの放置時間を欲求として注入する（check_phone 構成時のみ）
       let chatOldestUnreadAt: Date | null | undefined;
+      // 能動メッセージ（M9 #110）: 催促の気掛かりと個別共有の送り先（send_message 構成時のみ）
+      let awaitingReplyCounterpart: string | null | undefined;
+      let sharePersonalCounterpart: string | null | undefined;
       if (this.phoneIntegration != null) {
         chatOldestUnreadAt = await this.phoneIntegration.oldestPendingReceivedAt();
+        const proactive = await this.phoneIntegration.proactiveMessagingStatus();
+        awaitingReplyCounterpart = proactive.awaitingReplyCounterpart;
+        sharePersonalCounterpart = proactive.sharePersonalCounterpart;
       }
       const description = await buildDrivesDescription(state, this.actionLedger, receivedAt, {
         ...(this.satiationThreshold != null ? { satiationThreshold: this.satiationThreshold } : {}),
@@ -1050,6 +1056,8 @@ export class KarakuriAgent implements IAgent {
         ...(shareUrge != null ? { shareUrge } : {}),
         ...(snsLastCheckedAt !== undefined ? { snsLastCheckedAt } : {}),
         ...(chatOldestUnreadAt !== undefined ? { chatOldestUnreadAt } : {}),
+        ...(awaitingReplyCounterpart !== undefined ? { awaitingReplyCounterpart } : {}),
+        ...(sharePersonalCounterpart != null ? { shareUrgePersonalCounterpart: sharePersonalCounterpart } : {}),
       });
       if (description == null) {
         return null;

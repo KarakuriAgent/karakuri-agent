@@ -1475,6 +1475,7 @@ describe('KarakuriAgent', () => {
       onWorldCommand,
       buildStatusSection: async () => '<phone-status>\nチャット未読: 2 件\n</phone-status>',
       oldestPendingReceivedAt: async () => null,
+      proactiveMessagingStatus: async () => ({ awaitingReplyCounterpart: null, sharePersonalCounterpart: null }),
     });
 
     stubKarakuriWorldNotificationFetch();
@@ -1520,6 +1521,7 @@ describe('KarakuriAgent', () => {
       onWorldCommand,
       buildStatusSection: async () => null,
       oldestPendingReceivedAt: async () => null,
+      proactiveMessagingStatus: async () => ({ awaitingReplyCounterpart: null, sharePersonalCounterpart: null }),
     });
 
     stubKarakuriWorldNotificationFetch();

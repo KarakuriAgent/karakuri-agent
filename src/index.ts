@@ -263,6 +263,7 @@ async function main(): Promise<void> {
           relationStore,
           ...(config.agentSelfNames != null ? { selfAliases: config.agentSelfNames } : {}),
           tuning: lifeTuning,
+          ...(config.appraisalTimeoutMs != null ? { timeoutMs: config.appraisalTimeoutMs } : {}),
           ...(messageSink != null ? { messageSink } : {}),
           ...(config.reportChannelId != null ? { reportChannelId: config.reportChannelId } : {}),
         });
@@ -358,6 +359,9 @@ async function main(): Promise<void> {
     rateLimiters: snsRateLimiters,
     perceptionBuffer,
     ...(config.karakuriWorldBotIds != null ? { karakuriWorldBotIds: config.karakuriWorldBotIds } : {}),
+    // M9 #110: 深夜ゲートと個別共有（send-intent の材料）
+    timezone: config.timezone,
+    episodeSource: episodeStore,
     threadMutex: chatThreadMutex,
   });
   agent.setPhoneIntegration(phoneService);

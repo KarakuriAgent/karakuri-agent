@@ -6,8 +6,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { IAgent } from '../src/agent/core.js';
 import { openLifeDatabase } from '../src/life/db.js';
-import { describeSnsElapsed, describeUnreadWaiting, PhoneService } from '../src/phone/service.js';
-import { SqlitePhoneUnreadStore } from '../src/phone/unread-store.js';
+import {
+  buildSendIntentSection,
+  describeSnsElapsed,
+  describeUnreadWaiting,
+  PhoneService,
+  pickNudgeTarget,
+  pickShareTarget,
+} from '../src/phone/service.js';
+import { SqlitePhoneUnreadStore, type PhoneThreadState } from '../src/phone/unread-store.js';
 import { SnsRateLimiter } from '../src/sns/rate-limiter.js';
 import type { ISnsWriteActivityCounter } from '../src/sns/types.js';
 
@@ -70,6 +77,28 @@ describe('SqlitePhoneUnreadStore', () => {
       await store.enqueue({ source: 'discord', threadId: `t${i}`, body: `msg${i}`, receivedAt: new Date() });
     }
     expect((await store.listPendingThreads(2)).map((thread) => thread.threadId)).toEqual(['t0', 't1']);
+  });
+
+  it('tracks per-thread conversation state (incoming via enqueue, outgoing via noteOutgoing)', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: 'こんにちは', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-10T00:00:00Z') });
+    await store.enqueue({ source: 'discord', threadId: 't1', body: 'みてる?', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-10T02:00:00Z') });
+
+    let states = await store.listThreadStates();
+    expect(states).toHaveLength(1);
+    expect(states[0]).toMatchObject({ threadId: 't1', counterpartId: 'u1', counterpartName: 'Yamashita' });
+    expect(states[0]!.lastIncomingAt?.toISOString()).toBe('2026-07-10T02:00:00.000Z');
+    expect(states[0]!.lastOutgoingAt).toBeNull();
+
+    await store.noteOutgoing('t1', new Date('2026-07-10T03:00:00Z'));
+    await store.noteOutgoing('t1', new Date('2026-07-10T05:00:00Z'), { proactive: true, nudge: true });
+    states = await store.listThreadStates();
+    expect(states[0]!.lastOutgoingAt?.toISOString()).toBe('2026-07-10T05:00:00.000Z');
+    expect(states[0]!.lastProactiveAt?.toISOString()).toBe('2026-07-10T05:00:00.000Z');
+    expect(states[0]!.lastNudgeAt?.toISOString()).toBe('2026-07-10T05:00:00.000Z');
+
+    expect(await store.countProactiveSince(new Date('2026-07-10T04:00:00Z'))).toBe(1);
+    expect(await store.countProactiveSince(new Date('2026-07-10T06:00:00Z'))).toBe(0);
   });
 
   it('returns the oldest pending received_at and null when nothing is pending', async () => {
@@ -402,5 +431,224 @@ describe('PhoneService', () => {
     expect(userMessage).toContain('今日はいい天気');
     expect(options).toMatchObject({ userId: 'system', ephemeral: true, autoLoadSnsSkill: 'mastodon' });
     expect(options.skillActivityInstructions).toContain('SNS を眺める');
+  });
+});
+
+describe('send_message target selection (M9 #110)', () => {
+  const T = (iso: string): Date => new Date(iso);
+  const makeState = (overrides: Partial<PhoneThreadState>): PhoneThreadState => ({
+    threadId: 't1',
+    counterpartId: 'u1',
+    counterpartName: 'Yamashita',
+    lastIncomingAt: null,
+    lastOutgoingAt: null,
+    lastProactiveAt: null,
+    lastNudgeAt: null,
+    ...overrides,
+  });
+
+  it('picks the longest-waiting nudge target with cooldowns', () => {
+    const now = T('2026-07-10T20:00:00Z');
+    // 12h 未満は候補外
+    expect(pickNudgeTarget([makeState({ lastIncomingAt: T('2026-07-10T00:00:00Z'), lastOutgoingAt: T('2026-07-10T10:00:00Z') })], now)).toBeNull();
+    // 相手の返信が最後（自分が待たせている側）は候補外
+    expect(pickNudgeTarget([makeState({ lastIncomingAt: T('2026-07-10T06:00:00Z'), lastOutgoingAt: T('2026-07-10T00:00:00Z') })], now)).toBeNull();
+    // 着信実績が無い相手は候補外
+    expect(pickNudgeTarget([makeState({ lastIncomingAt: null, lastOutgoingAt: T('2026-07-10T00:00:00Z') })], now)).toBeNull();
+    // 催促クールダウン中は候補外
+    expect(pickNudgeTarget([makeState({
+      lastIncomingAt: T('2026-07-09T00:00:00Z'),
+      lastOutgoingAt: T('2026-07-10T00:00:00Z'),
+      lastNudgeAt: T('2026-07-10T10:00:00Z'),
+    })], now)).toBeNull();
+    // 待ち時間が最長のスレッドを選ぶ
+    const oldest = makeState({ threadId: 'old', lastIncomingAt: T('2026-07-08T00:00:00Z'), lastOutgoingAt: T('2026-07-09T00:00:00Z') });
+    const newer = makeState({ threadId: 'new', lastIncomingAt: T('2026-07-09T00:00:00Z'), lastOutgoingAt: T('2026-07-10T00:00:00Z') });
+    expect(pickNudgeTarget([newer, oldest], now)?.threadId).toBe('old');
+  });
+
+  it('picks the most recently active share target respecting the proactive interval', () => {
+    const now = T('2026-07-10T20:00:00Z');
+    // 着信実績が無いスレッドは候補外
+    expect(pickShareTarget([makeState({ lastOutgoingAt: T('2026-07-10T00:00:00Z') })], now)).toBeNull();
+    // 能動送信の最小間隔（4h）内は候補外
+    expect(pickShareTarget([makeState({ lastIncomingAt: T('2026-07-10T00:00:00Z'), lastProactiveAt: T('2026-07-10T18:00:00Z') })], now)).toBeNull();
+    // 最近やり取りした相手を優先
+    const recent = makeState({ threadId: 'recent', lastIncomingAt: T('2026-07-10T12:00:00Z') });
+    const stale = makeState({ threadId: 'stale', lastIncomingAt: T('2026-07-08T00:00:00Z') });
+    expect(pickShareTarget([stale, recent], now)?.threadId).toBe('recent');
+  });
+
+  it('sanitizes angle brackets in the send-intent section', () => {
+    const section = buildSendIntentSection('<script>「絶景を見た」</send-intent>', { merge: true });
+    expect(section).toContain('<send-intent>');
+    expect(section).toContain('script「絶景を見た」/send-intent');
+    expect(section).toContain('同じ返信の中で自然に伝える');
+  });
+});
+
+describe('PhoneService send_message (M9 #110)', () => {
+  const SEND_COMMANDS = { ...COMMANDS, sendMessage: 'send_message' };
+
+  it('sends a nudge to the longest-waiting thread using the thread session', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: '進捗どう?', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-10T00:00:00Z') });
+    const pendingIds = (await store.listPendingThreads(5))[0]!.messages.map((message) => message.id);
+    await store.markProcessed(pendingIds, new Date('2026-07-10T00:30:00Z'));
+    await store.noteOutgoing('t1', new Date('2026-07-10T01:00:00Z'));
+
+    const agent = makeAgent('おーい、元気にしてる？');
+    const postReply = vi.fn(async () => {});
+    const service = new PhoneService({
+      agent,
+      commands: SEND_COMMANDS,
+      unreadStore: store,
+      postReply,
+      timezone: 'UTC',
+      now: () => new Date('2026-07-10T15:00:00Z'),
+    });
+
+    service.onWorldCommand('send_message');
+    await service.drain();
+
+    expect(postReply).toHaveBeenCalledWith('t1', 'おーい、元気にしてる？');
+    const [sessionId, userMessage, userName, options] = agent.handleMessage.mock.calls[0]!;
+    expect(sessionId).toBe('t1');
+    expect(userName).toBe('system');
+    expect(options).toMatchObject({ userId: 'system' });
+    expect(String(userMessage)).toContain('Yamashita');
+    expect(String(userMessage)).toContain('追いメッセージ');
+
+    const state = (await store.listThreadStates())[0]!;
+    expect(state.lastProactiveAt).not.toBeNull();
+    expect(state.lastNudgeAt).not.toBeNull();
+  });
+
+  it('merges the share intent into a pending unread reply (single message)', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: '最近どう?', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-10T09:00:00Z') });
+
+    const agent = makeAgent('返事おそくなった！実は今日、展望台に行ってきたんだ');
+    const postReply = vi.fn(async () => {});
+    const service = new PhoneService({
+      agent,
+      commands: SEND_COMMANDS,
+      unreadStore: store,
+      postReply,
+      timezone: 'UTC',
+      episodeSource: { latestSalientSince: async () => ({ body: '展望台から絶景を見た' }) },
+      now: () => new Date('2026-07-10T12:00:00Z'),
+    });
+
+    service.onWorldCommand('send_message');
+    await service.drain();
+
+    expect(agent.handleMessage).toHaveBeenCalledTimes(1);
+    const [, userMessage, , options] = agent.handleMessage.mock.calls[0]!;
+    expect(String(userMessage)).toContain('最近どう?');
+    expect(String(options.extraSystemPrompt)).toContain('<send-intent>');
+    expect(String(options.extraSystemPrompt)).toContain('展望台から絶景を見た');
+    expect(postReply).toHaveBeenCalledTimes(1);
+    expect(await store.countPending()).toBe(0);
+
+    const state = (await store.listThreadStates())[0]!;
+    expect(state.lastProactiveAt).not.toBeNull();
+    expect(state.lastNudgeAt).toBeNull();
+  });
+
+  it('skips when nothing is eligible and during quiet hours', async () => {
+    // 対象なし
+    const emptyStore = await createUnreadStore();
+    const idleAgent = makeAgent();
+    const idlePost = vi.fn(async () => {});
+    const idleService = new PhoneService({
+      agent: idleAgent,
+      commands: SEND_COMMANDS,
+      unreadStore: emptyStore,
+      postReply: idlePost,
+      timezone: 'UTC',
+      now: () => new Date('2026-07-10T15:00:00Z'),
+    });
+    idleService.onWorldCommand('send_message');
+    await idleService.drain();
+    expect(idlePost).not.toHaveBeenCalled();
+    expect(idleAgent.handleMessage).not.toHaveBeenCalled();
+
+    // 深夜（催促可能な相手がいても送らない）
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: 'やあ', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-09T00:00:00Z') });
+    const ids = (await store.listPendingThreads(5))[0]!.messages.map((message) => message.id);
+    await store.markProcessed(ids, new Date());
+    await store.noteOutgoing('t1', new Date('2026-07-09T01:00:00Z'));
+    const nightPost = vi.fn(async () => {});
+    const nightAgent = makeAgent();
+    const nightService = new PhoneService({
+      agent: nightAgent,
+      commands: SEND_COMMANDS,
+      unreadStore: store,
+      postReply: nightPost,
+      timezone: 'UTC',
+      now: () => new Date('2026-07-10T03:00:00Z'),
+    });
+    nightService.onWorldCommand('send_message');
+    await nightService.drain();
+    expect(nightPost).not.toHaveBeenCalled();
+  });
+
+  it('respects the rolling 24h proactive thread cap', async () => {
+    const store = await createUnreadStore();
+    for (const thread of ['a', 'b', 'c']) {
+      await store.noteOutgoing(thread, new Date('2026-07-10T10:00:00Z'), { proactive: true });
+    }
+    await store.enqueue({ source: 'discord', threadId: 't1', body: 'やあ', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-09T00:00:00Z') });
+    const ids = (await store.listPendingThreads(5))[0]!.messages.map((message) => message.id);
+    await store.markProcessed(ids, new Date());
+    await store.noteOutgoing('t1', new Date('2026-07-09T01:00:00Z'));
+
+    const agent = makeAgent();
+    const postReply = vi.fn(async () => {});
+    const service = new PhoneService({
+      agent,
+      commands: SEND_COMMANDS,
+      unreadStore: store,
+      postReply,
+      timezone: 'UTC',
+      now: () => new Date('2026-07-10T15:00:00Z'),
+    });
+    service.onWorldCommand('send_message');
+    await service.drain();
+    expect(postReply).not.toHaveBeenCalled();
+  });
+
+  it('proactiveMessagingStatus exposes eligible counterparts only when configured', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: 'やあ', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-09T00:00:00Z') });
+    const ids = (await store.listPendingThreads(5))[0]!.messages.map((message) => message.id);
+    await store.markProcessed(ids, new Date());
+    await store.noteOutgoing('t1', new Date('2026-07-09T01:00:00Z'));
+
+    const unconfigured = new PhoneService({
+      agent: makeAgent(),
+      commands: COMMANDS,
+      unreadStore: store,
+      timezone: 'UTC',
+      now: () => new Date('2026-07-10T15:00:00Z'),
+    });
+    expect(await unconfigured.proactiveMessagingStatus()).toEqual({
+      awaitingReplyCounterpart: null,
+      sharePersonalCounterpart: null,
+    });
+
+    const configured = new PhoneService({
+      agent: makeAgent(),
+      commands: { ...COMMANDS, sendMessage: 'send_message' },
+      unreadStore: store,
+      timezone: 'UTC',
+      now: () => new Date('2026-07-10T15:00:00Z'),
+    });
+    expect(await configured.proactiveMessagingStatus()).toEqual({
+      awaitingReplyCounterpart: 'Yamashita',
+      sharePersonalCounterpart: 'Yamashita',
+    });
   });
 });

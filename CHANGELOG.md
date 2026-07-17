@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- M9 #110: 能動メッセージ `send_message`（4 つ目の KW カスタムコマンド、`KW_COMMAND_SEND_MESSAGE`。`KW_COMMAND_CHECK_PHONE` 必須）。催促（12h 無応答で「返事待ちの気掛かり」drive → 追い送り、同一スレッド 24h に 1 回）と個別共有（共有欲の個別分岐）を世界内行為として実行する。本文は対象スレッドの既存セッションで生成し、未読が残っていれば「返信 + 伝えたい話」を 1 通に合流。スレッド会話状態台帳 phone_thread_state（life.db migration v11、既存 phone_unread からバックフィル）と決定論の礼儀ゲート（同一スレッド 4h 間隔・直近 24h に 3 スレッド・深夜 0〜7 時は送らない）つき。
+- `APPRAISAL_TIMEOUT_MS`: appraisal LLM 呼び出しのタイムアウトを env で設定可能に（既定 30 秒のまま。遅いバックエンドでの world_event スキップ対策）。
+
 ### Fixed
 
 - karakuri-world: 実サーバーの 409 エラーボディ（`hint` / `suggestions` 付き）が `.strict()` スキーマでパース失敗し、busy → informational 変換が本番で一度も効かず生の例外（"Conflict" のみ）が LLM に露出していた。エラースキーマを passthrough 化して `hint` を取り込み、command への 409 は code の有無によらず常に informational な busy 結果（サーバーの hint つき）へ変換する（サーバー仕様で notification_id は最新以外無効になるため、409 は世界側の正常な応答）。実機ではこの生例外を「サーバーが混んでいる」と誤解釈して 10 分待機を繰り返し、駅での長時間待機の主因になっていた。

@@ -273,6 +273,31 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       ALTER TABLE episode_drafts ADD COLUMN max_importance_label TEXT;
     `,
   },
+  {
+    version: 11,
+    up: `
+      -- スレッドごとの会話状態台帳（M9 #110）: 催促（返事待ち）判定と能動送信の
+      -- 礼儀ゲートの一次データ。着信は未読 enqueue 時、発信は check_phone 返信 /
+      -- send_message 送信成功時に更新する。会話内容は持たない（一次資料は experience_log）
+      CREATE TABLE phone_thread_state (
+        thread_id         TEXT PRIMARY KEY,
+        counterpart_id    TEXT,
+        counterpart_name  TEXT,
+        last_incoming_at  TEXT,
+        last_outgoing_at  TEXT,
+        last_proactive_at TEXT,
+        last_nudge_at     TEXT
+      );
+      -- 既存の未読キューから着信側をバックフィル（発信側は null 開始 = 次の送信から追跡）
+      INSERT INTO phone_thread_state (thread_id, counterpart_id, counterpart_name, last_incoming_at)
+      SELECT thread_id,
+             (SELECT author_id FROM phone_unread p2 WHERE p2.thread_id = p1.thread_id ORDER BY p2.id DESC LIMIT 1),
+             (SELECT author_name FROM phone_unread p2 WHERE p2.thread_id = p1.thread_id ORDER BY p2.id DESC LIMIT 1),
+             MAX(received_at)
+      FROM phone_unread p1
+      GROUP BY thread_id;
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {

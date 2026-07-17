@@ -54,6 +54,8 @@ export interface IEpisodeStore {
   count(): Promise<number>;
   /** 共有欲（M8 追補）用: since 以降で importance が閾値以上のエピソード数 */
   countSalientSince(since: Date, minImportance: number): Promise<number>;
+  /** 個別共有（M9 #110）用: since 以降で最も新しい閾値以上のエピソード（send-intent の材料） */
+  latestSalientSince(since: Date, minImportance: number): Promise<Episode | null>;
   listByPeriod(fromIso: string, toIso: string): Promise<Episode[]>;
   /** FTS5 trigram 検索（3 文字未満のクエリは LIKE フォールバック）。rank 昇順 */
   searchText(query: string, limit: number): Promise<Array<{ episode: Episode; rank: number }>>;
@@ -170,6 +172,13 @@ export class SqliteEpisodeStore implements IEpisodeStore {
       'SELECT COUNT(*) AS count FROM episodes WHERE occurred_at >= ? AND importance >= ?',
     ).get(since.toISOString(), minImportance) as { count: number };
     return Promise.resolve(row.count);
+  }
+
+  async latestSalientSince(since: Date, minImportance: number): Promise<Episode | null> {
+    const row = this.db.prepare<[string, number], EpisodeRow>(
+      'SELECT * FROM episodes WHERE occurred_at >= ? AND importance >= ? ORDER BY occurred_at DESC, id DESC LIMIT 1',
+    ).get(since.toISOString(), minImportance);
+    return Promise.resolve(row != null ? mapEpisodeRow(row) : null);
   }
 
   async listByPeriod(fromIso: string, toIso: string): Promise<Episode[]> {
