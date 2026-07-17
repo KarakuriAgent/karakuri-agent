@@ -272,4 +272,29 @@ describe('SnsSkillContextProvider', () => {
     expect(record).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
+
+  it('presents refetched notifications as already-checked instead of new (display dedup)', async () => {
+    // 記録だけ止めても表示が毎回「新着」だと、エージェントには未読が残り続けて
+    // いるように見えて browse を選び続ける（実機で確認）
+    const activityStore = createActivityStore({ getLastNotificationId: vi.fn(async () => 'notif-1') });
+    const snsProvider = createProvider({
+      getNotifications: vi.fn(async () => createNotificationResult([
+        { id: 'notif-2', type: 'reply', createdAt: '2025-01-02T00:00:00.000Z', accountId: 'acct-2', accountName: 'Bob', accountHandle: 'bob@example.com', post: createPost('post-2', 'Stalled reply') },
+      ], false)),
+    });
+
+    const provider = new SnsSkillContextProvider({
+      activityStore,
+      snsProvider,
+      provider: 'x',
+      experienceRecorder: { record: vi.fn(async () => 1) } as never,
+    });
+
+    const first = await provider.getContext();
+    expect(first.text).toContain('Stalled reply');
+
+    const second = await provider.getContext();
+    expect(second.text).not.toContain('Stalled reply');
+    expect(second.text).toContain('既に確認済みの通知 1 件のみ');
+  });
 });

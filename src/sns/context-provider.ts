@@ -94,13 +94,13 @@ export class SnsSkillContextProvider implements SkillContextProvider {
         // 体験ログ（一次資料）へ届いた通知を逐語記録する。turn が abort されると
         // カーソルが戻り同じ通知を再取得しうるが、raw ログの重複は許容する
         // （kind / actor 同様、重複解決は後段・reprocessing の仕事）。
+        // カーソル停滞中の再取得（同一通知）の判定は記録の前に取る — 記録後に取ると
+        // 初回取得分まで「確認済み」扱いになり、一度も提示されないまま隠れてしまう
+        const freshNotifications = notifications.filter((notification) => !this.recordedNotificationIds.has(notification.id));
         if (this.options.provider != null && (this.options.experienceRecorder != null || this.options.appraisalService != null)) {
-          for (const notification of notifications) {
-            // カーソル停滞中の再取得（同一通知）は記録も appraisal もスキップする。
-            // 同じ出来事を何度も「再体験」すると気分・社交欲求が実態から乖離するため
-            if (this.recordedNotificationIds.has(notification.id)) {
-              continue;
-            }
+          // 再取得分は記録も appraisal もスキップする。同じ出来事を何度も
+          // 「再体験」すると気分・社交欲求が実態から乖離するため
+          for (const notification of freshNotifications) {
             const event = normalizeSnsNotification({
               provider: this.options.provider,
               notification,
@@ -156,7 +156,19 @@ export class SnsSkillContextProvider implements SkillContextProvider {
             this.options.reportError?.(`⚠️ [${this.options.provider}] Failed to reserve last SNS notification cursor; duplicate notification fetches may occur`);
           }
         }
-        sections.push(formatNotifications(notifications));
+        // 表示も記録と同じ基準で「確認済み」を反映する — カーソル停滞中の再取得分を
+        // 毎回「新着」として見せると、エージェントには未読が残り続けているように
+        // 見えて browse を選び続ける（記録だけ止めても行動ループが残る）
+        if (notifications.length > 0 && freshNotifications.length === 0) {
+          sections.push(`## 新着通知\n- （新しい通知はない — 取得されたのは既に確認済みの通知 ${notifications.length} 件のみ）`);
+        } else if (freshNotifications.length < notifications.length) {
+          sections.push([
+            formatNotifications(freshNotifications),
+            `- （ほかに確認済みの通知が ${notifications.length - freshNotifications.length} 件ある）`,
+          ].join('\n'));
+        } else {
+          sections.push(formatNotifications(notifications));
+        }
       } else {
         logger.error('Failed to load SNS notifications for context', notificationsResult.reason);
         sections.push(`## 新着通知\n[ERROR: 通知の取得に失敗しました: ${formatContextError(notificationsResult.reason)}]`);
