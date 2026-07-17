@@ -59,6 +59,12 @@ export interface CreateSnsToolsOptions {
   actionLedger?: IActionLedgerStore | undefined;
   /** M8: 書き込みアクションの決定論レート制限（未設定なら制限なし） */
   rateLimiter?: SnsRateLimiter | undefined;
+  /**
+   * #111: 投稿を「返信のみ」に制限する（check_phone / browse_sns の turn）。
+   * 指示ベース（新規投稿はしない）では小さいモデルが守れなかったための決定論ガード。
+   * 拒否は事実だけを返す（内発的感情を捏造しない — レート制限と同じ原則）
+   */
+  replyOnly?: boolean | undefined;
 }
 
 function formatError(error: unknown): string {
@@ -212,7 +218,7 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
 
   const tools: ToolSet = {
     [toolName('post')]: tool({
-      description: `${snsProviderType} に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに { status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? } を返す。プラットフォームのレート制限中は { status: "rate_limited", message } を返す。`,
+      description: `${snsProviderType} に投稿する（本文は140文字以内）。必要なら返信先や引用元、メディア、公開範囲を指定する。重複防止で既存の返信・引用を検出した場合は投稿オブジェクトの代わりに { status: "skipped", reason: "already_replied" | "already_quoted", reply_to_id?, quote_post_id? } を返す。プラットフォームのレート制限中は { status: "rate_limited", message } を返す。返信のみの行動中に reply_to_id なしで呼ぶと { status: "reply_required", message } を返す。`,
       inputSchema: snsPostInputSchema,
       execute: async (input) => executeSafely(toolName('post'), async () => runWithSnsActionLocks([
         input.reply_to_id != null ? buildReplyLockKey(snsProviderType, input.reply_to_id) : '',
@@ -220,6 +226,13 @@ export function createSnsTools(options: CreateSnsToolsOptions): ToolSet {
         // レート制限のゲート判定〜活動ログ記録を provider 単位で直列化（並列ツール呼び出し対策）
         options.rateLimiter != null ? buildWriteGateLockKey(snsProviderType) : '',
       ], async () => {
+        if (options.replyOnly === true && input.reply_to_id == null) {
+          logger.info('SNS post blocked: reply-only turn', { provider: snsProviderType });
+          return {
+            status: 'reply_required' as const,
+            message: 'この行動では届いた反応への返信（reply_to_id 指定）のみ投稿できる。新規投稿は「近況を投稿する」行動の機会に行う。',
+          };
+        }
         assertSupportedVisibility(snsProviderType, input.visibility);
         assertProviderSupportsMedia(snsProviderType, input.media_ids);
         assertProviderSupportsQuote(snsProviderType, input.quote_post_id);

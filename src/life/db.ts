@@ -298,6 +298,15 @@ export const LIFE_DB_MIGRATIONS: readonly LifeDbMigration[] = [
       GROUP BY thread_id;
     `,
   },
+  {
+    version: 12,
+    up: `
+      -- 直近のやり取りの要点（#111）: 「さっき自分が何を返したか」を行動選択が
+      -- 知覚できるよう、最後に送った本文の先頭だけを台帳に持つ（全文の一次資料は
+      -- experience_log。これは知覚用の要点キャッシュ）
+      ALTER TABLE phone_thread_state ADD COLUMN last_outgoing_text TEXT;
+    `,
+  },
 ];
 
 export interface OpenLifeDatabaseOptions {

@@ -358,6 +358,7 @@ async function main(): Promise<void> {
     snsProviders,
     rateLimiters: snsRateLimiters,
     perceptionBuffer,
+    experienceLog: experienceLogStore,
     ...(config.karakuriWorldBotIds != null ? { karakuriWorldBotIds: config.karakuriWorldBotIds } : {}),
     // M9 #110: 深夜ゲートと個別共有（send-intent の材料）
     timezone: config.timezone,

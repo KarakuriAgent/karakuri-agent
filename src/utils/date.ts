@@ -160,6 +160,24 @@ function wallClockAsUtc(date: Date, timezone: string): number {
 }
 
 /**
+ * Format a Date as "MM-DD HH:mm" in the given IANA timezone.
+ * 受信時刻プレフィックス（#111）などプロンプト内の短い時刻表記用。
+ */
+export function formatShortDateTimeInTimezone(date: Date, timezone: string): string {
+  const parts = dateTimeFormatter(timezone).formatToParts(date);
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+  const hour = parts.find((part) => part.type === 'hour')?.value;
+  const minute = parts.find((part) => part.type === 'minute')?.value;
+
+  if (month == null || day == null || hour == null || minute == null) {
+    throw new Error(`Could not format date/time in timezone ${timezone}`);
+  }
+
+  return `${month}-${day} ${hour}:${minute}`;
+}
+
+/**
  * Format a Date as "YYYY-MM-DD HH:mm (timezone)" in the given IANA timezone.
  */
 export function formatDateTimeInTimezone(date: Date, timezone: string): string {

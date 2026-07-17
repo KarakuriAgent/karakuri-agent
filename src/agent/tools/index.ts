@@ -56,6 +56,8 @@ export interface CreateAgentToolsOptions {
   beliefStore?: import('../../life/beliefs.js').IBeliefStore | undefined;
   relationStore?: import('../../life/relations.js').IRelationStore | undefined;
   timezone?: string | undefined;
+  /** #111: SNS 投稿ツールを「返信のみ」に制限する（check_phone / browse_sns の turn） */
+  snsReplyOnly?: boolean | undefined;
 }
 
 export function createAgentTools({
@@ -86,6 +88,7 @@ export function createAgentTools({
   beliefStore,
   relationStore,
   timezone,
+  snsReplyOnly,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
@@ -169,6 +172,7 @@ export function createAgentTools({
     reportError,
     experienceRecorder,
     actionLedger,
+    ...(snsReplyOnly === true ? { snsReplyOnly: true } : {}),
   });
   // Auto-loaded skills have their gated tools registered immediately.
   // loadSkill.execute() also mutates this tools object to dynamically register

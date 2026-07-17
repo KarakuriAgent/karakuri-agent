@@ -25,6 +25,8 @@ export interface AvailableGatedToolSources {
   actionLedger?: IActionLedgerStore | undefined;
   /** M8: provider 別の書き込みレート制限 */
   snsRateLimiters?: Map<SnsCredentials['provider'], SnsRateLimiter> | undefined;
+  /** #111: SNS 投稿ツールを「返信のみ」に制限する（check_phone / browse_sns の turn） */
+  snsReplyOnly?: boolean | undefined;
 }
 
 export function buildGatedToolSets(
@@ -102,6 +104,7 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
       ...(availableToolSources.snsRateLimiters?.get(sns.provider) != null
         ? { rateLimiter: availableToolSources.snsRateLimiters.get(sns.provider)! }
         : {}),
+      ...(availableToolSources.snsReplyOnly === true ? { replyOnly: true } : {}),
     });
     Object.assign(allGatedTools, providerTools);
     if (availableToolSources.snsList == null && availableToolSources.sns != null) {

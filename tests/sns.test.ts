@@ -79,6 +79,24 @@ describe('sns tools', () => {
     expect(Object.keys(tools)).toEqual(EXPECTED_TOOL_NAMES);
   });
 
+  it('blocks non-reply posts on reply-only turns without calling the provider (#111)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify(createStatus()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, replyOnly: true });
+
+    const blocked = await tools.sns_post!.execute!({ text: '新規投稿' }, DEFAULT_OPTIONS) as { status?: string };
+    expect(blocked.status).toBe('reply_required');
+    expect(fetch).not.toHaveBeenCalled();
+
+    // reply_to_id 付きは通る
+    const replied = await tools.sns_post!.execute!({ text: '返信', reply_to_id: 'p1' }, DEFAULT_OPTIONS) as { status?: string };
+    expect(replied.status).toBeUndefined();
+    expect(fetch).toHaveBeenCalled();
+  });
+
   it('returns rate_limited from the deterministic gate without calling the provider (M8)', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const checkWrite = vi.fn(async (kind: string) => ({ allowed: false as const, message: `limited:${kind}`, retryAt: null }));

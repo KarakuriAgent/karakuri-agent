@@ -6,7 +6,7 @@ import type { AppraisalService } from '../life/appraisal.js';
 import type { IBeliefStore } from '../life/beliefs.js';
 import { buildDrivesDescription, type ShareUrgeDeps } from '../life/drives.js';
 import type { INarrativeStore } from '../life/narratives.js';
-import { formatProspectsForPrompt, type IProspectStore } from '../life/prospects.js';
+import { formatProspectsForPrompt, PROSPECT_STALE_TTL_DAYS, type IProspectStore } from '../life/prospects.js';
 import type { IRelationStore } from '../life/relations.js';
 import { describeInnerState, type InnerStateService } from '../life/inner-state.js';
 import { buildOwnActionKey, extractOwnActionTarget, type LoopDetector } from '../life/loop-detector.js';
@@ -88,6 +88,12 @@ export interface HandleMessageOptions {
   ephemeral?: boolean | undefined;
   skillActivityInstructions?: string | undefined;
   autoLoadSnsSkill?: SnsProviderType | boolean | undefined;
+  /**
+   * #111: この turn の SNS 投稿を「返信のみ」に制限する（check_phone / browse_sns —
+   * 新規投稿は post_sns の行動でのみ行う）。指示ベースでは小さいモデルが守れなかったため
+   * ツール層の決定論ガードとして強制する。
+   */
+  snsReplyOnly?: boolean | undefined;
 }
 
 export interface IAgent {
@@ -630,6 +636,7 @@ export class KarakuriAgent implements IAgent {
           ...(this.beliefStore != null ? { beliefStore: this.beliefStore } : {}),
           ...(this.relationStore != null ? { relationStore: this.relationStore } : {}),
           timezone: this.config.timezone,
+          ...(options?.snsReplyOnly === true ? { snsReplyOnly: true } : {}),
         });
       const disableThinking = isKarakuriWorldMode || !this.config.llmEnableThinking;
       const effectiveModelFactory = disableThinking ? this.noThinkingModelFactory : this.modelFactory;
@@ -1081,7 +1088,12 @@ export class KarakuriAgent implements IAgent {
     }
 
     try {
-      const prospects = await this.prospectStore.listOpen(5);
+      // 遅延評価の決定論 TTL（#111）: 注入前に古い open を expired へ落とす。
+      // inner-state の時間経過と同じ「参照時にルールを適用する」パターン
+      await this.prospectStore.expireStaleOpen(
+        new Date(Date.now() - PROSPECT_STALE_TTL_DAYS * 24 * 3_600_000),
+      );
+      const prospects = await this.prospectStore.listOpenForInjection(5);
       if (prospects.length === 0) {
         return null;
       }

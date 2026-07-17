@@ -30,6 +30,8 @@ function writeActionKindPredicate(kind: SnsWriteActionKind): string {
 const logger = createLogger('SnsActivityStore');
 const RECENT_ACTIVITY_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
 const DEFAULT_RECENT_ACTIVITY_LIMIT = 10;
+/** 窓内が空のときのフォールバック件数（#111 — 会話の継続性のため古くても直近を見せる。時刻つき） */
+const FALLBACK_ACTIVITY_LIMIT = 3;
 const LAST_NOTIFICATION_ID_KEY = 'last_notification_id';
 
 interface ActivityRow {
@@ -235,10 +237,18 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
   }
 
   async getRecentActivities(limit = DEFAULT_RECENT_ACTIVITY_LIMIT): Promise<SnsActivity[]> {
-    const rows = this.getRecentActivitiesStatement.all(
+    let rows = this.getRecentActivitiesStatement.all(
       new Date(this.now().getTime() - RECENT_ACTIVITY_WINDOW_MS).toISOString(),
       Math.max(1, limit),
     );
+    if (rows.length === 0) {
+      // 窓内が空でも「最後に何をしたか」は会話の継続性の足場になる（#111）。
+      // created_at つきで返すため、古さはそのまま文脈として伝わる
+      rows = this.getRecentActivitiesStatement.all(
+        new Date(0).toISOString(),
+        Math.min(Math.max(1, limit), FALLBACK_ACTIVITY_LIMIT),
+      );
+    }
     return Promise.resolve(rows.map((row): SnsActivity => {
       if (row.type === 'post') {
         return {

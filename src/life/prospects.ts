@@ -6,7 +6,14 @@ import { openLifeDatabase } from './db.js';
 const logger = createLogger('ProspectStore');
 
 export type ProspectKind = 'promise' | 'intention' | 'goal';
-export type ProspectStatus = 'open' | 'fulfilled' | 'abandoned';
+export type ProspectStatus = 'open' | 'fulfilled' | 'abandoned' | 'expired';
+
+/**
+ * open のまま一度も touch されずにこの日数が過ぎた prospect は「もう生きていない意図」
+ * として決定論で expired へ落とす（#111）。省察の LLM 棚卸しだけに任せると
+ * 実機で同趣旨の古い意図が数日間 open のまま注入枠を占有し続けたため
+ */
+export const PROSPECT_STALE_TTL_DAYS = 7;
 
 export interface Prospect {
   id: number;
@@ -34,6 +41,14 @@ export interface IProspectStore {
   insert(prospect: NewProspect): Promise<number>;
   getById(id: number): Promise<Prospect | null>;
   listOpen(limit?: number): Promise<Prospect[]>;
+  /**
+   * プロンプト注入用の open 一覧（#111）: 期日つきを先頭に、残りは「最近生まれた・
+   * 最近想起された」順。listOpen（id 昇順 = 最古優先）だと古い意図が注入枠を
+   * 占有し続け、会話由来の新しい約束が行動選択に届かないため分離する
+   */
+  listOpenForInjection(limit?: number): Promise<Prospect[]>;
+  /** updated_at が cutoff より古い open を expired へ落とす（決定論 TTL — #111）。返り値は件数 */
+  expireStaleOpen(cutoff: Date): Promise<number>;
   /** 同一本文の open prospect が既にあるか（重複登録防止） */
   hasOpenWithBody(body: string): Promise<boolean>;
   /**
@@ -119,6 +134,27 @@ export class SqliteProspectStore implements IProspectStore {
       LIMIT ?
     `).all(Math.max(0, limit));
     return Promise.resolve(rows.map(mapRow));
+  }
+
+  async listOpenForInjection(limit = 5): Promise<Prospect[]> {
+    const rows = this.db.prepare<[number], ProspectRow>(`
+      SELECT * FROM prospects
+      WHERE status = 'open'
+      ORDER BY CASE WHEN due_at IS NULL THEN 1 ELSE 0 END, due_at ASC, updated_at DESC, id DESC
+      LIMIT ?
+    `).all(Math.max(0, limit));
+    return Promise.resolve(rows.map(mapRow));
+  }
+
+  async expireStaleOpen(cutoff: Date): Promise<number> {
+    const result = this.db.prepare(`
+      UPDATE prospects SET status = 'expired', updated_at = ?
+      WHERE status = 'open' AND updated_at < ?
+    `).run(new Date().toISOString(), cutoff.toISOString());
+    if (result.changes > 0) {
+      logger.info('Stale open prospects expired', { count: result.changes, cutoff: cutoff.toISOString() });
+    }
+    return Promise.resolve(result.changes);
   }
 
   async hasOpenWithBody(body: string): Promise<boolean> {

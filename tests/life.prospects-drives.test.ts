@@ -58,6 +58,39 @@ describe('SqliteProspectStore', () => {
     expect(await store.hasOpenWithBody('明日Bさんと映画を観る')).toBe(true);
   });
 
+  it('listOpenForInjection prefers due dates then freshness (#111)', async () => {
+    const store = await createProspectStore();
+    const oldId = await store.insert({ kind: 'intention', body: '古い意図', provenance: [1], procVersion: 'test' });
+    const newId = await store.insert({ kind: 'promise', body: '新しい約束', provenance: [2], procVersion: 'test' });
+    const dueId = await store.insert({ kind: 'promise', body: '期日つき', dueAt: '2026-07-06T10:00:00.000Z', provenance: [3], procVersion: 'test' });
+    // updated_at を明示的にずらす（同一ミリ秒 insert の順序依存を避ける）
+    await store.touch(newId);
+
+    const injected = await store.listOpenForInjection(2);
+    expect(injected.map((prospect) => prospect.id)).toEqual([dueId, newId]);
+    // listOpen（従来）は同条件で最古が先に来る
+    const legacy = await store.listOpen(3);
+    expect(legacy[1]!.id).toBe(oldId);
+  });
+
+  it('expireStaleOpen expires only open prospects older than cutoff (#111)', async () => {
+    const store = await createProspectStore();
+    const staleId = await store.insert({ kind: 'intention', body: '放置された意図', provenance: [1], procVersion: 'test' });
+    const doneId = await store.insert({ kind: 'promise', body: '果たした約束', provenance: [2], procVersion: 'test' });
+    await store.updateStatus(doneId, 'fulfilled');
+    const freshId = await store.insert({ kind: 'promise', body: '生きている約束', provenance: [3], procVersion: 'test' });
+
+    // 未来を cutoff にすると、open で updated_at が過去のものだけが失効する
+    const expired = await store.expireStaleOpen(new Date(Date.now() + 60_000));
+    expect(expired).toBe(2); // stale + fresh（両方 open で cutoff より古い）
+    expect((await store.getById(staleId))?.status).toBe('expired');
+    expect((await store.getById(freshId))?.status).toBe('expired');
+    expect((await store.getById(doneId))?.status).toBe('fulfilled');
+
+    // 過去の cutoff では何も失効しない
+    expect(await store.expireStaleOpen(new Date(0))).toBe(0);
+  });
+
   it('transitions status only from open (path-dependent state)', async () => {
     const store = await createProspectStore();
     const id = await store.insert({ kind: 'promise', body: '約束', provenance: [1], procVersion: 'test' });

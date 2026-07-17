@@ -46,6 +46,8 @@ export interface PhoneThreadState {
   lastOutgoingAt: Date | null;
   lastProactiveAt: Date | null;
   lastNudgeAt: Date | null;
+  /** 最後に送った本文の要点（#111 — 知覚用。全文は experience_log が持つ） */
+  lastOutgoingText: string | null;
 }
 
 export interface NoteOutgoingOptions {
@@ -53,6 +55,8 @@ export interface NoteOutgoingOptions {
   proactive?: boolean;
   /** 催促（返事待ちの追い送り）。同一スレッドのクールダウン基準になる */
   nudge?: boolean;
+  /** 送った本文（呼び出し側で切り詰め済みの要点）。省略時は既存値を保持する */
+  text?: string;
 }
 
 export interface IPhoneUnreadStore {
@@ -196,7 +200,7 @@ export class SqlitePhoneUnreadStore implements IPhoneUnreadStore {
 
   async listThreadStates(): Promise<PhoneThreadState[]> {
     const rows = this.db.prepare(`
-      SELECT thread_id, counterpart_id, counterpart_name, last_incoming_at, last_outgoing_at, last_proactive_at, last_nudge_at
+      SELECT thread_id, counterpart_id, counterpart_name, last_incoming_at, last_outgoing_at, last_proactive_at, last_nudge_at, last_outgoing_text
       FROM phone_thread_state
     `).all() as Array<{
       thread_id: string;
@@ -206,6 +210,7 @@ export class SqlitePhoneUnreadStore implements IPhoneUnreadStore {
       last_outgoing_at: string | null;
       last_proactive_at: string | null;
       last_nudge_at: string | null;
+      last_outgoing_text: string | null;
     }>;
     return Promise.resolve(rows.map((row) => ({
       threadId: row.thread_id,
@@ -215,23 +220,26 @@ export class SqlitePhoneUnreadStore implements IPhoneUnreadStore {
       lastOutgoingAt: row.last_outgoing_at != null ? new Date(row.last_outgoing_at) : null,
       lastProactiveAt: row.last_proactive_at != null ? new Date(row.last_proactive_at) : null,
       lastNudgeAt: row.last_nudge_at != null ? new Date(row.last_nudge_at) : null,
+      lastOutgoingText: row.last_outgoing_text,
     })));
   }
 
   async noteOutgoing(threadId: string, at: Date, options: NoteOutgoingOptions = {}): Promise<void> {
     const iso = at.toISOString();
     this.db.prepare(`
-      INSERT INTO phone_thread_state (thread_id, last_outgoing_at, last_proactive_at, last_nudge_at)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO phone_thread_state (thread_id, last_outgoing_at, last_proactive_at, last_nudge_at, last_outgoing_text)
+      VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(thread_id) DO UPDATE SET
         last_outgoing_at = MAX(COALESCE(last_outgoing_at, ''), excluded.last_outgoing_at),
         last_proactive_at = COALESCE(excluded.last_proactive_at, last_proactive_at),
-        last_nudge_at = COALESCE(excluded.last_nudge_at, last_nudge_at)
+        last_nudge_at = COALESCE(excluded.last_nudge_at, last_nudge_at),
+        last_outgoing_text = COALESCE(excluded.last_outgoing_text, last_outgoing_text)
     `).run(
       threadId,
       iso,
       options.proactive === true ? iso : null,
       options.nudge === true ? iso : null,
+      options.text ?? null,
     );
     return Promise.resolve();
   }

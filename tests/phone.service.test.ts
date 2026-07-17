@@ -181,6 +181,35 @@ describe('PhoneService', () => {
     expect(await store.countPending()).toBe(0);
   });
 
+  it('check_phone prefixes unread bodies with arrival time and notes the sent reply (#111)', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({
+      source: 'discord',
+      threadId: 't1',
+      authorName: 'Yamashita',
+      body: 'まだ行ってないの？',
+      receivedAt: new Date('2026-07-17T08:12:00.000Z'),
+    });
+    const agent = makeAgent('明日の朝イチで行くよ');
+    const postReply = vi.fn(async () => undefined);
+    const service = new PhoneService({
+      agent,
+      commands: COMMANDS,
+      unreadStore: store,
+      postReply,
+      timezone: 'Asia/Tokyo',
+    });
+
+    await service.run('check_phone');
+
+    const [, userMessage, , options] = agent.handleMessage.mock.calls[0]!;
+    expect(String(userMessage)).toBe('[07-17 17:12] まだ行ってないの？');
+    expect(String(options.extraSystemPrompt)).toContain('arrival time');
+    // 送信本文の要点が台帳に残る
+    const state = (await store.listThreadStates()).find((s) => s.threadId === 't1');
+    expect(state?.lastOutgoingText).toBe('明日の朝イチで行くよ');
+  });
+
   it('check_phone leaves messages unread when no reply poster is configured (M8 review fix)', async () => {
     const store = await createUnreadStore();
     await store.enqueue({ source: 'discord', threadId: 't1', body: 'hi', receivedAt: new Date() });
@@ -312,9 +341,9 @@ describe('PhoneService', () => {
     expect(await store.countPending()).toBe(0);
   });
 
-  it('buildStatusSection reports counts only (no message bodies)', async () => {
+  it('buildStatusSection includes sender and gist for discord unreads (#111)', async () => {
     const store = await createUnreadStore();
-    await store.enqueue({ source: 'discord', threadId: 't1', body: '秘密の本文', receivedAt: new Date() });
+    await store.enqueue({ source: 'discord', threadId: 't1', authorName: 'Yamashita', body: 'まだ行ってないの？笑', receivedAt: new Date() });
     const service = new PhoneService({
       agent: makeAgent(),
       commands: COMMANDS,
@@ -324,7 +353,39 @@ describe('PhoneService', () => {
     const section = await service.buildStatusSection();
     expect(section).toContain('<phone-status>');
     expect(section).toContain('チャット未読: 1 件');
-    expect(section).not.toContain('秘密の本文');
+    expect(section).toContain('Yamashita「まだ行ってないの？笑」');
+  });
+
+  it('buildStatusSection keeps non-discord unread bodies out and strips angle brackets (#111)', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'sns', threadId: 's1', body: '外部の本文', receivedAt: new Date() });
+    await store.enqueue({ source: 'discord', threadId: 't1', authorName: 'Yamashita', body: '<attack>タグ入り</attack>', receivedAt: new Date() });
+    const service = new PhoneService({
+      agent: makeAgent(),
+      commands: COMMANDS,
+      unreadStore: store,
+    });
+
+    const section = await service.buildStatusSection();
+    expect(section).toContain('チャット未読: 2 件');
+    expect(section).not.toContain('外部の本文');
+    expect(section).not.toContain('<attack>');
+    expect(section).toContain('attackタグ入り/attack');
+  });
+
+  it('buildStatusSection surfaces the latest outgoing reply gist (#111)', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', authorName: 'Yamashita', body: '行った？', receivedAt: new Date() });
+    const service = new PhoneService({
+      agent: makeAgent(),
+      commands: COMMANDS,
+      unreadStore: store,
+    });
+    await store.markProcessed([1], new Date());
+    await store.noteOutgoing('t1', new Date(), { text: '明日の朝イチで行くよ' });
+
+    const section = await service.buildStatusSection();
+    expect(section).toContain('直近のやり取り: Yamashitaに「明日の朝イチで行くよ」と返信した');
   });
 
   it('buildStatusSection returns null when check_phone is not configured', async () => {
@@ -444,6 +505,7 @@ describe('send_message target selection (M9 #110)', () => {
     lastOutgoingAt: null,
     lastProactiveAt: null,
     lastNudgeAt: null,
+    lastOutgoingText: null,
     ...overrides,
   });
 

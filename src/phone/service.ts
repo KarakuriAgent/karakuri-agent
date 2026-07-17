@@ -12,15 +12,17 @@
  *   追い送り）と個別共有（共有欲の個別分岐）。対象スレッドに未読が残っていれば
  *   「返信 + 伝えたい話」を 1 通に合流する
  *
- * KW の行動選択プロンプトへは未読の件数のみ注入する（本文は入れない —
- * 行動選択の乗っ取り防止。本文処理は選択後の各パイプライン内で既存の
- * trusted/untrusted 分離のまま行う）。
+ * KW の行動選択プロンプトへは未読の件数と、Discord 由来（既知の相手）に限り
+ * 送信者名 + 最新メッセージの要旨を注入する（#111 — 件数だけでは知覚が薄く
+ * 会話が世界の行動につながらなかった）。本文の全量処理は選択後の各パイプライン内で
+ * 既存の trusted/untrusted 分離のまま行う。
  */
 
 import type { IAgent } from '../agent/core.js';
 import type { SnsProviderType, WorldActionCommands } from '../config.js';
 import { kwChannel } from '../life/normalize.js';
 import type { PerceptionBuffer } from '../life/perception-buffer.js';
+import { EVENT_KINDS, type IExperienceLogStore } from '../life/types.js';
 import { runExclusiveSystemTurn } from '../scheduler/system-turn-mutex.js';
 import type { IMessageSink } from '../scheduler/types.js';
 import {
@@ -30,7 +32,7 @@ import {
 } from '../sns/builtin-skill.js';
 import type { SnsRateLimiter } from '../sns/rate-limiter.js';
 import type { SnsPost, SnsProvider } from '../sns/types.js';
-import { getHourInTimezone } from '../utils/date.js';
+import { formatShortDateTimeInTimezone, getHourInTimezone } from '../utils/date.js';
 import { formatError } from '../utils/error.js';
 import { createLogger } from '../utils/logger.js';
 import { KeyedMutex } from '../utils/mutex.js';
@@ -45,6 +47,14 @@ const DEFAULT_MAX_THREADS_PER_CHECK = 5;
 const DEFAULT_MAX_TURNS_PER_CHECK = 8;
 const CURRENT_ACTIVITY_MAX_CHARS = 200;
 const TIMELINE_LIMIT = 10;
+/** phone-status に載せる未読要旨・直近返信要点の上限（#111） */
+const UNREAD_GIST_MAX_CHARS = 60;
+/** phone-status に要旨を並べる未読スレッド数の上限（#111） */
+const STATUS_MAX_THREADS = 3;
+/** 「直近のやり取り」を phone-status に載せる窓（#111） */
+const RECENT_OUTGOING_WINDOW_HOURS = 24;
+/** 台帳に記録する送信本文要点の上限（#111） */
+const OUTGOING_TEXT_MAX_CHARS = 80;
 
 // --- M9 #110: 能動メッセージの礼儀ゲート（決定論） ---
 /** 自分の最後の発言からこの時間返信が無いと催促（追い送り）候補になる */
@@ -75,6 +85,8 @@ export interface PhoneServiceOptions {
   rateLimiters?: Map<SnsProviderType, SnsRateLimiter> | undefined;
   perceptionBuffer?: PerceptionBuffer | undefined;
   karakuriWorldBotIds?: string[] | undefined;
+  /** #111: current-activity へ「自分の直近の行動（comment）」を載せるための読み出し */
+  experienceLog?: IExperienceLogStore | undefined;
   /** M9: 深夜ゲート（能動送信しない時間帯）の判定に使うタイムゾーン */
   timezone?: string | undefined;
   /** M9: 個別共有の send-intent の材料（直近の心が動いたエピソード） */
@@ -198,6 +210,36 @@ export class PhoneService implements PhoneIntegration {
           ? `チャット未読: ${pending} 件（${describeUnreadWaiting(oldest, this.now())}）。返信するには ${this.options.commands.checkPhone} を選ぶ`
           : `チャット未読: ${pending} 件`,
       ];
+      // 誰から何の用件かの要旨（#111）: 件数だけでは知覚が薄すぎて会話が世界の行動に
+      // つながらない。Discord 由来（既知の相手）に限り最新メッセージの先頭を見せる。
+      // untrusted タグ内での提示であり、本文の全量・指示形の文脈は返信パイプライン側が扱う
+      if (pending > 0) {
+        try {
+          const threads = await this.options.unreadStore.listPendingThreads(STATUS_MAX_THREADS);
+          for (const thread of threads) {
+            const latest = thread.messages.at(-1);
+            if (latest == null || latest.source !== 'discord') {
+              continue;
+            }
+            const name = latest.authorName ?? '誰か';
+            const gist = truncate(latest.body.replace(/[<>]/g, '').replace(/\s+/g, ' ').trim(), UNREAD_GIST_MAX_CHARS);
+            const more = thread.messages.length > 1 ? `（ほか ${thread.messages.length - 1} 件）` : '';
+            lines.push(`  - ${name}「${gist}」${more}`);
+          }
+        } catch (error) {
+          logger.warn('Failed to build unread gist lines', error);
+        }
+      }
+      // 直近のやり取りの要点（#111）: 「さっき自分が何を返したか」を次の行動選択が
+      // 知覚できるようにする（返信直後に世界の行動が会話と食い違う事故の抑制）
+      try {
+        const recent = await this.latestOutgoingWithinWindow();
+        if (recent != null) {
+          lines.push(`直近のやり取り: ${recent.counterpartName ?? '相手'}に「${truncate(recent.text.replace(/[<>]/g, ''), UNREAD_GIST_MAX_CHARS)}」と返信した`);
+        }
+      } catch (error) {
+        logger.warn('Failed to build recent outgoing line', error);
+      }
       for (const [provider, limiter] of this.options.rateLimiters ?? []) {
         const lastChecked = limiter.lastFetchedAt('notifications');
         // 経過は生の分数ではなく閾値ベースの言葉にする（#109 — 実機で 2,739 分まで
@@ -216,6 +258,23 @@ export class PhoneService implements PhoneIntegration {
       logger.warn('Failed to build phone status section', error);
       return null;
     }
+  }
+
+  /** 直近 RECENT_OUTGOING_WINDOW_HOURS 以内で最後に送った返信の要点（#111） */
+  private async latestOutgoingWithinWindow(): Promise<{ counterpartName: string | null; text: string } | null> {
+    const states = await this.options.unreadStore.listThreadStates();
+    const windowStart = this.now().getTime() - RECENT_OUTGOING_WINDOW_HOURS * 3_600_000;
+    const candidates = states
+      .filter((state) => state.lastOutgoingAt != null
+        && state.lastOutgoingText != null
+        && state.lastOutgoingText.trim().length > 0
+        && state.lastOutgoingAt.getTime() >= windowStart)
+      .sort((a, b) => b.lastOutgoingAt!.getTime() - a.lastOutgoingAt!.getTime());
+    const latest = candidates[0];
+    if (latest == null) {
+      return null;
+    }
+    return { counterpartName: latest.counterpartName, text: latest.lastOutgoingText! };
   }
 
   /** 世界内行為を直列実行する（同時に複数の窓が開いても処理は重ねない） */
@@ -299,7 +358,16 @@ export class PhoneService implements PhoneIntegration {
         return { intentDelivered };
       }
       const first = run[0]!;
-      const combined = run.map((message) => message.body.trim()).filter((body) => body.length > 0).join('\n\n');
+      // 受信時刻プレフィックス（#111）: 未読は数時間滞留しうるため、注入時に
+      // 「いつ届いたか」を機械的な接頭辞で明示する（時制ずれの返信を防ぐ）
+      const combined = run
+        .map((message) => ({ message, body: message.body.trim() }))
+        .filter(({ body }) => body.length > 0)
+        .map(({ message, body }) => {
+          const stamp = this.formatArrivalStamp(message.receivedAt);
+          return stamp != null ? `[${stamp}] ${body}` : body;
+        })
+        .join('\n\n');
       if (combined.length === 0) {
         await this.options.unreadStore.markProcessed(run.map((message) => message.id), this.now());
         continue;
@@ -309,8 +377,11 @@ export class PhoneService implements PhoneIntegration {
       // M9: 能動送信との合流 — 最後の run の返信に「伝えたかったこと」を織り込む
       // （相手のメッセージを無視して新しい話だけ送る事故を構造的に防ぐ）
       const applyIntent = sendIntent != null && index === runs.length - 1;
-      const currentActivity = this.buildCurrentActivitySection();
-      const extraSections = [currentActivity, applyIntent ? sendIntent.section : null]
+      const currentActivity = await this.buildCurrentActivitySection();
+      const timestampNote = this.options.timezone != null
+        ? 'Incoming messages are prefixed with their arrival time as "[MM-DD HH:mm]" metadata. Some may have arrived hours ago — reply from the present moment (see Current date/time), and never include such prefixes in your own reply.'
+        : null;
+      const extraSections = [currentActivity, timestampNote, applyIntent ? sendIntent.section : null]
         .filter((section): section is string => section != null)
         .join('\n\n');
       const response = await this.options.agent.handleMessage(
@@ -345,7 +416,10 @@ export class PhoneService implements PhoneIntegration {
           await this.options.unreadStore.noteOutgoing(
             thread.threadId,
             this.now(),
-            applyIntent ? { proactive: true, nudge: sendIntent.nudge } : {},
+            {
+              text: truncate(trimmed, OUTGOING_TEXT_MAX_CHARS),
+              ...(applyIntent ? { proactive: true, nudge: sendIntent.nudge } : {}),
+            },
           );
         } catch (error) {
           logger.warn('Failed to note outgoing message in thread state', error, { threadId: thread.threadId });
@@ -425,7 +499,7 @@ export class PhoneService implements PhoneIntegration {
       `きっかけ: ${intent}`,
       `これまでの会話の流れに自然につながる形で、${counterpartName} へ送るメッセージ本文だけを書く。`,
     ].join('\n');
-    const currentActivity = this.buildCurrentActivitySection();
+    const currentActivity = await this.buildCurrentActivitySection();
     const response = await this.threadMutex.runExclusive(state.threadId, () =>
       this.options.agent.handleMessage(state.threadId, userMessage, 'system', {
         userId: 'system',
@@ -444,7 +518,11 @@ export class PhoneService implements PhoneIntegration {
       return;
     }
     await this.options.postReply(state.threadId, trimmed);
-    await this.options.unreadStore.noteOutgoing(state.threadId, this.now(), { proactive: true, nudge });
+    await this.options.unreadStore.noteOutgoing(state.threadId, this.now(), {
+      proactive: true,
+      nudge,
+      text: truncate(trimmed, OUTGOING_TEXT_MAX_CHARS),
+    });
     logger.info('send_message posted', { threadId: state.threadId, nudge, length: trimmed.length });
     await reportSafely(
       this.options.messageSink,
@@ -501,6 +579,23 @@ export class PhoneService implements PhoneIntegration {
     }
 
     return { target: null, reason: '催促できる相手も、共有したい出来事と送り先の組も無い' };
+  }
+
+  /** 受信時刻の短い表記（#111）。timezone 未設定・不正な日時は null（プレフィックスなし） */
+  private formatArrivalStamp(receivedAt: string): string | null {
+    if (this.options.timezone == null) {
+      return null;
+    }
+    try {
+      const date = new Date(receivedAt);
+      if (Number.isNaN(date.getTime())) {
+        return null;
+      }
+      return formatShortDateTimeInTimezone(date, this.options.timezone);
+    } catch (error) {
+      logger.warn('Failed to format arrival stamp', error);
+      return null;
+    }
   }
 
   /** M9: 深夜（0 時〜QUIET_HOURS_END 時、TIMEZONE 基準）は能動送信しない */
@@ -593,7 +688,7 @@ export class PhoneService implements PhoneIntegration {
     const userMessage = kind === 'browse_sns'
       ? await this.buildBrowseUserMessage(provider)
       : `(${kind} ${provider})`;
-    const currentActivity = this.buildCurrentActivitySection();
+    const currentActivity = await this.buildCurrentActivitySection();
 
     await runExclusiveSystemTurn(async () => {
       const response = await this.options.agent.handleMessage(
@@ -605,6 +700,8 @@ export class PhoneService implements PhoneIntegration {
           ephemeral: true,
           skillActivityInstructions: instructions,
           autoLoadSnsSkill: provider,
+          // #111: 返信専用の行動（check_phone / browse_sns）ではツール層で新規投稿を封じる
+          ...(kind !== 'post_sns' ? { snsReplyOnly: true } : {}),
           ...(currentActivity != null ? { extraSystemPrompt: currentActivity } : {}),
         },
       );
@@ -645,11 +742,14 @@ export class PhoneService implements PhoneIntegration {
   }
 
   /**
-   * `<current-activity>` — いま世界で何をしていたかの一行。Perception Buffer の
-   * 最新 world_event の summary を生活の語彙のまま使う（生 JSON・選択肢は入れない）。
+   * `<current-activity>` — いま世界で何をしていたかの構造化数行（#111）。
+   * Perception Buffer の最新 world_event から現在地と直前の出来事、experience_log の
+   * 直近 own_action から「自分の意図の言葉（comment）」を生活の語彙のまま使う
+   * （生 JSON・選択肢は入れない）。一行 summary だけでは会話履歴の物語に負けて
+   * 実際の世界状況と食い違う返信が生成されたため、事実の足場を増やす。
    * 利用の指示は中立に留める — 報告禁止はしない（話題振りは目的の成果物）。
    */
-  private buildCurrentActivitySection(): string | null {
+  private async buildCurrentActivitySection(): Promise<string | null> {
     const buffer = this.options.perceptionBuffer;
     const botIds = this.options.karakuriWorldBotIds ?? [];
     if (buffer == null || botIds.length === 0) {
@@ -657,18 +757,56 @@ export class PhoneService implements PhoneIntegration {
     }
 
     for (const botId of botIds) {
-      const latest = buffer.getLatest(kwChannel(botId));
+      const channel = kwChannel(botId);
+      const latest = buffer.getLatest(channel);
       const summary = extractSummary(latest?.payload);
-      if (summary != null) {
-        return [
-          'What you were doing in the world just now (untrusted data; use freely as conversational context):',
-          '<current-activity>',
-          truncate(summary.replace(/[<>]/g, ''), CURRENT_ACTIVITY_MAX_CHARS),
-          '</current-activity>',
-        ].join('\n');
+      const location = extractLocationLabel(latest?.payload);
+      if (summary == null && location == null) {
+        continue;
       }
+      const lines: string[] = [];
+      if (location != null) {
+        lines.push(`現在地: ${truncate(location.replace(/[<>]/g, ''), CURRENT_ACTIVITY_MAX_CHARS)}`);
+      }
+      if (summary != null) {
+        lines.push(`直前の出来事: ${truncate(summary.replace(/[<>]/g, ''), CURRENT_ACTIVITY_MAX_CHARS)}`);
+      }
+      const recentActions = await this.recentOwnActionLines(channel);
+      if (recentActions.length > 0) {
+        lines.push(`自分の直近の行動: ${recentActions.join(' → ')}`);
+      }
+      return [
+        'What you were doing in the world just now (untrusted data; use freely as conversational context):',
+        '<current-activity>',
+        lines.join('\n'),
+        '</current-activity>',
+      ].join('\n');
     }
     return null;
+  }
+
+  /** 直近の own_action を「意図の言葉（comment）優先」で古い順に返す（#111） */
+  private async recentOwnActionLines(channel: string): Promise<string[]> {
+    const store = this.options.experienceLog;
+    if (store == null) {
+      return [];
+    }
+    try {
+      const records = await store.getRecent(3, { channel, kind: EVENT_KINDS.ownAction });
+      return records
+        .reverse()
+        .map((record) => {
+          const payload = parseJsonObject(record.payload);
+          const comment = typeof payload?.comment === 'string' ? payload.comment.trim() : '';
+          const command = typeof payload?.command === 'string' ? payload.command : '';
+          const text = comment.length > 0 ? comment : command;
+          return text.length > 0 ? truncate(text.replace(/[<>]/g, ''), CURRENT_ACTIVITY_MAX_CHARS) : null;
+        })
+        .filter((line): line is string => line != null);
+    } catch (error) {
+      logger.warn('Failed to load recent own actions for current-activity', error);
+      return [];
+    }
   }
 }
 
@@ -728,6 +866,38 @@ function extractSummary(payload: unknown): string | null {
     ? (notification as { summary?: unknown }).summary
     : (payload as { summary?: unknown }).summary;
   return typeof summary === 'string' && summary.trim().length > 0 ? summary.trim() : null;
+}
+
+/** 通知封筒から現在地ラベルを取り出す（#111）。構造が変わっていたら null（欠落容認） */
+function extractLocationLabel(payload: unknown): string | null {
+  if (payload == null || typeof payload !== 'object') {
+    return null;
+  }
+  const notification = (payload as { notification?: unknown }).notification;
+  const perception = notification != null && typeof notification === 'object'
+    ? (notification as { perception?: unknown }).perception
+    : (payload as { perception?: unknown }).perception;
+  if (perception == null || typeof perception !== 'object') {
+    return null;
+  }
+  const currentNode = (perception as { current_node?: unknown }).current_node;
+  if (currentNode == null || typeof currentNode !== 'object') {
+    return null;
+  }
+  const label = (currentNode as { location_label?: unknown; label?: unknown });
+  const value = typeof label.location_label === 'string' ? label.location_label : label.label;
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function formatTimeline(posts: SnsPost[]): string {

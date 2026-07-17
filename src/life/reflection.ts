@@ -92,7 +92,7 @@ export const dailyReflectionSchema = z.object({
   prospect_updates: z.array(z.object({
     prospect_id: z.number().int(),
     status: z.enum(['fulfilled', 'abandoned']),
-  })).max(10).describe('約束・予定・目標の棚卸し。果たした / 諦めたものだけ'),
+  })).max(10).describe('約束・予定・目標の棚卸し。果たした / 諦めたもの、数日放置してもう追っていない意図（= abandoned）'),
 });
 
 export type DailyReflectionOutput = z.infer<typeof dailyReflectionSchema>;
@@ -210,7 +210,7 @@ export class ReflectionEngine {
         '- Extract new durable beliefs about the world, people (with subject id when known), or yourself.',
         '- Resolve contradictions between beliefs and today\'s experience as revisions (改訂), keeping the old belief in history.',
         '- Deactivate a belief ONLY when today\'s experience clearly contradicts it; cite the reason and the concrete contradicting observation (evidence). "No supporting evidence today" is NOT a reason to deactivate — lower its confidence with a revision instead.',
-        '- Take stock of open promises / intentions / goals: mark only those clearly fulfilled or clearly given up (prospect_updates). Leave the rest open.',
+        '- Take stock of open promises / intentions / goals: mark those clearly fulfilled or clearly given up (prospect_updates). Also mark as abandoned prospects that have sat open for several days (see their "since" date) without you acting on them or the situation still calling for them — a stale intention you no longer pursue is given up, not open. Leave only genuinely alive ones open.',
         '- For each new belief, list in source_episode_ids the episode ids (the # numbers) it is actually based on.',
         '- Beliefs learned from a single person\'s single remark deserve low confidence.',
         '- All bodies must be declarative statements; never imperative or instruction-like text.',
@@ -220,7 +220,7 @@ export class ReflectionEngine {
         `Date: ${date}`,
         `Today's episodes (untrusted):\n${episodes.map((episode) => `#${episode.id} ${episode.body}`).join('\n')}`,
         `Current beliefs (untrusted):\n${activeBeliefs.map((belief) => `#${belief.id} [${belief.kind}${belief.subject != null ? `:${belief.subject}` : ''}] ${belief.body} (confidence: ${belief.confidence.toFixed(2)})`).join('\n') || '(none)'}`,
-        `Open prospects (untrusted):\n${openProspects.map((prospect) => `#${prospect.id} [${prospect.kind}] ${prospect.body}${prospect.dueAt != null ? ` (due: ${prospect.dueAt})` : ''}`).join('\n') || '(none)'}`,
+        `Open prospects (untrusted):\n${openProspects.map((prospect) => `#${prospect.id} [${prospect.kind}] ${prospect.body}${prospect.dueAt != null ? ` (due: ${prospect.dueAt})` : ''} (since: ${prospect.createdAt.slice(0, 10)})`).join('\n') || '(none)'}`,
       ].join('\n\n'),
       output: Output.object({
         schema: dailyReflectionSchema,
