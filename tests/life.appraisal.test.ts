@@ -144,6 +144,30 @@ describe('applyAppraisalGuardrails', () => {
     expect(guarded.rejections).toEqual([]);
   });
 
+  it('rejects negative energy on idle events (exertion without action)', () => {
+    // 実機で「コマンドが通らない徒労」の idle_reminder 毎に -0.075 が積まれ、
+    // 自然減衰の 15 倍のペースで energy が枯渇した（2026-07-19 kbx）
+    const guarded = applyAppraisalGuardrails(makeOutput({ energy_delta: 'down' }), undefined, {
+      eventKind: 'world_event',
+      idleEvent: true,
+    });
+    expect(guarded.deltas.energy).toBe(0);
+    expect(guarded.rejections.some((rejection) => rejection.includes('idle event'))).toBe(true);
+  });
+
+  it('keeps positive energy and non-idle negative energy untouched', () => {
+    const positive = applyAppraisalGuardrails(makeOutput({ energy_delta: 'small_up' }), undefined, {
+      eventKind: 'world_event',
+      idleEvent: true,
+    });
+    expect(positive.deltas.energy).toBeGreaterThan(0);
+    const nonIdle = applyAppraisalGuardrails(makeOutput({ energy_delta: 'down' }), undefined, {
+      eventKind: 'world_event',
+      idleEvent: false,
+    });
+    expect(nonIdle.deltas.energy).toBeLessThan(0);
+  });
+
   it('rejects hunger recovery when the event has no eating context', () => {
     // 実機で idle_reminder・チケット購入・バイト完了にも hunger_down が出た誤爆対策
     const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }), undefined, {

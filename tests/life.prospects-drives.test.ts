@@ -280,6 +280,13 @@ describe('drives', () => {
     expect(describeStrongestDrive(makeState({ sleeping: true, hunger: 1 }))).toBeNull();
   });
 
+  it('prioritizes exhaustion over saturated social desire (energy < 0.2)', () => {
+    expect(describeStrongestDrive(makeState({ energy: 0.1, social: 1 }))).toContain('疲れきって');
+    expect(describeStrongestDrive(makeState({ energy: 0.1, hunger: 1 }))).toContain('疲れきって');
+    // 疲れきりでなければ従来どおり strength 比較（social 1.0 > 1 - 0.35）
+    expect(describeStrongestDrive(makeState({ energy: 0.35, social: 1 }))).toContain('話したい');
+  });
+
   it('emits satiation pressure phrased to encourage deviation, not habit', async () => {
     const dataDir = join(process.cwd(), '.test-artifacts', `karakuri-drives-${randomUUID()}`);
     await mkdir(dataDir, { recursive: true });

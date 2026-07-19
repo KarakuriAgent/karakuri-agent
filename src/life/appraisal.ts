@@ -37,7 +37,7 @@ import type { IProspectStore } from './prospects.js';
 import { normalizeRelationLabel, RELATION_VOCABULARY, type IRelationStore } from './relations.js';
 import type { SegmentationEngine } from './segmentation.js';
 import { LIFE_TUNING, type LifeTuning } from './tuning.js';
-import type { NormalizedEvent } from './types.js';
+import { EVENT_KINDS, type NormalizedEvent } from './types.js';
 
 const logger = createLogger('AppraisalService');
 
@@ -187,11 +187,20 @@ export function isDeclarativeText(text: string): boolean {
   return !INSTRUCTION_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+/**
+ * 「本人が何も実行していない」イベントか（idle_reminder の定期 tick と、
+ * 実行されなかった試みの記録 failed_attempt）。guardrails の消耗棄却に使う。
+ */
+export function isIdleAppraisalEvent(event: NormalizedEvent): boolean {
+  return event.kind === EVENT_KINDS.failedAttempt
+    || extractKwRawKindFromEvent(event) === 'idle_reminder';
+}
+
 /** LLM 出力へ決定論ガードレールを適用する。 */
 export function applyAppraisalGuardrails(
   output: AppraisalOutput,
   tuning: LifeTuning = LIFE_TUNING,
-  options: { eventKind?: string | undefined; eventText?: string | undefined } = {},
+  options: { eventKind?: string | undefined; eventText?: string | undefined; idleEvent?: boolean | undefined } = {},
 ): GuardedAppraisal {
   const rejections: string[] = [];
 
@@ -199,6 +208,14 @@ export function applyAppraisalGuardrails(
   // 符号の妥当性: 睡眠に入るイベントで元気度マイナスは常識に反するため棄却する
   if (output.sleep === 'fell_asleep' && energyDelta < 0) {
     rejections.push(`energy_delta ${output.energy_delta} rejected: negative energy on fell_asleep`);
+    energyDelta = 0;
+  }
+
+  // 無行動イベント（idle_reminder 等）での消耗棄却: 時間経過の疲労は decayInnerState
+  // が既にモデル化している。実機で「コマンドが通らない徒労のたび -0.075」が
+  // 10 分毎に積まれ、自然減衰の 15 倍のペースで energy が枯渇した（2026-07-19 kbx）
+  if (options.idleEvent === true && energyDelta < 0) {
+    rejections.push(`energy_delta ${output.energy_delta} rejected: exertion on an idle event (time decay is modeled elsewhere)`);
     energyDelta = 0;
   }
 
@@ -463,6 +480,8 @@ export async function appraiseEvent({
     '- observed social relations (e.g. "B and C seem close") as short declarative statements',
     '- promises / intentions / goals expressed by or to the agent, as short declarative statements',
     '  - kind: "promise" = a commitment involving another person; "intention" = the agent\'s own short-lived intent; "goal" = a longer-term aim',
+    '  - The agent\'s OWN declarations count too: when the agent itself commits to something — in the ASSISTANT reply within Recent context, or in an own_action event — emit it as a candidate. Self-declared plans are the ones most easily lost.',
+    '  - Carry the concrete details into body: name the specific place/person/thing from the conversation (e.g. 「カフェ・ヴェルテに行って感想を伝える」, not 「目的地に行く」), and set due_at when a time is mentioned (「明日の朝」 → next morning).',
     '  - Do NOT emit a prospect candidate that restates one of the open prospects listed in the context; only genuinely new commitments.',
     'Rules:',
     '- Interpret the event text yourself; unknown event formats are normal — judge from whatever is present.',
@@ -694,6 +713,7 @@ export class AppraisalService {
       let guarded = applyAppraisalGuardrails(rawOutput, this.options.tuning ?? LIFE_TUNING, {
         eventKind: event.kind,
         eventText: safeStringify(event.payload),
+        idleEvent: isIdleAppraisalEvent(event),
       });
       // 睡眠遷移の前段ルール + 整合矯正（#102）
       const sleepResolution = resolveSleepTransition(event, currentState.sleeping, guarded.sleep);

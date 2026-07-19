@@ -11,6 +11,9 @@
 export const EVENT_KINDS = {
   /** 自分が発行した行動・発話 */
   ownAction: 'own_action',
+  /** 実行されなかった自分の試み（409 拒否・事前検証の案内変換）。own_action と
+   * 分けることで「実行した」という偽の記憶を作らず、失敗の事実だけを残す */
+  failedAttempt: 'failed_attempt',
   /** 相手からの会話・発言（KW 割り込み会話含む） */
   conversation: 'conversation',
   /** KW の世界イベント（行動完了・移動・サーバーイベント等） */

@@ -144,6 +144,49 @@ export function normalizeKwOwnAction({
   };
 }
 
+export interface NormalizeKwFailedAttemptOptions {
+  botId: string;
+  command: string;
+  params: unknown;
+  comment?: string | undefined;
+  /** informational 変換後の status（busy / same_node / stale 等） */
+  status: string;
+  /** サーバー hint（失敗理由の最重要情報） */
+  hint?: string | undefined;
+  notificationId?: string | undefined;
+  receivedAt: Date;
+}
+
+/**
+ * 実行されなかった KW コマンドの試み（#103 の informational 変換で案内へ落ちたもの）を
+ * own_action と別種別で残す。実機で 409 ループが 19 時間続いた際、失敗が一切
+ * 記録されず「毎サイクル失敗を初体験する」状態になったための軽量記録。
+ */
+export function normalizeKwFailedAttempt({
+  botId,
+  command,
+  params,
+  comment,
+  status,
+  hint,
+  notificationId,
+  receivedAt,
+}: NormalizeKwFailedAttemptOptions): NormalizedEvent {
+  return {
+    receivedAt,
+    channel: kwChannel(botId),
+    kind: EVENT_KINDS.failedAttempt,
+    payload: {
+      command,
+      params,
+      status,
+      ...(comment != null ? { comment } : {}),
+      ...(hint != null ? { hint } : {}),
+      ...(notificationId != null ? { notification_id: notificationId } : {}),
+    },
+  };
+}
+
 export interface NormalizeDiscordChatTurnOptions {
   userId: string;
   userName: string;

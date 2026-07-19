@@ -6,6 +6,7 @@ import {
   kwChannel,
   normalizeDiscordChatTurn,
   normalizeDiscordOwnResponse,
+  normalizeKwFailedAttempt,
   normalizeKwNotification,
   normalizeKwOwnAction,
   normalizeSnsNotification,
@@ -125,6 +126,31 @@ describe('normalizeKwOwnAction', () => {
       params: { target: 'agent-b' },
       comment: '映画に誘ってみよう',
       notification_id: 'n-1',
+    });
+  });
+});
+
+describe('normalizeKwFailedAttempt', () => {
+  it('records the rejected attempt as failed_attempt with status and hint', () => {
+    const event = normalizeKwFailedAttempt({
+      botId: 'bot-1',
+      command: 'travel',
+      params: { target_world_id: 'home' },
+      comment: 'そろそろ帰るか',
+      status: 'busy',
+      hint: 'この command は保存済み通知の choices に含まれていません。',
+      notificationId: 'n-2',
+      receivedAt,
+    });
+    expect(event.channel).toBe('kw:bot-1');
+    expect(event.kind).toBe(EVENT_KINDS.failedAttempt);
+    expect(event.payload).toEqual({
+      command: 'travel',
+      params: { target_world_id: 'home' },
+      status: 'busy',
+      comment: 'そろそろ帰るか',
+      hint: 'この command は保存済み通知の choices に含まれていません。',
+      notification_id: 'n-2',
     });
   });
 });

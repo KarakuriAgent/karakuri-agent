@@ -20,6 +20,7 @@ import {
   applyAppraisalGuardrails,
   appraisalEventText,
   appraiseEvent,
+  isIdleAppraisalEvent,
 } from './appraisal.js';
 import { openLifeDatabase } from './db.js';
 import { defaultInnerState, describeInnerState } from './inner-state.js';
@@ -155,6 +156,12 @@ export async function runReplay(argv: string[]): Promise<void> {
       const guarded = applyAppraisalGuardrails(output, undefined, {
         eventKind: row.kind,
         eventText: appraisalEventText(parsedPayload),
+        idleEvent: isIdleAppraisalEvent({
+          receivedAt: new Date(row.received_at),
+          channel: row.channel,
+          kind: row.kind,
+          payload: parsedPayload,
+        }),
       });
       console.log([
         `#${row.id} [${row.received_at}] ${row.channel}/${row.kind}`,

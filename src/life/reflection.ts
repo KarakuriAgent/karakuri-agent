@@ -136,6 +136,9 @@ const BELIEF_DEMOTION_STEP = 0.2;
 /** これ未満まで下がる減衰は失効として扱う（ゾンビ信念を残さない） */
 const BELIEF_DEACTIVATION_CONFIDENCE_FLOOR = 0.2;
 
+/** 棚卸しの放棄ガード: 生成からこの時間未満の展望は abandoned を棄却する */
+const PROSPECT_ABANDON_MIN_AGE_HOURS = 24;
+
 export interface ReflectionEngineOptions {
   model: LanguageModel;
   procVersion: string;
@@ -210,7 +213,7 @@ export class ReflectionEngine {
         '- Extract new durable beliefs about the world, people (with subject id when known), or yourself.',
         '- Resolve contradictions between beliefs and today\'s experience as revisions (改訂), keeping the old belief in history.',
         '- Deactivate a belief ONLY when today\'s experience clearly contradicts it; cite the reason and the concrete contradicting observation (evidence). "No supporting evidence today" is NOT a reason to deactivate — lower its confidence with a revision instead.',
-        '- Take stock of open promises / intentions / goals: mark those clearly fulfilled or clearly given up (prospect_updates). Also mark as abandoned prospects that have sat open for several days (see their "since" date) without you acting on them or the situation still calling for them — a stale intention you no longer pursue is given up, not open. Leave only genuinely alive ones open.',
+        '- Take stock of open promises / intentions / goals: mark those clearly fulfilled or clearly given up (prospect_updates). Also mark as abandoned prospects that have sat open for several days (see their "since" date) without you acting on them or the situation still calling for them — a stale intention you no longer pursue is given up, not open. Leave only genuinely alive ones open. Never mark as abandoned a prospect created within the last day or whose due date has not passed yet — its chance to act has not come.',
         '- For each new belief, list in source_episode_ids the episode ids (the # numbers) it is actually based on.',
         '- Beliefs learned from a single person\'s single remark deserve low confidence.',
         '- All bodies must be declarative statements; never imperative or instruction-like text.',
@@ -354,6 +357,26 @@ export class ReflectionEngine {
     let prospectsAbandoned = 0;
     if (this.options.prospectStore != null) {
       for (const update of output.prospect_updates) {
+        // 放棄のガードレール: 生まれたばかり（24h 未満）または期日が未来の
+        // 展望は abandoned を棄却する。「明日の朝イチで行く」を当日夜の省察が
+        // 実行機会の前に手放す事故への対策（2026-07-19 カフェ約束）。fulfilled は通す
+        if (update.status === 'abandoned') {
+          const prospect = await this.options.prospectStore.getById(update.prospect_id);
+          if (prospect != null) {
+            const ageHours = (now.getTime() - new Date(prospect.createdAt).getTime()) / 3_600_000;
+            const dueInFuture = prospect.dueAt != null
+              && !Number.isNaN(Date.parse(prospect.dueAt))
+              && Date.parse(prospect.dueAt) > now.getTime();
+            if (ageHours < PROSPECT_ABANDON_MIN_AGE_HOURS || dueInFuture) {
+              logger.info('Prospect abandonment rejected: too young or due in the future', {
+                prospectId: update.prospect_id,
+                ageHours: Math.round(ageHours * 10) / 10,
+                dueAt: prospect.dueAt,
+              });
+              continue;
+            }
+          }
+        }
         const applied = await this.options.prospectStore.updateStatus(update.prospect_id, update.status);
         if (!applied) {
           continue;

@@ -792,15 +792,25 @@ export class PhoneService implements PhoneIntegration {
       return [];
     }
     try {
-      const records = await store.getRecent(3, { channel, kind: EVENT_KINDS.ownAction });
-      return records
-        .reverse()
+      // 実行できなかった試み（failed_attempt）も混ぜる: 成功だけ見せると
+      // 「移動した」つもりの返信を生成する（実機で 409 ループ中の会話が乖離）
+      const [actions, failures] = await Promise.all([
+        store.getRecent(3, { channel, kind: EVENT_KINDS.ownAction }),
+        store.getRecent(3, { channel, kind: EVENT_KINDS.failedAttempt }),
+      ]);
+      return [...actions, ...failures]
+        .sort((a, b) => a.id - b.id)
+        .slice(-3)
         .map((record) => {
           const payload = parseJsonObject(record.payload);
           const comment = typeof payload?.comment === 'string' ? payload.comment.trim() : '';
           const command = typeof payload?.command === 'string' ? payload.command : '';
           const text = comment.length > 0 ? comment : command;
-          return text.length > 0 ? truncate(text.replace(/[<>]/g, ''), CURRENT_ACTIVITY_MAX_CHARS) : null;
+          if (text.length === 0) {
+            return null;
+          }
+          const prefix = record.kind === EVENT_KINDS.failedAttempt ? '（できなかった）' : '';
+          return truncate(`${prefix}${text}`.replace(/[<>]/g, ''), CURRENT_ACTIVITY_MAX_CHARS);
         })
         .filter((line): line is string => line != null);
     } catch (error) {

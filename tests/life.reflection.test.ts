@@ -280,6 +280,8 @@ describe('ReflectionEngine.runDaily', () => {
     const prospectStore = new SqliteProspectStore({ db: env.db });
     const fulfilledId = await prospectStore.insert({ kind: 'promise', body: 'Bさんと映画を観る', provenance: [1], procVersion: 'test' });
     const abandonedId = await prospectStore.insert({ kind: 'intention', body: '観光に行く', provenance: [2], procVersion: 'test' });
+    // 放棄ガード（24h 未満は棄却）を通すため、数日放置された意図として扱う
+    env.db.prepare('UPDATE prospects SET created_at = ? WHERE id = ?').run('2026-07-01T00:00:00.000Z', abandonedId);
     await env.episodeStore.insert({
       occurredAt: '2026-07-05T10:00:00.000Z',
       channel: 'kw:bot-1',
@@ -318,6 +320,50 @@ describe('ReflectionEngine.runDaily', () => {
     // 果たせなかった約束は気分へ影響する（マイナス）
     const state = await env.innerStateService.getCurrent(now);
     expect(state.valence).toBeLessThan(0);
+  });
+
+  it('rejects abandoning prospects that are young or due in the future', async () => {
+    const env = await createEnv();
+    const { SqliteProspectStore } = await import('../src/life/prospects.js');
+    const prospectStore = new SqliteProspectStore({ db: env.db });
+    // 「明日の朝イチで行く」型: 当日生まれ + 期日未来（2026-07-19 カフェ約束の再現）
+    const youngId = await prospectStore.insert({ kind: 'intention', body: '明日の朝イチでヴェルテに行く', provenance: [1], procVersion: 'test' });
+    env.db.prepare('UPDATE prospects SET created_at = ? WHERE id = ?').run('2026-07-05T04:00:00.000Z', youngId);
+    const futureDueId = await prospectStore.insert({ kind: 'promise', body: '週末にレポートを提出する', dueAt: '2026-07-10T00:00:00.000Z', provenance: [2], procVersion: 'test' });
+    env.db.prepare('UPDATE prospects SET created_at = ? WHERE id = ?').run('2026-07-01T00:00:00.000Z', futureDueId);
+    await env.episodeStore.insert({
+      occurredAt: '2026-07-05T10:00:00.000Z',
+      channel: 'kw:bot-1',
+      body: '街を散策した。',
+      importance: 0.5,
+      participants: [],
+      provenance: [1],
+      procVersion: 'test',
+    });
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      innerStateService: env.innerStateService,
+      prospectStore,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: stubGenerateTextFn(makeDailyOutput({
+        mood_repair: 'none',
+        prospect_updates: [
+          { prospect_id: youngId, status: 'abandoned' },
+          { prospect_id: futureDueId, status: 'abandoned' },
+        ],
+      })),
+    });
+
+    const result = await engine.runDaily('2026-07-05', new Date('2026-07-05T14:00:00.000Z'));
+
+    expect(result?.prospectsAbandoned).toBe(0);
+    expect((await prospectStore.getById(youngId))?.status).toBe('open');
+    expect((await prospectStore.getById(futureDueId))?.status).toBe('open');
   });
 
   it('collects episodes by the local calendar day, not the UTC day', async () => {

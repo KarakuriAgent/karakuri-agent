@@ -329,6 +329,7 @@ async function main(): Promise<void> {
     episodeStore,
     snsContextRegistry,
     experienceRecorder,
+    experienceLog: experienceLogStore,
     perceptionBuffer,
     loopDetector,
     actionLedger,

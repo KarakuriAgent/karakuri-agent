@@ -149,6 +149,13 @@ export function describeStrongestDrive(state: InnerState): string | null {
     return null;
   }
 
+  // 疲れきり（energy < 0.2）は他の欲求に優先する。social は起きている限り
+  // 増え続けて 1.0 で飽和し strength 比較で常勝するため、実機で「energy が
+  // ほぼ 0 になるまで休息欲求がマスクされ続ける」が起きた（2026-07-19 kbx）
+  if (state.energy < 0.2) {
+    return '疲れきっていて、何よりも休みたい。';
+  }
+
   const candidates: DriveCandidate[] = [];
   if (state.hunger > 0.55) {
     candidates.push({
