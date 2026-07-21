@@ -68,6 +68,48 @@ describe('createNoThinkingFetch', () => {
     expect(body.enable_thinking).toBe(false);
   });
 
+  it('fills in null tool_call name/id when the request forces a tool_choice', async () => {
+    const backendBody = {
+      choices: [{ message: { role: 'assistant', tool_calls: [{ function: { name: null, arguments: '{"a":1}' }, id: null, index: 0, type: 'function' }] }, finish_reason: 'tool_calls' }],
+    };
+    const baseFetch = vi.fn(async () => new Response(JSON.stringify(backendBody), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const fetch = createNoThinkingFetch({ baseFetch });
+
+    const response = await fetch('https://api.example.com/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'm',
+        messages: [],
+        tools: [{ type: 'function', function: { name: 'submit_x', parameters: {} } }],
+        tool_choice: { type: 'function', function: { name: 'submit_x' } },
+      }),
+    });
+
+    const normalized = await response.json() as typeof backendBody;
+    const call = normalized.choices[0]!.message.tool_calls[0]!;
+    expect(call.function.name).toBe('submit_x');
+    expect(call.id).toMatch(/^call_/);
+  });
+
+  it('leaves responses untouched when no tool_choice is forced', async () => {
+    const body = { choices: [{ message: { role: 'assistant', content: 'hi' } }] };
+    const baseFetch = vi.fn(async () => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const fetch = createNoThinkingFetch({ baseFetch });
+
+    const response = await fetch('https://api.example.com/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'm', messages: [] }),
+    });
+
+    expect(await response.json()).toEqual(body);
+  });
+
   it('passes non-JSON bodies through unchanged', async () => {
     const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
     const fetch = createNoThinkingFetch({ baseFetch, disableThinkingRequestParam: true });
