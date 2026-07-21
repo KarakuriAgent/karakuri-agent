@@ -36,6 +36,21 @@ describe('createNoThinkingFetch', () => {
     expect(body.temperature).toBe(0.7);
     expect(body.stream).toBe(true);
     expect(body.enable_thinking).toBe(false);
+    // vLLM 系（Featherless の GLM/Qwen 等）はこちらのキーでのみ思考が無効化される
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+  });
+
+  it('merges enable_thinking=false into existing chat_template_kwargs', async () => {
+    const baseFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response('ok'));
+    const fetch = createNoThinkingFetch({ baseFetch, disableThinkingRequestParam: true });
+
+    await fetch('https://api.example.com/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'm', messages: [], chat_template_kwargs: { foo: 'bar' } }),
+    });
+
+    const body = JSON.parse(baseFetch.mock.calls[0]![1]!.body as string);
+    expect(body.chat_template_kwargs).toEqual({ foo: 'bar', enable_thinking: false });
   });
 
   it('also injects enable_thinking=false into responses requests when enabled', async () => {
