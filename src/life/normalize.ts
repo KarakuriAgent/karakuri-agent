@@ -70,8 +70,19 @@ export function extractKwRawKindFromEvent(event: NormalizedEvent): string | null
  * own_action（KW コマンド）からの睡眠開始検出（M2 の前段ルール — #102）。
  * LLM は fell_asleep をほぼ出さない（実機 0/382）ため、行動 ID の写像で
  * 決定論に検出する。写像にない睡眠表現は LLM 判定に委ねる。
+ *
+ * 「何が眠りに入る行為か」はペルソナ依存（ロボットなら充電など）のため、
+ * `KW_SLEEP_ACTION_PATTERN` env で差し替えられる。設定値は判定の意味論を
+ * 変えるため proc_version にも反映される（config → 起動時 configure）。
  */
-const KW_SLEEP_ACTION_PATTERN = /sleep|nap|就寝|寝る/i;
+export const DEFAULT_KW_SLEEP_ACTION_PATTERN = /sleep|nap|就寝|寝る/i;
+
+let kwSleepActionPattern: RegExp = DEFAULT_KW_SLEEP_ACTION_PATTERN;
+
+/** 起動時（index.ts / リプレイ CLI）に env 由来の解釈パターンを適用する。null で既定に戻す */
+export function configureKwSleepActionPattern(pattern: RegExp | null): void {
+  kwSleepActionPattern = pattern ?? DEFAULT_KW_SLEEP_ACTION_PATTERN;
+}
 
 export function detectKwSleepActionStart(event: NormalizedEvent): boolean {
   if (event.kind !== EVENT_KINDS.ownAction || !event.channel.startsWith('kw:')) {
@@ -86,7 +97,7 @@ export function detectKwSleepActionStart(event: NormalizedEvent): boolean {
     return false;
   }
   const actionId = (params as { action_id?: unknown }).action_id;
-  return typeof actionId === 'string' && KW_SLEEP_ACTION_PATTERN.test(actionId);
+  return typeof actionId === 'string' && kwSleepActionPattern.test(actionId);
 }
 
 export interface NormalizeKwNotificationOptions {

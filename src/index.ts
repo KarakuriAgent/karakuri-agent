@@ -12,7 +12,7 @@ import { createNoThinkingFetch, noThinkingProviderOptions } from './llm/no-think
 import { createScheduler, DiscordMessageSink, FileSchedulerStore } from './scheduler/index.js';
 import type { IMessageSink } from './scheduler/types.js';
 import { SqliteActionLedgerStore } from './life/action-ledger.js';
-import { AppraisalService, buildSelfLabelSet, SqliteAppraisalLogStore } from './life/appraisal.js';
+import { applyInterpretationConfig, AppraisalService, buildSelfLabelSet, SqliteAppraisalLogStore } from './life/appraisal.js';
 import { SqliteBeliefStore } from './life/beliefs.js';
 import { openLifeDatabase } from './life/db.js';
 import { SqliteNarrativeStore } from './life/narratives.js';
@@ -59,6 +59,8 @@ const SHUTDOWN_TIMEOUT_MS = 10_000;
 async function main(): Promise<void> {
   logger.info('Starting karakuri-agent...');
   const config = loadConfig();
+  // ペルソナ依存の解釈パターン（睡眠・飲食）を判定系へ適用（KW_SLEEP_ACTION_PATTERN / APPRAISAL_FOOD_CONTEXT_PATTERN）
+  applyInterpretationConfig(config);
   logger.info('Config loaded', {
     dataDir: config.dataDir,
     model: config.llmModel,
@@ -133,7 +135,10 @@ async function main(): Promise<void> {
   const appraisalSelectorForProc = config.appraisalLlmModelSelector ?? config.llmModelSelector;
   const segmentationEngine = new SegmentationEngine({
     episodeStore,
-    procVersion: buildAppraisalProcVersion(appraisalSelectorForProc.selector, config.appraisalOutputMode),
+    procVersion: buildAppraisalProcVersion(appraisalSelectorForProc.selector, config.appraisalOutputMode, {
+      sleepActionPattern: config.kwSleepActionPattern,
+      foodContextPattern: config.appraisalFoodContextPattern,
+    }),
     ...(embeddingIndex != null
       ? {
           onEpisodeFinalized: (episodeId: number, body: string) => {
@@ -269,7 +274,10 @@ async function main(): Promise<void> {
           modelName: appraisalSelector.selector,
           innerStateService,
           logStore: appraisalLogStore,
-          procVersion: buildAppraisalProcVersion(appraisalSelector.selector, config.appraisalOutputMode),
+          procVersion: buildAppraisalProcVersion(appraisalSelector.selector, config.appraisalOutputMode, {
+            sleepActionPattern: config.kwSleepActionPattern,
+            foodContextPattern: config.appraisalFoodContextPattern,
+          }),
           timezone: config.timezone,
           providerOptions: noThinkingProviderOptions(appraisalSelector.api),
           outputMode: config.appraisalOutputMode,

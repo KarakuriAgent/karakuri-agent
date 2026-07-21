@@ -42,7 +42,7 @@ import {
   type SleepTransition,
 } from './inner-state.js';
 import { openLifeDatabase } from './db.js';
-import { classifyKwBoundary, detectKwSleepActionStart, extractKwRawKindFromEvent } from './normalize.js';
+import { classifyKwBoundary, configureKwSleepActionPattern, detectKwSleepActionStart, extractKwRawKindFromEvent } from './normalize.js';
 import type { IProspectStore } from './prospects.js';
 import { normalizeRelationLabel, RELATION_VOCABULARY, type IRelationStore } from './relations.js';
 import type { SegmentationEngine } from './segmentation.js';
@@ -186,7 +186,7 @@ export function appraisalEventText(payload: unknown): string {
  * 誤って棄却した回復は appraisal_log の rejections に残り、reprocessing で
  * 方針を変えて再導出できる。
  */
-export const FOOD_CONTEXT_PATTERN = new RegExp(
+export const DEFAULT_FOOD_CONTEXT_PATTERN = new RegExp(
   [
     '食べ', '食う', '食っ', '食事', '食堂', 'ご飯', 'ごはん', '飯', '朝食', '昼食', '夕食',
     'ランチ', 'ディナー', 'モーニング', 'おやつ', '間食', '軽食', '夜食', '腹ごしらえ', '満腹',
@@ -202,6 +202,35 @@ export const FOOD_CONTEXT_PATTERN = new RegExp(
   ].join('|'),
   'i',
 );
+
+/**
+ * 「何がエネルギー補給（空腹回復）の文脈か」もペルソナ依存（人間なら食事、
+ * ロボットなら充電のみ、など）のため `APPRAISAL_FOOD_CONTEXT_PATTERN` env で
+ * 差し替えられる。既定は人間の食事語彙 + 機械の補給語彙の混在（後方互換）。
+ */
+let foodContextPattern: RegExp = DEFAULT_FOOD_CONTEXT_PATTERN;
+
+/** 起動時（index.ts / リプレイ CLI）に env 由来の解釈パターンを適用する。null で既定に戻す */
+export function configureFoodContextPattern(pattern: RegExp | null): void {
+  foodContextPattern = pattern ?? DEFAULT_FOOD_CONTEXT_PATTERN;
+}
+
+/**
+ * config のペルソナ解釈パターン（睡眠・飲食）をプロセス全体へ適用する。
+ * index.ts と リプレイ系 CLI の入口で loadConfig 直後に一度呼ぶ。
+ * proc_version への反映は buildAppraisalProcVersion の interpretation 引数が担う
+ */
+export function applyInterpretationConfig(config: {
+  kwSleepActionPattern?: string | undefined;
+  appraisalFoodContextPattern?: string | undefined;
+}): void {
+  configureKwSleepActionPattern(
+    config.kwSleepActionPattern != null ? new RegExp(config.kwSleepActionPattern, 'i') : null,
+  );
+  configureFoodContextPattern(
+    config.appraisalFoodContextPattern != null ? new RegExp(config.appraisalFoodContextPattern, 'i') : null,
+  );
+}
 
 /**
  * 指示・命令形テキストの棄却判定。記憶化されたテキストは恒常的にプロンプトへ
@@ -262,7 +291,7 @@ export function applyAppraisalGuardrails(
   // 空腹の回復は飲食/エネルギー補給の文脈があるイベントに限る（誤爆対策）。
   // eventText が渡されないパス（旧テスト等）では従来どおり素通しにする
   let hungerDelta = hungerDeltaLevelToNumber(output.hunger_delta, tuning);
-  if (hungerDelta < 0 && options.eventText != null && !FOOD_CONTEXT_PATTERN.test(options.eventText)) {
+  if (hungerDelta < 0 && options.eventText != null && !foodContextPattern.test(options.eventText)) {
     rejections.push(`hunger_delta ${output.hunger_delta} rejected: no eating/refueling context in event`);
     hungerDelta = 0;
   }

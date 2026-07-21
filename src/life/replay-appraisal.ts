@@ -18,6 +18,7 @@ import { createConfiguredOpenAiModelFactory } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
 import {
   applyAppraisalGuardrails,
+  applyInterpretationConfig,
   appraisalEventText,
   appraiseEvent,
   isIdleAppraisalEvent,
@@ -81,6 +82,7 @@ interface ReplayRow {
 export async function runReplay(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const config = loadConfig();
+  applyInterpretationConfig(config);
   const db = openLifeDatabase({ dataDir: config.dataDir });
 
   const conditions: string[] = [];
@@ -123,7 +125,10 @@ export async function runReplay(argv: string[]): Promise<void> {
     }),
   });
   const model = modelFactory(selector);
-  const procVersion = buildAppraisalProcVersion(selector.selector, config.appraisalOutputMode);
+  const procVersion = buildAppraisalProcVersion(selector.selector, config.appraisalOutputMode, {
+    sleepActionPattern: config.kwSleepActionPattern,
+    foodContextPattern: config.appraisalFoodContextPattern,
+  });
   const neutralState = describeInnerState(defaultInnerState(new Date()));
 
   console.log(`Replaying ${rows.length} events with ${procVersion} (dry-run; no state is applied)\n`);

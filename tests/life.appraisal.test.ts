@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applyAppraisalGuardrails,
+  applyInterpretationConfig,
   AppraisalService,
   appraiseEvent,
   deltaLevelToNumber,
@@ -20,7 +21,7 @@ import {
 } from '../src/life/appraisal.js';
 import { openLifeDatabase } from '../src/life/db.js';
 import { InnerStateService, SqliteInnerStateStore } from '../src/life/inner-state.js';
-import { LIFE_TUNING } from '../src/life/tuning.js';
+import { buildAppraisalProcVersion, LIFE_TUNING } from '../src/life/tuning.js';
 import type { NormalizedEvent } from '../src/life/types.js';
 import type { IMessageSink } from '../src/scheduler/types.js';
 
@@ -197,6 +198,25 @@ describe('applyAppraisalGuardrails', () => {
     expect(guarded.rejections).toEqual([]);
   });
 
+  it('honors a persona-specific food context pattern override', () => {
+    // ロボットペルソナ: 補給語彙のみを飲食と認め、人間の食事語彙は棄却する
+    applyInterpretationConfig({ appraisalFoodContextPattern: '充電|チャージ|recharge' });
+    try {
+      const humanFood = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }), undefined, {
+        eventKind: 'world_event',
+        eventText: '{"summary":"「ケーキを食べる」が完了しました。"}',
+      });
+      expect(humanFood.deltas.hunger).toBe(0);
+      const recharge = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }), undefined, {
+        eventKind: 'world_event',
+        eventText: '{"summary":"「充電する」が完了しました。"}',
+      });
+      expect(recharge.deltas.hunger).toBeLessThan(0);
+    } finally {
+      applyInterpretationConfig({});
+    }
+  });
+
   it('keeps hunger increase regardless of eating context', () => {
     const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'small_up' }), undefined, {
       eventKind: 'world_event',
@@ -261,6 +281,21 @@ describe('resolveSleepTransition', () => {
     const resolved = resolveSleepTransition(sleepAction, false, 'no_change');
     expect(resolved.sleep).toBe('fell_asleep');
     expect(resolved.rejection).toContain('front rule');
+  });
+
+  it('honors a persona-specific sleep action pattern override', () => {
+    // ロボットペルソナ: 充電を眠りに入る行為として扱う
+    const chargeAction = makeEvent({
+      kind: 'own_action',
+      payload: { command: 'action', params: { action_id: 'action-charge', duration_minutes: 480 } },
+    });
+    expect(resolveSleepTransition(chargeAction, false, 'no_change').sleep).toBe('no_change');
+    applyInterpretationConfig({ kwSleepActionPattern: 'sleep|nap|就寝|寝る|charge|充電' });
+    try {
+      expect(resolveSleepTransition(chargeAction, false, 'no_change').sleep).toBe('fell_asleep');
+    } finally {
+      applyInterpretationConfig({});
+    }
   });
 
   it('treats an action-completed boundary while sleeping as waking up (#102)', () => {
@@ -803,5 +838,25 @@ describe('AppraisalService', () => {
     await service.enqueue(makeEvent());
 
     expect(postMessage).toHaveBeenCalledWith('report', expect.stringContaining('日次サマリ'));
+  });
+});
+
+describe('buildAppraisalProcVersion interpretation overrides', () => {
+  it('keeps the legacy version string when no override is set', () => {
+    expect(buildAppraisalProcVersion('gpt-x')).not.toContain('+interp');
+    expect(buildAppraisalProcVersion('gpt-x', 'json_schema', {})).not.toContain('+interp');
+  });
+
+  it('embeds a stable marker per overridden pattern', () => {
+    const withSleep = buildAppraisalProcVersion('gpt-x', 'json_schema', { sleepActionPattern: 'sleep|charge' });
+    expect(withSleep).toMatch(/\+interp\(s:[0-9a-f]{8}\)/);
+    // 同じ設定なら同じ版、違う設定なら別の版（導出ビューの追跡が目的）
+    expect(buildAppraisalProcVersion('gpt-x', 'json_schema', { sleepActionPattern: 'sleep|charge' })).toBe(withSleep);
+    expect(buildAppraisalProcVersion('gpt-x', 'json_schema', { sleepActionPattern: 'sleep|nap' })).not.toBe(withSleep);
+    const withBoth = buildAppraisalProcVersion('gpt-x', 'tool', {
+      sleepActionPattern: 'sleep|charge',
+      foodContextPattern: '充電|recharge',
+    });
+    expect(withBoth).toMatch(/\+tool-v1\+interp\(s:[0-9a-f]{8},f:[0-9a-f]{8}\)/);
   });
 });

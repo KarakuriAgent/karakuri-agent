@@ -72,13 +72,46 @@ export const LIFE_TUNING: LifeTuning = {
 //     idle_reminder 等に hunger_down が出て食事の意味が薄まった）
 export const APPRAISAL_PROMPT_VERSION = 'appraisal-v3';
 
+/** ペルソナ依存の解釈パターン上書き（env 由来）。設定値は判定の意味論を変えるため proc_version に痕跡を残す */
+export interface InterpretationOverrides {
+  /** KW_SLEEP_ACTION_PATTERN（正規表現ソース文字列） */
+  sleepActionPattern?: string | undefined;
+  /** APPRAISAL_FOOD_CONTEXT_PATTERN（正規表現ソース文字列） */
+  foodContextPattern?: string | undefined;
+}
+
+/** proc_version 用の短い安定ハッシュ（djb2、8 hex）。パターン本文をそのまま埋めると版文字列が肥大するため */
+function shortHash(text: string): string {
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
 /**
  * 出力取得モードも判定プロセスの一部（プロンプト構成・コール分割が変わる）なので
- * proc_version に含める。json_schema（現行）は表記を変えず後方互換を保つ
+ * proc_version に含める。json_schema（現行）は表記を変えず後方互換を保つ。
+ * 解釈パターンの上書き（睡眠・飲食）も判定の意味論を変えるため、設定時のみ
+ * `+interp(...)` を付与する（未設定時は従来の表記のまま）
  */
-export function buildAppraisalProcVersion(model: string, outputMode: 'json_schema' | 'tool' = 'json_schema'): string {
-  const promptVersion = outputMode === 'tool'
+export function buildAppraisalProcVersion(
+  model: string,
+  outputMode: 'json_schema' | 'tool' = 'json_schema',
+  interpretation?: InterpretationOverrides,
+): string {
+  let promptVersion = outputMode === 'tool'
     ? `${APPRAISAL_PROMPT_VERSION}+tool-v1`
     : APPRAISAL_PROMPT_VERSION;
+  const interpParts: string[] = [];
+  if (interpretation?.sleepActionPattern != null) {
+    interpParts.push(`s:${shortHash(interpretation.sleepActionPattern)}`);
+  }
+  if (interpretation?.foodContextPattern != null) {
+    interpParts.push(`f:${shortHash(interpretation.foodContextPattern)}`);
+  }
+  if (interpParts.length > 0) {
+    promptVersion += `+interp(${interpParts.join(',')})`;
+  }
   return `${promptVersion}/${model}/${LIFE_TUNING_VERSION}`;
 }

@@ -18,7 +18,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig } from '../config.js';
 import { createConfiguredOpenAiModelFactory } from '../llm/model-selector.js';
 import { createNoThinkingFetch, noThinkingProviderOptions } from '../llm/no-thinking-fetch.js';
-import { applyAppraisalGuardrails, appraisalEventText, appraiseEvent, resolveSleepTransition } from './appraisal.js';
+import { applyAppraisalGuardrails, applyInterpretationConfig, appraisalEventText, appraiseEvent, resolveSleepTransition } from './appraisal.js';
 import { openLifeDatabase } from './db.js';
 import { OpenAiEmbeddingProvider } from './embeddings.js';
 import { SqliteEpisodeStore } from './episodes.js';
@@ -80,6 +80,7 @@ function parseArgs(argv: string[]): CliArgs {
 export async function runReprocessCli(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const config = loadConfig();
+  applyInterpretationConfig(config);
   const db = openLifeDatabase({ dataDir: config.dataDir });
   const experienceLogStore = new SqliteExperienceLogStore({ db });
   const episodeStore = new SqliteEpisodeStore({ db });
@@ -126,7 +127,10 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
       const reprocessor = new Reprocessor({
         experienceLogStore,
         episodeStore,
-        procVersion: buildAppraisalProcVersion(selector.selector, config.appraisalOutputMode),
+        procVersion: buildAppraisalProcVersion(selector.selector, config.appraisalOutputMode, {
+          sleepActionPattern: config.kwSleepActionPattern,
+          foodContextPattern: config.appraisalFoodContextPattern,
+        }),
         appraise: async (event) => {
           const output = await appraiseEvent({
             model,

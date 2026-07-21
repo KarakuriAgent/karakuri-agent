@@ -55,6 +55,8 @@ const configSchema = z.object({
   kwCommandSendMessage: z.string().trim().min(1).optional(),
   appraisalTimeoutMs: z.coerce.number().int().positive().optional(),
   appraisalOutputMode: z.enum(['json_schema', 'tool']).optional(),
+  kwSleepActionPattern: z.string().trim().min(1).optional(),
+  appraisalFoodContextPattern: z.string().trim().min(1).optional(),
   reflectionTimeoutMs: z.coerce.number().int().positive().optional(),
   reflectionOutputMode: z.enum(['json_schema', 'tool']).optional(),
   snsRateLimitPostPerHour: z.coerce.number().int().min(0).default(3),
@@ -215,6 +217,14 @@ export interface Config {
    * 分割スキーマ（json_schema を黙って無視するバックエンド — Featherless 等 — 向け）
    */
   appraisalOutputMode: 'json_schema' | 'tool';
+  /**
+   * ペルソナ依存の解釈パターン（正規表現ソース、i フラグで評価）。
+   * kwSleepActionPattern = 「どの行動 ID が眠りに入る行為か」（既定 sleep|nap|就寝|寝る。ロボットなら充電など）。
+   * appraisalFoodContextPattern = 「どの文脈を空腹回復（エネルギー補給）と認めるか」
+   * （既定は人間の食事語彙 + 機械の補給語彙）。いずれも判定の意味論を変えるため proc_version に反映される
+   */
+  kwSleepActionPattern?: string | undefined;
+  appraisalFoodContextPattern?: string | undefined;
   /** M4: 省察 LLM 呼び出しの 1 コールタイムアウト（ms）。未指定はエンジン既定（180 秒） */
   reflectionTimeoutMs?: number | undefined;
   /** M4: 省察の出力取得モード（appraisal と同じ切替。既定 json_schema） */
@@ -236,6 +246,15 @@ export interface Config {
   drivesInjectionEnabled: boolean;
   /** M5: 展望記憶（約束・予定・目標）注入の有効化 */
   prospectsInjectionEnabled: boolean;
+}
+
+function assertValidPattern(source: string, envName: string): string {
+  try {
+    new RegExp(source, 'i');
+  } catch (error) {
+    throw new Error(`Invalid ${envName}: ${source} (${error instanceof Error ? error.message : String(error)})`);
+  }
+  return source;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -314,6 +333,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     kwCommandSendMessage: normalizeOptionalString(env.KW_COMMAND_SEND_MESSAGE),
     appraisalTimeoutMs: env.APPRAISAL_TIMEOUT_MS,
     appraisalOutputMode: normalizeOptionalString(env.LLM_APPRAISAL_OUTPUT_MODE),
+    kwSleepActionPattern: normalizeOptionalString(env.KW_SLEEP_ACTION_PATTERN),
+    appraisalFoodContextPattern: normalizeOptionalString(env.APPRAISAL_FOOD_CONTEXT_PATTERN),
     reflectionTimeoutMs: env.REFLECTION_TIMEOUT_MS,
     reflectionOutputMode: normalizeOptionalString(env.LLM_REFLECTION_OUTPUT_MODE),
     snsRateLimitPostPerHour: env.SNS_RATE_LIMIT_POST_PER_HOUR,
@@ -535,6 +556,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
       ...(parsed.appraisalTimeoutMs != null ? { appraisalTimeoutMs: parsed.appraisalTimeoutMs } : {}),
       appraisalOutputMode: parsed.appraisalOutputMode ?? 'json_schema',
+      ...(parsed.kwSleepActionPattern != null
+        ? { kwSleepActionPattern: assertValidPattern(parsed.kwSleepActionPattern, 'KW_SLEEP_ACTION_PATTERN') }
+        : {}),
+      ...(parsed.appraisalFoodContextPattern != null
+        ? { appraisalFoodContextPattern: assertValidPattern(parsed.appraisalFoodContextPattern, 'APPRAISAL_FOOD_CONTEXT_PATTERN') }
+        : {}),
       ...(parsed.reflectionTimeoutMs != null ? { reflectionTimeoutMs: parsed.reflectionTimeoutMs } : {}),
       reflectionOutputMode: parsed.reflectionOutputMode ?? 'json_schema',
       innerStateInjectionEnabled: parseBooleanEnv(parsed.innerStateInjectionEnabled, 'INNER_STATE_INJECTION_ENABLED', true),
