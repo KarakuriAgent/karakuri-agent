@@ -72,6 +72,13 @@ export const LIFE_TUNING: LifeTuning = {
 //     idle_reminder 等に hunger_down が出て食事の意味が薄まった）
 export const APPRAISAL_PROMPT_VERSION = 'appraisal-v3';
 
-export function buildAppraisalProcVersion(model: string): string {
-  return `${APPRAISAL_PROMPT_VERSION}/${model}/${LIFE_TUNING_VERSION}`;
+/**
+ * 出力取得モードも判定プロセスの一部（プロンプト構成・コール分割が変わる）なので
+ * proc_version に含める。json_schema（現行）は表記を変えず後方互換を保つ
+ */
+export function buildAppraisalProcVersion(model: string, outputMode: 'json_schema' | 'tool' = 'json_schema'): string {
+  const promptVersion = outputMode === 'tool'
+    ? `${APPRAISAL_PROMPT_VERSION}+tool-v1`
+    : APPRAISAL_PROMPT_VERSION;
+  return `${promptVersion}/${model}/${LIFE_TUNING_VERSION}`;
 }

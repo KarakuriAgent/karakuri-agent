@@ -21,9 +21,9 @@ import { defaultIsNight, reflectionDateFor, type IsNightFn, type ReflectionEngin
 const logger = createLogger('ReflectionRunner');
 const MINUTE_MS = 60_000;
 
-const META_DAILY = 'reflection_daily_last';
-const META_WEEKLY = 'reflection_weekly_last';
-const META_MONTHLY = 'reflection_monthly_last';
+export const META_DAILY = 'reflection_daily_last';
+export const META_WEEKLY = 'reflection_weekly_last';
+export const META_MONTHLY = 'reflection_monthly_last';
 
 export interface ReflectionRunnerOptions {
   engine: ReflectionEngine;
@@ -177,7 +177,7 @@ function isSunday(date: string): boolean {
   return new Date(`${date}T00:00:00.000Z`).getUTCDay() === 0;
 }
 
-function isoWeekKey(date: string): string {
+export function isoWeekKey(date: string): string {
   const day = new Date(`${date}T00:00:00.000Z`);
   const year = day.getUTCFullYear();
   const start = new Date(Date.UTC(year, 0, 1));
@@ -185,7 +185,7 @@ function isoWeekKey(date: string): string {
   return `${year}-W${week}`;
 }
 
-function previousMonthRange(monthKey: string): { start: string; end: string } {
+export function previousMonthRange(monthKey: string): { start: string; end: string } {
   const [yearText, monthText] = monthKey.split('-');
   const year = Number(yearText);
   const month = Number(monthText);

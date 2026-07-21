@@ -133,7 +133,7 @@ async function main(): Promise<void> {
   const appraisalSelectorForProc = config.appraisalLlmModelSelector ?? config.llmModelSelector;
   const segmentationEngine = new SegmentationEngine({
     episodeStore,
-    procVersion: buildAppraisalProcVersion(appraisalSelectorForProc.selector),
+    procVersion: buildAppraisalProcVersion(appraisalSelectorForProc.selector, config.appraisalOutputMode),
     ...(embeddingIndex != null
       ? {
           onEpisodeFinalized: (episodeId: number, body: string) => {
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
         });
         const reflectionEngine = new ReflectionEngine({
           model: reflectionModelFactory(reflectionSelector),
-          procVersion: buildReflectionProcVersion(reflectionSelector.selector),
+          procVersion: buildReflectionProcVersion(reflectionSelector.selector, config.reflectionOutputMode),
           episodeStore,
           narrativeStore,
           beliefStore,
@@ -228,6 +228,20 @@ async function main(): Promise<void> {
           prospectStore,
           timezone: config.timezone,
           providerOptions: noThinkingProviderOptions(reflectionSelector.api),
+          outputMode: config.reflectionOutputMode,
+          ...(config.reflectionTimeoutMs != null ? { timeoutMs: config.reflectionTimeoutMs } : {}),
+          ...(messageSink != null && config.reportChannelId != null
+            ? {
+                onDrop: (message: string) => {
+                  void reportSafely(
+                    messageSink,
+                    config.reportChannelId,
+                    `⚠️ 省察の出力の一部を破棄しました。不完全な要素は登録していません。\n- ${message}`,
+                    logger,
+                  );
+                },
+              }
+            : {}),
         });
         return new ReflectionRunner({
           engine: reflectionEngine,
@@ -255,9 +269,10 @@ async function main(): Promise<void> {
           modelName: appraisalSelector.selector,
           innerStateService,
           logStore: appraisalLogStore,
-          procVersion: buildAppraisalProcVersion(appraisalSelector.selector),
+          procVersion: buildAppraisalProcVersion(appraisalSelector.selector, config.appraisalOutputMode),
           timezone: config.timezone,
           providerOptions: noThinkingProviderOptions(appraisalSelector.api),
+          outputMode: config.appraisalOutputMode,
           segmentation: segmentationEngine,
           prospectStore,
           relationStore,

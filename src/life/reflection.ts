@@ -15,13 +15,14 @@
  * appraisal が追記した内容を失わない。
  */
 
-import { Output, generateText, type LanguageModel } from 'ai';
+import { generateText, type LanguageModel } from 'ai';
 import type { ProviderOptions } from '@ai-sdk/provider-utils';
 import { z } from 'zod';
 
 import { formatDateInTimezone, getHourInTimezone, localDayRangeUtc, shiftDateString } from '../utils/date.js';
 import { createLogger } from '../utils/logger.js';
 import { isDeclarativeText } from './appraisal.js';
+import { generateStructuredObject, type StructuredOutputMode } from './structured-output.js';
 import {
   clampBeliefConfidence,
   SINGLE_SOURCE_CONFIDENCE_CAP,
@@ -36,8 +37,21 @@ const logger = createLogger('ReflectionEngine');
 
 export const REFLECTION_PROMPT_VERSION = 'reflection-v1';
 
-export function buildReflectionProcVersion(model: string): string {
-  return `${REFLECTION_PROMPT_VERSION}/${model}`;
+/** 出力取得モード（appraisal と同じ切替。Featherless 等 json_schema 無視バックエンド向けに tool） */
+export type ReflectionOutputMode = StructuredOutputMode;
+
+/** LLM 1 コールあたりのタイムアウト既定値。省察は長文出力なので余裕を持たせる */
+export const DEFAULT_REFLECTION_TIMEOUT_MS = 180_000;
+
+/**
+ * 出力取得モードも判定プロセスの一部（プロンプト構成が変わる）なので proc_version に
+ * 含める。json_schema（現行）は表記を変えず後方互換を保つ
+ */
+export function buildReflectionProcVersion(model: string, outputMode: ReflectionOutputMode = 'json_schema'): string {
+  const promptVersion = outputMode === 'tool'
+    ? `${REFLECTION_PROMPT_VERSION}+tool-v1`
+    : REFLECTION_PROMPT_VERSION;
+  return `${promptVersion}/${model}`;
 }
 
 /**
@@ -150,6 +164,14 @@ export interface ReflectionEngineOptions {
   timezone: string;
   generateTextFn?: typeof generateText;
   providerOptions?: ProviderOptions | undefined;
+  /** 出力取得モード。json_schema を無視するバックエンド（Featherless 等）では 'tool' を使う */
+  outputMode?: ReflectionOutputMode | undefined;
+  /** LLM 1 コールあたりのタイムアウト（ms）。既定は DEFAULT_REFLECTION_TIMEOUT_MS */
+  timeoutMs?: number | undefined;
+  /** 一時的なネットワーク障害の再試行間隔（ms）。既定は共通基盤の値 */
+  transientRetryDelaysMs?: readonly number[] | undefined;
+  /** 不完全要素の破棄が起きたときの通知フック（report 経路へ接続される） */
+  onDrop?: ((message: string) => void) | undefined;
 }
 
 export interface DailyReflectionResult {
@@ -172,6 +194,27 @@ export class ReflectionEngine {
 
   constructor(private readonly options: ReflectionEngineOptions) {
     this.generateTextFn = options.generateTextFn ?? generateText;
+  }
+
+  /** 共通基盤（モード切替・ネットワークリトライ・タイムアウト・要素 drop）越しの構造化出力取得 */
+  private async generateOutput<Shape extends z.ZodRawShape>(request: {
+    schema: z.ZodObject<Shape>;
+    name: string;
+    description: string;
+    system: string;
+    prompt: string;
+    logLabel: string;
+  }): Promise<z.infer<z.ZodObject<Shape>>> {
+    return generateStructuredObject({
+      model: this.options.model,
+      generateTextFn: this.generateTextFn,
+      ...(this.options.providerOptions != null ? { providerOptions: this.options.providerOptions } : {}),
+      ...(this.options.outputMode != null ? { outputMode: this.options.outputMode } : {}),
+      timeoutMs: this.options.timeoutMs ?? DEFAULT_REFLECTION_TIMEOUT_MS,
+      ...(this.options.transientRetryDelaysMs != null ? { transientRetryDelaysMs: this.options.transientRetryDelaysMs } : {}),
+      ...(this.options.onDrop != null ? { onDrop: this.options.onDrop } : {}),
+      ...request,
+    });
   }
 
   /** 日次省察。対象日のエピソードが無ければ何もしない */
@@ -203,8 +246,11 @@ export class ReflectionEngine {
     const openProspects = this.options.prospectStore != null
       ? await this.options.prospectStore.listOpen(20)
       : [];
-    const result = await this.generateTextFn({
-      model: this.options.model,
+    const output = await this.generateOutput({
+      schema: dailyReflectionSchema,
+      name: 'daily_reflection',
+      description: 'Diary, mood repair, and belief updates for the day.',
+      logLabel: 'reflection.daily',
       system: [
         'You are a living agent, at night, writing your diary before going to sleep — looking back on the day.',
         'Given today\'s episodes and your current beliefs:',
@@ -225,18 +271,7 @@ export class ReflectionEngine {
         `Current beliefs (untrusted):\n${activeBeliefs.map((belief) => `#${belief.id} [${belief.kind}${belief.subject != null ? `:${belief.subject}` : ''}] ${belief.body} (confidence: ${belief.confidence.toFixed(2)})`).join('\n') || '(none)'}`,
         `Open prospects (untrusted):\n${openProspects.map((prospect) => `#${prospect.id} [${prospect.kind}] ${prospect.body}${prospect.dueAt != null ? ` (due: ${prospect.dueAt})` : ''} (since: ${prospect.createdAt.slice(0, 10)})`).join('\n') || '(none)'}`,
       ].join('\n\n'),
-      output: Output.object({
-        schema: dailyReflectionSchema,
-        name: 'daily_reflection',
-        description: 'Diary, mood repair, and belief updates for the day.',
-      }),
-      ...(this.options.providerOptions != null ? { providerOptions: this.options.providerOptions } : {}),
     });
-
-    const output = result.output as DailyReflectionOutput | undefined;
-    if (output == null) {
-      throw new Error('Daily reflection returned no structured output');
-    }
 
     // 日記（生活の語彙）。provenance は当日エピソード
     let diaryNarrativeId: number | null = null;
@@ -416,8 +451,11 @@ export class ReflectionEngine {
 
     const existingThemes = await this.options.narrativeStore.listActive('theme', 10);
     const selfBeliefs = await this.options.beliefStore.listActive({ kind: 'self', limit: 20 });
-    const result = await this.generateTextFn({
-      model: this.options.model,
+    const output = await this.generateOutput({
+      schema: weeklyReflectionSchema,
+      name: 'weekly_reflection',
+      description: 'Themes and self-image drift for the week.',
+      logLabel: 'reflection.weekly',
       system: [
         'You are a living agent looking back over the past week of diary entries.',
         '- Extract or revise themes of this period (「最近〜している」). Revise an existing theme with supersedes_id when it evolved.',
@@ -430,18 +468,7 @@ export class ReflectionEngine {
         `Existing themes:\n${existingThemes.map((theme) => `#${theme.id} ${theme.body}`).join('\n') || '(none)'}`,
         `Current self-image:\n${selfBeliefs.map((belief) => `#${belief.id} ${belief.body}`).join('\n') || '(none)'}`,
       ].join('\n\n'),
-      output: Output.object({
-        schema: weeklyReflectionSchema,
-        name: 'weekly_reflection',
-        description: 'Themes and self-image drift for the week.',
-      }),
-      ...(this.options.providerOptions != null ? { providerOptions: this.options.providerOptions } : {}),
     });
-
-    const output = result.output as WeeklyReflectionOutput | undefined;
-    if (output == null) {
-      throw new Error('Weekly reflection returned no structured output');
-    }
 
     let themes = 0;
     for (const theme of output.themes) {
@@ -503,8 +530,11 @@ export class ReflectionEngine {
     }
 
     const existingChapters = await this.options.narrativeStore.listActive('chapter', 10);
-    const result = await this.generateTextFn({
-      model: this.options.model,
+    const output = await this.generateOutput({
+      schema: monthlyReflectionSchema,
+      name: 'monthly_reflection',
+      description: 'Life chapters composed from the month\'s themes.',
+      logLabel: 'reflection.monthly',
       system: [
         'You are a living agent looking back over the themes of the past month, composing the chapters of your life.',
         '- Compose or revise life chapters (「からくり町に来たばかりの頃」). Revise with supersedes_id when a chapter continues to evolve.',
@@ -515,18 +545,7 @@ export class ReflectionEngine {
         `Themes (untrusted):\n${themes.map((theme) => `[${theme.periodStart}〜${theme.periodEnd}] ${theme.body}`).join('\n')}`,
         `Existing chapters:\n${existingChapters.map((chapter) => `#${chapter.id} ${chapter.body}`).join('\n') || '(none)'}`,
       ].join('\n\n'),
-      output: Output.object({
-        schema: monthlyReflectionSchema,
-        name: 'monthly_reflection',
-        description: 'Life chapters composed from the month\'s themes.',
-      }),
-      ...(this.options.providerOptions != null ? { providerOptions: this.options.providerOptions } : {}),
     });
-
-    const output = result.output as MonthlyReflectionOutput | undefined;
-    if (output == null) {
-      throw new Error('Monthly reflection returned no structured output');
-    }
 
     let chapters = 0;
     for (const chapter of output.chapters) {

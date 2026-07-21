@@ -97,6 +97,8 @@ const baseConfig: Config = {
   loopDetectorThreshold: 3,
   repetitiveToolCallRecoveryEnabled: true,
   appraisalEnabled: true,
+  appraisalOutputMode: 'json_schema' as const,
+  reflectionOutputMode: 'json_schema' as const,
   innerStateInjectionEnabled: true,
   embeddingDimensions: 1536,
   recallInjectionEnabled: true,

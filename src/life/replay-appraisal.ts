@@ -123,7 +123,7 @@ export async function runReplay(argv: string[]): Promise<void> {
     }),
   });
   const model = modelFactory(selector);
-  const procVersion = buildAppraisalProcVersion(selector.selector);
+  const procVersion = buildAppraisalProcVersion(selector.selector, config.appraisalOutputMode);
   const neutralState = describeInnerState(defaultInnerState(new Date()));
 
   console.log(`Replaying ${rows.length} events with ${procVersion} (dry-run; no state is applied)\n`);
@@ -147,7 +147,11 @@ export async function runReplay(argv: string[]): Promise<void> {
         },
         currentStateDescription: neutralState,
         providerOptions: noThinkingProviderOptions(selector.api),
-        abortSignal: AbortSignal.timeout(60_000),
+        outputMode: config.appraisalOutputMode,
+        timeoutMs: 60_000,
+        onDrop: (message) => {
+          console.log(`  (dropped) ${message}`);
+        },
       });
       if (output == null) {
         console.log(`#${row.id} [${row.received_at}] ${row.channel}/${row.kind} → (no structured output)`);

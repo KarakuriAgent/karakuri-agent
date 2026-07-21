@@ -126,14 +126,18 @@ export async function runReprocessCli(argv: string[]): Promise<void> {
       const reprocessor = new Reprocessor({
         experienceLogStore,
         episodeStore,
-        procVersion: buildAppraisalProcVersion(selector.selector),
+        procVersion: buildAppraisalProcVersion(selector.selector, config.appraisalOutputMode),
         appraise: async (event) => {
           const output = await appraiseEvent({
             model,
             event,
             currentStateDescription: neutralState,
             providerOptions: noThinkingProviderOptions(selector.api),
-            abortSignal: AbortSignal.timeout(60_000),
+            outputMode: config.appraisalOutputMode,
+            timeoutMs: 60_000,
+            onDrop: (message) => {
+              console.log(`  (dropped) ${message}`);
+            },
           });
           if (output == null) {
             return null;

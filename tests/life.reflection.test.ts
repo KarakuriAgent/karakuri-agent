@@ -744,3 +744,174 @@ describe('seed import', () => {
   });
 
 });
+
+describe('ReflectionEngine output modes (structured-output 共通基盤)', () => {
+  async function createEnvWithEpisode() {
+    const env = await createEnv();
+    await env.episodeStore.insert({
+      occurredAt: '2026-07-05T10:00:00.000Z',
+      channel: 'kw:bot-1',
+      body: '映画館でBさんと映画を観た。',
+      importance: 0.7,
+      participants: ['kw:agent:agent-b'],
+      provenance: [1],
+      procVersion: 'test',
+    });
+    return env;
+  }
+
+  it('runs the daily reflection through a forced tool call in tool mode', async () => {
+    const env = await createEnvWithEpisode();
+    const output = makeDailyOutput();
+    const generateTextFn = vi.fn(async (options: { toolChoice?: { toolName?: string } }) => ({
+      text: '',
+      toolCalls: [{ toolName: options.toolChoice?.toolName ?? '', input: output }],
+      steps: [],
+      response: { messages: [] },
+    }));
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1+tool-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      innerStateService: env.innerStateService,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      outputMode: 'tool',
+    });
+
+    const result = await engine.runDaily('2026-07-05', new Date('2026-07-05T14:00:00.000Z'));
+
+    expect(result?.diaryNarrativeId).not.toBeNull();
+    expect(generateTextFn).toHaveBeenCalledTimes(1);
+    const call = generateTextFn.mock.calls[0]![0] as { toolChoice?: { toolName?: string } };
+    expect(call.toolChoice?.toolName).toBe('daily_reflection');
+  });
+
+  it('salvages a fenced-JSON daily output in json_schema mode, dropping incomplete belief elements', async () => {
+    const env = await createEnvWithEpisode();
+    const raw = {
+      ...makeDailyOutput(),
+      new_beliefs: [
+        { kind: 'person_fact', body: 'Bさんは映画好きだ' }, // confidence 欠落 → 捨てる
+        { kind: 'person_fact', subject: 'kw:agent:agent-b', body: 'Bさんは夜型だ', confidence: 0.6 },
+      ],
+    };
+    const { NoObjectGeneratedError } = await import('ai');
+    const generateTextFn = vi.fn(async () => {
+      throw new NoObjectGeneratedError({
+        message: 'No object generated: could not parse the response.',
+        text: '説明文つき:\n```json\n' + JSON.stringify(raw) + '\n```',
+        response: { id: 'r-1', timestamp: new Date('2026-07-05T14:00:00.000Z'), modelId: 'test-model' },
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+          outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+        },
+        finishReason: 'stop',
+      });
+    });
+    const drops: string[] = [];
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      innerStateService: env.innerStateService,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      onDrop: (message) => drops.push(message),
+    });
+
+    const result = await engine.runDaily('2026-07-05', new Date('2026-07-05T14:00:00.000Z'));
+
+    expect(result?.diaryNarrativeId).not.toBeNull();
+    expect(result?.newBeliefs).toBe(1);
+    expect(drops).toHaveLength(1);
+    expect(drops[0]).toContain('new_beliefs[0]');
+    expect(generateTextFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries the tool call with feedback and drops invalid elements on the final attempt', async () => {
+    const env = await createEnvWithEpisode();
+    const badOutput = {
+      ...makeDailyOutput(),
+      revisions: [{ body: '改訂だけど belief_id が無い' }],
+    };
+    const prompts: string[] = [];
+    const generateTextFn = vi.fn(async (options: { prompt: string; toolChoice?: { toolName?: string } }) => {
+      prompts.push(options.prompt);
+      return {
+        text: '',
+        toolCalls: [{ toolName: options.toolChoice?.toolName ?? '', input: badOutput }],
+        steps: [],
+        response: { messages: [] },
+      };
+    });
+    const drops: string[] = [];
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1+tool-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      innerStateService: env.innerStateService,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      outputMode: 'tool',
+      onDrop: (message) => drops.push(message),
+    });
+
+    const result = await engine.runDaily('2026-07-05', new Date('2026-07-05T14:00:00.000Z'));
+
+    expect(result?.diaryNarrativeId).not.toBeNull();
+    expect(result?.revisions).toBe(0);
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+    expect(prompts[1]).toContain('failed schema validation');
+    expect(drops).toHaveLength(1);
+    expect(drops[0]).toContain('revisions[0]');
+  });
+
+  it('retries transient network errors before failing the reflection', async () => {
+    const env = await createEnvWithEpisode();
+    const { APICallError } = await import('ai');
+    const output = makeDailyOutput();
+    let calls = 0;
+    const generateTextFn = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new APICallError({
+          message: 'Failed to process successful response',
+          url: 'https://example.test/v1/chat/completions',
+          requestBodyValues: {},
+          cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+        });
+      }
+      return { text: JSON.stringify(output), output, steps: [], response: { messages: [] } };
+    });
+
+    const engine = new ReflectionEngine({
+      model: {} as LanguageModel,
+      procVersion: 'reflection-v1/test',
+      episodeStore: env.episodeStore,
+      narrativeStore: env.narrativeStore,
+      beliefStore: env.beliefStore,
+      innerStateService: env.innerStateService,
+      timezone: 'Asia/Tokyo',
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      transientRetryDelaysMs: [0],
+    });
+
+    const result = await engine.runDaily('2026-07-05', new Date('2026-07-05T14:00:00.000Z'));
+
+    expect(result?.diaryNarrativeId).not.toBeNull();
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+  });
+});

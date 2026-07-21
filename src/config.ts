@@ -54,6 +54,9 @@ const configSchema = z.object({
   kwCommandPostSns: z.string().trim().min(1).optional(),
   kwCommandSendMessage: z.string().trim().min(1).optional(),
   appraisalTimeoutMs: z.coerce.number().int().positive().optional(),
+  appraisalOutputMode: z.enum(['json_schema', 'tool']).optional(),
+  reflectionTimeoutMs: z.coerce.number().int().positive().optional(),
+  reflectionOutputMode: z.enum(['json_schema', 'tool']).optional(),
   snsRateLimitPostPerHour: z.coerce.number().int().min(0).default(3),
   snsRateLimitPostPerDay: z.coerce.number().int().min(0).default(20),
   snsRateLimitPostMinIntervalMinutes: z.coerce.number().min(0).default(15),
@@ -206,6 +209,16 @@ export interface Config {
   appraisalEnabled: boolean;
   /** M2: appraisal LLM 呼び出しのタイムアウト（ms）。未指定はサービス既定（30 秒） */
   appraisalTimeoutMs?: number | undefined;
+  /**
+   * appraisal の出力取得モード。json_schema（既定）= response_format による構造保証
+   * （OpenAI 本家等スキーマ強制が効くバックエンド向け）、tool = 強制 tool call ×2 の
+   * 分割スキーマ（json_schema を黙って無視するバックエンド — Featherless 等 — 向け）
+   */
+  appraisalOutputMode: 'json_schema' | 'tool';
+  /** M4: 省察 LLM 呼び出しの 1 コールタイムアウト（ms）。未指定はエンジン既定（180 秒） */
+  reflectionTimeoutMs?: number | undefined;
+  /** M4: 省察の出力取得モード（appraisal と同じ切替。既定 json_schema） */
+  reflectionOutputMode: 'json_schema' | 'tool';
   /** M2: 内部状態の自然言語注入の有効化（切り分け・ロールバック用） */
   innerStateInjectionEnabled: boolean;
   /** M3: 埋め込みモデル（OpenAI 互換で差し替え可能。未設定なら FTS のみで想起） */
@@ -300,6 +313,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     kwCommandPostSns: normalizeOptionalString(env.KW_COMMAND_POST_SNS),
     kwCommandSendMessage: normalizeOptionalString(env.KW_COMMAND_SEND_MESSAGE),
     appraisalTimeoutMs: env.APPRAISAL_TIMEOUT_MS,
+    appraisalOutputMode: normalizeOptionalString(env.LLM_APPRAISAL_OUTPUT_MODE),
+    reflectionTimeoutMs: env.REFLECTION_TIMEOUT_MS,
+    reflectionOutputMode: normalizeOptionalString(env.LLM_REFLECTION_OUTPUT_MODE),
     snsRateLimitPostPerHour: env.SNS_RATE_LIMIT_POST_PER_HOUR,
     snsRateLimitPostPerDay: env.SNS_RATE_LIMIT_POST_PER_DAY,
     snsRateLimitPostMinIntervalMinutes: env.SNS_RATE_LIMIT_POST_MIN_INTERVAL_MINUTES,
@@ -518,6 +534,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ),
       appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
       ...(parsed.appraisalTimeoutMs != null ? { appraisalTimeoutMs: parsed.appraisalTimeoutMs } : {}),
+      appraisalOutputMode: parsed.appraisalOutputMode ?? 'json_schema',
+      ...(parsed.reflectionTimeoutMs != null ? { reflectionTimeoutMs: parsed.reflectionTimeoutMs } : {}),
+      reflectionOutputMode: parsed.reflectionOutputMode ?? 'json_schema',
       innerStateInjectionEnabled: parseBooleanEnv(parsed.innerStateInjectionEnabled, 'INNER_STATE_INJECTION_ENABLED', true),
       embeddingModel: normalizeOptionalString(parsed.embeddingModel),
       embeddingApiKey: normalizeOptionalString(parsed.embeddingApiKey),

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { NoObjectGeneratedError, type LanguageModel } from 'ai';
+import { APICallError, NoObjectGeneratedError, type LanguageModel } from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -12,6 +12,7 @@ import {
   deltaLevelToNumber,
   hungerDeltaLevelToNumber,
   isDeclarativeText,
+  isTransientNetworkError,
   resolveSleepTransition,
   salvageAppraisalOutput,
   SqliteAppraisalLogStore,
@@ -333,6 +334,50 @@ describe('salvageAppraisalOutput', () => {
     expect(salvageAppraisalOutput('just prose, no json')).toBeNull();
     expect(salvageAppraisalOutput(undefined)).toBeNull();
   });
+
+  it('drops incomplete observation elements instead of failing, recording the drops', () => {
+    const text = JSON.stringify({
+      valence_delta: 'none',
+      energy_delta: 'none',
+      hunger_delta: 'none',
+      social_delta: 'small_down',
+      relation_candidates: [
+        { subject: 'Yamashita', relation: 'friend' }, // object 欠落 → 捨てる
+        { subject: 'A', relation: 'friend', object: 'B' },
+      ],
+      prospect_candidates: [{ kind: 'promise', body: '明日会う' }],
+    });
+    const drops: string[] = [];
+    const salvaged = salvageAppraisalOutput(text, drops);
+    expect(salvaged).not.toBeNull();
+    expect(salvaged!.relation_candidates).toEqual([{ subject: 'A', relation: 'friend', object: 'B' }]);
+    expect(salvaged!.prospect_candidates).toHaveLength(1);
+    expect(drops).toHaveLength(1);
+    expect(drops[0]).toContain('relation_candidates[0]');
+  });
+});
+
+describe('isTransientNetworkError', () => {
+  function makeApiCallError(cause: unknown): APICallError {
+    return new APICallError({
+      message: 'Failed to process successful response',
+      url: 'https://example.test/v1/chat/completions',
+      requestBodyValues: {},
+      cause,
+    });
+  }
+
+  it('detects connection resets in the cause chain', () => {
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    const terminated = Object.assign(new TypeError('terminated'), { cause: reset });
+    expect(isTransientNetworkError(makeApiCallError(terminated))).toBe(true);
+    expect(isTransientNetworkError(makeApiCallError(reset))).toBe(true);
+  });
+
+  it('does not treat schema mismatches or plain errors as transient', () => {
+    expect(isTransientNetworkError(new Error('llm down'))).toBe(false);
+    expect(isTransientNetworkError(makeApiCallError(new Error('invalid json body')))).toBe(false);
+  });
 });
 
 describe('appraiseEvent schema-mismatch recovery', () => {
@@ -410,6 +455,182 @@ describe('appraiseEvent schema-mismatch recovery', () => {
     })).rejects.toThrow('llm down');
     expect(generateTextFn).toHaveBeenCalledTimes(1);
   });
+
+  it('retries transient network errors with backoff and then succeeds', async () => {
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    const expected = makeOutput({ valence_delta: 'small_up' });
+    let calls = 0;
+    const generateTextFn = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new APICallError({
+          message: 'Failed to process successful response',
+          url: 'https://example.test/v1/chat/completions',
+          requestBodyValues: {},
+          cause: reset,
+        });
+      }
+      return { text: JSON.stringify(expected), output: expected, steps: [], response: { messages: [] } };
+    });
+
+    const output = await appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      transientRetryDelaysMs: [0],
+    });
+
+    expect(output?.valence_delta).toBe('small_up');
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up transient-network retries after the configured attempts', async () => {
+    const generateTextFn = vi.fn(async () => {
+      throw new APICallError({
+        message: 'Failed to process successful response',
+        url: 'https://example.test/v1/chat/completions',
+        requestBodyValues: {},
+        cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      });
+    });
+
+    await expect(appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      transientRetryDelaysMs: [0],
+    })).rejects.toSatisfy((error) => APICallError.isInstance(error));
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('appraiseEvent tool mode (forced tool calls)', () => {
+  const baseOptions = {
+    model: {} as LanguageModel,
+    event: makeEvent(),
+    currentStateDescription: 'ふつう',
+    outputMode: 'tool' as const,
+  };
+  const coreInput = {
+    valence_delta: 'up',
+    energy_delta: 'none',
+    hunger_delta: 'none',
+    social_delta: 'none',
+    sleep: 'no_change',
+    salience: 'medium',
+  };
+
+  function makeToolResult(toolName: string, input: unknown) {
+    return { text: '', toolCalls: [{ toolName, input }], steps: [], response: { messages: [] } };
+  }
+
+  it('merges the core and observations calls into one output', async () => {
+    const generateTextFn = vi.fn(async (options: { toolChoice?: { toolName?: string }; tools?: Record<string, unknown> }) => {
+      const toolName = options.toolChoice?.toolName ?? '';
+      expect(Object.keys(options.tools ?? {})).toEqual([toolName]);
+      return makeToolResult(
+        toolName,
+        toolName === 'submit_state_appraisal'
+          ? coreInput
+          : { relation_candidates: [{ subject: 'A', relation: 'friend', object: 'B' }], prospect_candidates: [], segmentation: [] },
+      );
+    });
+
+    const output = await appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+    });
+
+    expect(output).toMatchObject({ valence_delta: 'up', salience: 'medium' });
+    expect(output?.relation_candidates).toEqual([{ subject: 'A', relation: 'friend', object: 'B' }]);
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops incomplete observation elements on the final attempt and notifies via onDrop', async () => {
+    const badObservations = {
+      relation_candidates: [
+        { subject: 'Yamashita', relation: 'friend' }, // object 欠落
+        { subject: 'A', relation: 'friend', object: 'B' },
+      ],
+      prospect_candidates: [],
+      segmentation: [],
+    };
+    const generateTextFn = vi.fn(async (options: { toolChoice?: { toolName?: string } }) => {
+      const toolName = options.toolChoice?.toolName ?? '';
+      return makeToolResult(toolName, toolName === 'submit_state_appraisal' ? coreInput : badObservations);
+    });
+    const drops: string[] = [];
+
+    const output = await appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      onDrop: (message) => drops.push(message),
+    });
+
+    // 1 回目は完全な再出力を促し、最終試行で不完全要素だけ捨てる
+    expect(generateTextFn).toHaveBeenCalledTimes(3);
+    expect(output?.relation_candidates).toEqual([{ subject: 'A', relation: 'friend', object: 'B' }]);
+    expect(drops).toHaveLength(1);
+    expect(drops[0]).toContain('relation_candidates[0]');
+  });
+
+  it('skips the whole event when the core call never validates (no partial state update)', async () => {
+    const generateTextFn = vi.fn(async (options: { toolChoice?: { toolName?: string } }) => {
+      return makeToolResult(options.toolChoice?.toolName ?? '', { valence_delta: 'way_up' });
+    });
+
+    await expect(appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+    })).rejects.toThrow('Appraisal core output failed schema validation');
+    // 中核 2 試行のみ。周辺コールへは進まない
+    expect(generateTextFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the core judgment when the observations call fails, registering nothing and notifying', async () => {
+    const generateTextFn = vi.fn(async (options: { toolChoice?: { toolName?: string } }) => {
+      const toolName = options.toolChoice?.toolName ?? '';
+      if (toolName === 'submit_state_appraisal') {
+        return makeToolResult(toolName, coreInput);
+      }
+      throw new Error('observations llm down');
+    });
+    const drops: string[] = [];
+
+    const output = await appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      onDrop: (message) => drops.push(message),
+    });
+
+    expect(output).toMatchObject({ valence_delta: 'up', salience: 'medium' });
+    expect(output?.relation_candidates).toEqual([]);
+    expect(output?.prospect_candidates).toEqual([]);
+    expect(output?.segmentation).toEqual([]);
+    expect(drops).toHaveLength(1);
+    expect(drops[0]).toContain('observations call failed');
+  });
+
+  it('treats a missing tool call as a validation failure and retries', async () => {
+    let coreCalls = 0;
+    const generateTextFn = vi.fn(async (options: { toolChoice?: { toolName?: string } }) => {
+      const toolName = options.toolChoice?.toolName ?? '';
+      if (toolName === 'submit_state_appraisal') {
+        coreCalls += 1;
+        if (coreCalls === 1) {
+          return { text: 'I cannot call tools', toolCalls: [], steps: [], response: { messages: [] } };
+        }
+        return makeToolResult(toolName, coreInput);
+      }
+      return makeToolResult(toolName, { relation_candidates: [], prospect_candidates: [], segmentation: [] });
+    });
+
+    const output = await appraiseEvent({
+      ...baseOptions,
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+    });
+
+    expect(output?.valence_delta).toBe('up');
+    expect(generateTextFn).toHaveBeenCalledTimes(3);
+  });
 });
 
 describe('AppraisalService', () => {
@@ -462,6 +683,53 @@ describe('AppraisalService', () => {
     // 状態は更新されていない（履歴なし）
     const state = await innerStateService.getCurrent(new Date('2026-07-05T03:00:00.000Z'));
     expect(state.valence).toBe(0);
+  });
+
+  it('reports dropped observation elements through the report channel', async () => {
+    const { innerStateService, logStore } = await createLifeEnv();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    // salvage 経路: 中核は有効、relation 要素が不完全な生テキスト
+    const rawText = JSON.stringify({
+      valence_delta: 'small_up',
+      energy_delta: 'none',
+      hunger_delta: 'none',
+      social_delta: 'none',
+      relation_candidates: [{ subject: 'Yamashita', relation: 'friend' }],
+    });
+    const generateTextFn = vi.fn(async () => {
+      throw new NoObjectGeneratedError({
+        message: 'No object generated: response did not match schema.',
+        text: rawText,
+        response: { id: 'r-1', timestamp: new Date('2026-07-05T03:00:00.000Z'), modelId: 'test-model' },
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          inputTokenDetails: { noCacheTokens: undefined, cacheReadTokens: undefined, cacheWriteTokens: undefined },
+          outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+        },
+        finishReason: 'stop',
+      });
+    });
+    const service = new AppraisalService({
+      model: {} as LanguageModel,
+      modelName: 'test-model',
+      innerStateService,
+      logStore,
+      procVersion: 'appraisal-v1/test',
+      timezone: 'Asia/Tokyo',
+      generateTextFn: generateTextFn as unknown as typeof import('ai').generateText,
+      messageSink: { postMessage },
+      reportChannelId: 'report',
+    });
+
+    await service.enqueue(makeEvent());
+    await service.drain();
+
+    // 状態は適用され、破棄は report 通知される
+    const state = await innerStateService.getCurrent(new Date('2026-07-05T03:00:00.000Z'));
+    expect(state.valence).toBeCloseTo(deltaLevelToNumber('small_up'), 3);
+    expect(postMessage).toHaveBeenCalledWith('report', expect.stringContaining('破棄'));
   });
 
   it('processes events in enqueue (arrival) order even when mixed', async () => {
