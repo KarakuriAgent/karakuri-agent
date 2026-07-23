@@ -387,6 +387,8 @@ async function main(): Promise<void> {
     // M9 #110: 深夜ゲートと個別共有（send-intent の材料）
     timezone: config.timezone,
     episodeSource: episodeStore,
+    // #112: 会話セッションへ進行中 / 手仕舞い済みの約束を届ける
+    prospectSource: prospectStore,
     threadMutex: chatThreadMutex,
   });
   agent.setPhoneIntegration(phoneService);

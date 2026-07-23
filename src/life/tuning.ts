@@ -70,7 +70,10 @@ export const LIFE_TUNING: LifeTuning = {
 // v3: hunger_down は実際の飲食/エネルギー補給のみと明記 + 飲食文脈の無い
 //     負の hunger delta を棄却するガードレール（実機でチケット購入・
 //     idle_reminder 等に hunger_down が出て食事の意味が薄まった）
-export const APPRAISAL_PROMPT_VERSION = 'appraisal-v3';
+// v4: belief_conflict（訂正・矛盾の検出）を追加し、true なら salience を
+//     medium へ床上げ（#112 — 訂正が low で埋もれ、訂正前の省察で確定した
+//     誤った belief が丸一日生き残った）
+export const APPRAISAL_PROMPT_VERSION = 'appraisal-v4';
 
 /** ペルソナ依存の解釈パターン上書き（env 由来）。設定値は判定の意味論を変えるため proc_version に痕跡を残す */
 export interface InterpretationOverrides {

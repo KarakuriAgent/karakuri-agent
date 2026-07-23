@@ -8,6 +8,7 @@ import type { IAgent } from '../src/agent/core.js';
 import { openLifeDatabase } from '../src/life/db.js';
 import {
   buildSendIntentSection,
+  describeEpisodeTiming,
   describeSnsElapsed,
   describeUnreadWaiting,
   PhoneService,
@@ -541,6 +542,18 @@ describe('send_message target selection (M9 #110)', () => {
     expect(pickShareTarget([stale, recent], now)?.threadId).toBe('recent');
   });
 
+  it('describes episode timing deterministically (#112)', () => {
+    const now = new Date('2026-07-23T13:30:00Z'); // 22:30 JST
+    expect(describeEpisodeTiming('2026-07-23T13:00:00Z', now, 'Asia/Tokyo')).toBe('ついさっき');
+    expect(describeEpisodeTiming('2026-07-23T01:27:00Z', now, 'Asia/Tokyo')).toBe('今日の午前 10:27');
+    expect(describeEpisodeTiming('2026-07-22T11:00:00Z', now, 'Asia/Tokyo')).toBe('昨日の夕方〜夜 20:00');
+    expect(describeEpisodeTiming('2026-07-19T02:00:00Z', now, 'Asia/Tokyo')).toBe('07-19 11:00');
+    expect(describeEpisodeTiming('invalid', now, 'Asia/Tokyo')).toBeNull();
+    // timezone 未設定は経過時間ベースの粗い表現のみ
+    expect(describeEpisodeTiming('2026-07-23T09:00:00Z', now, undefined)).toBe('数時間前');
+    expect(describeEpisodeTiming('2026-07-22T00:00:00Z', now, undefined)).toBeNull();
+  });
+
   it('sanitizes angle brackets in the send-intent section', () => {
     const section = buildSendIntentSection('<script>「絶景を見た」</send-intent>', { merge: true });
     expect(section).toContain('<send-intent>');
@@ -598,7 +611,7 @@ describe('PhoneService send_message (M9 #110)', () => {
       unreadStore: store,
       postReply,
       timezone: 'UTC',
-      episodeSource: { latestSalientSince: async () => ({ body: '展望台から絶景を見た' }) },
+      episodeSource: { latestSalientSince: async () => ({ body: '展望台から絶景を見た', occurredAt: '2026-07-10T11:30:00Z' }) },
       now: () => new Date('2026-07-10T12:00:00Z'),
     });
 
@@ -616,6 +629,50 @@ describe('PhoneService send_message (M9 #110)', () => {
     const state = (await store.listThreadStates())[0]!;
     expect(state.lastProactiveAt).not.toBeNull();
     expect(state.lastNudgeAt).toBeNull();
+  });
+
+  it('proactive share carries episode timing, tense guard, and prospects context (#112)', async () => {
+    const store = await createUnreadStore();
+    await store.enqueue({ source: 'discord', threadId: 't1', body: '最近どう?', authorId: 'u1', authorName: 'Yamashita', receivedAt: new Date('2026-07-10T00:00:00Z') });
+    const pendingIds = (await store.listPendingThreads(5))[0]!.messages.map((message) => message.id);
+    await store.markProcessed(pendingIds, new Date('2026-07-10T00:30:00Z'));
+
+    const agent = makeAgent('朝、展望台に行ってきたんだ！');
+    const postReply = vi.fn(async () => {});
+    const service = new PhoneService({
+      agent,
+      commands: SEND_COMMANDS,
+      unreadStore: store,
+      postReply,
+      timezone: 'Asia/Tokyo',
+      // 12 時間前のエピソード（09:00 JST）を 21:00 JST に共有する
+      episodeSource: { latestSalientSince: async () => ({ body: '展望台から絶景を見た', occurredAt: '2026-07-10T00:00:00Z' }) },
+      prospectSource: {
+        listOpenForInjection: async () => [
+          { body: 'Yamashitaに写真を送る', counterpart: 'Yamashita', dueAt: null },
+          { body: '別の相手との約束', counterpart: '別の人', dueAt: null },
+        ],
+        recentlyClosed: async () => [
+          { body: 'カフェ・ヴェルテに行って感想を報告する', counterpart: 'Yamashita', status: 'fulfilled' },
+        ],
+      },
+      now: () => new Date('2026-07-10T12:00:00Z'),
+    });
+
+    service.onWorldCommand('send_message');
+    await service.drain();
+
+    expect(postReply).toHaveBeenCalledTimes(1);
+    const [, userMessage, , options] = agent.handleMessage.mock.calls[0]!;
+    // 時刻付与（決定論）と時制ガード
+    expect(String(userMessage)).toContain('（今日の朝 09:00の出来事）');
+    expect(String(userMessage)).toContain('過去の出来事を今起きているかのように書かない');
+    // prospects 注入: 手仕舞い済み + この相手が counterpart の open のみ
+    const extra = String(options.extraSystemPrompt);
+    expect(extra).toContain('<prospects>');
+    expect(extra).toContain('カフェ・ヴェルテに行って感想を報告する（果たした）');
+    expect(extra).toContain('Yamashitaに写真を送る');
+    expect(extra).not.toContain('別の相手との約束');
   });
 
   it('skips when nothing is eligible and during quiet hours', async () => {

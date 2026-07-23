@@ -146,6 +146,22 @@ describe('applyAppraisalGuardrails', () => {
     expect(guarded.rejections).toEqual([]);
   });
 
+  it('floors salience to medium on belief conflict (#112)', () => {
+    // 訂正イベントが low で埋もれ、訂正前の省察で確定した誤った belief が
+    // 丸一日生き残った事故への対策（2026-07-23 カフェ・ヴェルテ／ヴェルデ）
+    const guarded = applyAppraisalGuardrails(makeOutput({ salience: 'low', belief_conflict: true }));
+    expect(guarded.salience).toBe('medium');
+    expect(guarded.beliefConflict).toBe(true);
+    expect(guarded.rejections.some((rejection) => rejection.includes('belief conflict'))).toBe(true);
+  });
+
+  it('keeps high salience on belief conflict and defaults beliefConflict to false (#112)', () => {
+    expect(applyAppraisalGuardrails(makeOutput({ salience: 'high', belief_conflict: true })).salience).toBe('high');
+    const guarded = applyAppraisalGuardrails(makeOutput({ salience: 'low' }));
+    expect(guarded.salience).toBe('low');
+    expect(guarded.beliefConflict).toBe(false);
+  });
+
   it('rejects negative energy on idle events (exertion without action)', () => {
     // 実機で「コマンドが通らない徒労」の idle_reminder 毎に -0.075 が積まれ、
     // 自然減衰の 15 倍のペースで energy が枯渇した（2026-07-19 kbx）

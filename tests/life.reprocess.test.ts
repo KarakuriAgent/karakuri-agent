@@ -56,6 +56,7 @@ const mockAppraise = async (event: NormalizedEvent): Promise<GuardedAppraisal | 
     deltas: { valence: 0.1, energy: 0, hunger: 0, social: 0 },
     sleep: 'no_change',
     salience: 'medium',
+    beliefConflict: false,
     relationCandidates: [],
     prospectCandidates: [],
     segmentation: [{

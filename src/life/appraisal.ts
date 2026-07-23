@@ -78,6 +78,8 @@ export const appraisalOutputSchema = z.object({
     .describe('Whether this event marks falling asleep or waking up'),
   salience: z.enum(['none', 'low', 'medium', 'high'])
     .describe('How memorable this event is as a life experience'),
+  belief_conflict: z.boolean().optional()
+    .describe('true when the event contradicts or corrects something the agent believed or previously said (e.g. being corrected by someone, discovering its own mistake)'),
   relation_candidates: z.array(z.object({
     subject: z.string().max(200),
     relation: z.string().max(100),
@@ -123,6 +125,7 @@ export const appraisalCoreSchema = appraisalOutputSchema.pick({
   social_delta: true,
   sleep: true,
   salience: true,
+  belief_conflict: true,
 });
 
 /** tool モードの周辺コール: 関係 / 展望 / 分節化（配列もの） */
@@ -139,6 +142,8 @@ export interface GuardedAppraisal {
   deltas: InnerStateDeltas;
   sleep: SleepTransition;
   salience: AppraisalOutput['salience'];
+  /** 自分の認識・過去の発言と矛盾する出来事か（#112。salience 床上げの根拠として記録） */
+  beliefConflict: boolean;
   relationCandidates: AppraisalOutput['relation_candidates'];
   prospectCandidates: AppraisalOutput['prospect_candidates'];
   segmentation: AppraisalOutput['segmentation'];
@@ -348,6 +353,16 @@ export function applyAppraisalGuardrails(
     return declarative;
   });
 
+  // 訂正イベントのサリエンス床上げ（#112）: 「自分の思い込みが訂正された」出来事が
+  // low で埋もれ、訂正前の省察で確定した誤った belief が丸一日生き残った事故への
+  // 対策。判定は LLM（belief_conflict）、床上げは決定論
+  const beliefConflict = output.belief_conflict === true;
+  let salience = output.salience;
+  if (beliefConflict && (salience === 'none' || salience === 'low')) {
+    rejections.push(`salience ${salience} floored to medium: belief conflict (correction) detected`);
+    salience = 'medium';
+  }
+
   return {
     deltas: {
       valence: deltaLevelToNumber(output.valence_delta, tuning),
@@ -356,7 +371,8 @@ export function applyAppraisalGuardrails(
       social: socialDelta,
     },
     sleep: output.sleep,
-    salience: output.salience,
+    salience,
+    beliefConflict,
     relationCandidates,
     prospectCandidates,
     segmentation,
@@ -585,6 +601,7 @@ async function appraiseViaJsonSchema(
     '- how the event changes the agent\'s internal state (mood valence / physical energy / hunger / social desire), as graded deltas only, never absolute values',
     '- whether the event marks falling asleep or waking up',
     '- how memorable the event is (salience) as a life experience — most routine ticks are "none" or "low"',
+    '- whether the event contradicts or corrects something the agent believed or previously said (belief_conflict) — being corrected by someone or discovering its own mistake is NOT routine; such moments reshape beliefs and must not be forgotten',
     '- observed social relations (e.g. "B and C seem close") as short declarative statements',
     '- promises / intentions / goals expressed by or to the agent, as short declarative statements',
     '  - kind: "promise" = a commitment involving another person; "intention" = the agent\'s own short-lived intent; "goal" = a longer-term aim',
@@ -612,6 +629,7 @@ async function appraiseViaJsonSchema(
     '- valence_delta, energy_delta, hunger_delta, social_delta: each one of "large_down" | "down" | "small_down" | "none" | "small_up" | "up" | "large_up"',
     '- sleep: "fell_asleep" | "woke_up" | "no_change"',
     '- salience: "none" | "low" | "medium" | "high"',
+    '- belief_conflict: true | false (optional; omit when clearly false)',
     `- relation_candidates: array of objects {subject, relation, object, note?}; relation must be one of ${RELATION_VOCABULARY.map((label) => `"${label}"`).join(' | ')} — the enduring TYPE of relationship, never a description of this event (put event details in note)`,
     '- prospect_candidates: array of objects {kind: "promise" | "intention" | "goal", body, counterpart?, due_at?}',
     '- segmentation: array of objects {target: "action" | "conversation", decision: "open" | "continue" | "close" | "close_and_open" | "oneshot", beat?, final_body?, final_importance?: "low" | "medium" | "high"}',
@@ -686,6 +704,7 @@ const CORE_SYSTEM = [
   '- how the event changes the agent\'s internal state (mood valence / physical energy / hunger / social desire), as graded deltas only, never absolute values',
   '- whether the event marks falling asleep or waking up',
   '- how memorable the event is (salience) as a life experience — most routine ticks are "none" or "low"',
+  '- whether the event contradicts or corrects something the agent believed or previously said (belief_conflict) — being corrected by someone or discovering its own mistake is NOT routine; such moments reshape beliefs and must not be forgotten',
   'Rules:',
   ...SHARED_RULES,
   '- hunger_delta *_down ONLY when the agent actually eats or drinks in this event (for a machine body, recharging/refueling counts as a meal). Buying or carrying food without eating, time passing, or unrelated activities must NOT reduce hunger. A proper meal is "large_down"; a light snack is "down" or "small_down".',

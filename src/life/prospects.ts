@@ -47,6 +47,12 @@ export interface IProspectStore {
    * 占有し続け、会話由来の新しい約束が行動選択に届かないため分離する
    */
   listOpenForInjection(limit?: number): Promise<Prospect[]>;
+  /**
+   * 直近に手仕舞いした（open 以外へ遷移した）prospect（#112）。会話セッションへ
+   * 「この件はもう追わなくてよい」を伝え、解決済みの話題を古い物語のまま
+   * 蒸し返す事故を防ぐ
+   */
+  recentlyClosed(since: Date, limit?: number): Promise<Prospect[]>;
   /** updated_at が cutoff より古い open を expired へ落とす（決定論 TTL — #111）。返り値は件数 */
   expireStaleOpen(cutoff: Date): Promise<number>;
   /** 同一本文の open prospect が既にあるか（重複登録防止） */
@@ -143,6 +149,16 @@ export class SqliteProspectStore implements IProspectStore {
       ORDER BY CASE WHEN due_at IS NULL THEN 1 ELSE 0 END, due_at ASC, updated_at DESC, id DESC
       LIMIT ?
     `).all(Math.max(0, limit));
+    return Promise.resolve(rows.map(mapRow));
+  }
+
+  async recentlyClosed(since: Date, limit = 5): Promise<Prospect[]> {
+    const rows = this.db.prepare<[string, number], ProspectRow>(`
+      SELECT * FROM prospects
+      WHERE status != 'open' AND updated_at >= ?
+      ORDER BY updated_at DESC, id DESC
+      LIMIT ?
+    `).all(since.toISOString(), Math.max(0, limit));
     return Promise.resolve(rows.map(mapRow));
   }
 

@@ -42,6 +42,7 @@ function makeGuarded(overrides: Partial<GuardedAppraisal> = {}): GuardedAppraisa
     deltas: { valence: 0, energy: 0, hunger: 0, social: 0 },
     sleep: 'no_change',
     salience: 'low',
+    beliefConflict: false,
     relationCandidates: [],
     prospectCandidates: [],
     segmentation: [],

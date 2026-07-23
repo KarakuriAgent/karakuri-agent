@@ -73,6 +73,19 @@ describe('SqliteProspectStore', () => {
     expect(legacy[1]!.id).toBe(oldId);
   });
 
+  it('recentlyClosed returns non-open prospects updated since cutoff, newest first (#112)', async () => {
+    const store = await createProspectStore();
+    const doneId = await store.insert({ kind: 'promise', body: '果たした約束', counterpart: 'Yamashita', provenance: [1], procVersion: 'test' });
+    await store.insert({ kind: 'intention', body: 'まだ生きている意図', provenance: [2], procVersion: 'test' });
+    await store.updateStatus(doneId, 'fulfilled');
+
+    const closed = await store.recentlyClosed(new Date(Date.now() - 3_600_000));
+    expect(closed.map((prospect) => prospect.id)).toEqual([doneId]);
+    expect(closed[0]!.status).toBe('fulfilled');
+    // カットオフより古い遷移は返さない
+    expect(await store.recentlyClosed(new Date(Date.now() + 3_600_000))).toEqual([]);
+  });
+
   it('expireStaleOpen expires only open prospects older than cutoff (#111)', async () => {
     const store = await createProspectStore();
     const staleId = await store.insert({ kind: 'intention', body: '放置された意図', provenance: [1], procVersion: 'test' });
