@@ -11,7 +11,12 @@
 // v3: 空腹収支の再調整 — 自然増を半減（0.06 → 0.03）し、食事の回復のみ
 //     クランプを緩和（maxHungerRecoveryPerEvent = 0.6）。旧収支は「1 日 5〜9 食
 //     しないと常に空腹」で、実機の tibi-kanon が慢性的空腹に張り付いた
-export const LIFE_TUNING_VERSION = 'tuning-v3';
+// v4: 元気度収支の再調整 — 消耗（負の energy delta）のみクランプを半減
+//     （maxEnergyExertionPerEvent = 0.15）。実機 kbx-001 の 1 週間実測で覚醒中の
+//     消耗はルール減衰 0.029/h + appraisal 消耗 0.066/h（グロス）で、満充電から
+//     4〜10 時間で枯渇し 1 日 2〜4 回の分割睡眠になっていた。ルール減衰 0.03/h +
+//     消耗半減で「普通の日は満タンから 14〜16 時間で眠くなる」収支に合わせる
+export const LIFE_TUNING_VERSION = 'tuning-v4';
 
 export interface LifeTuning {
   valenceHalfLifeHours: number;
@@ -22,6 +27,7 @@ export interface LifeTuning {
   sleepEnergyRecoveryPerHour: number;
   maxDeltaPerEvent: number;
   maxHungerRecoveryPerEvent: number;
+  maxEnergyExertionPerEvent: number;
   maxLazyElapsedHours: number;
   circadianLateNightFactor: number;
   circadianMorningFactor: number;
@@ -56,6 +62,13 @@ export const LIFE_TUNING: LifeTuning = {
    * （large_down = -0.6、down = -0.3）。空腹が進む方向は maxDeltaPerEvent のまま
    */
   maxHungerRecoveryPerEvent: 0.6,
+  /**
+   * 元気度の消耗（負の energy delta）のみのクランプ上限。時間経過の疲労は
+   * decayInnerState が既にモデル化しているため、appraisal 側の消耗は
+   * 「出来事による上乗せ」に留める（large_down = -0.15、down = -0.075、
+   * small_down = -0.0375）。回復方向（充電・休憩など）は maxDeltaPerEvent のまま
+   */
+  maxEnergyExertionPerEvent: 0.15,
   /** 遅延評価で一度に進める経過時間の上限（時間）。長期停止後の暴走防止 */
   maxLazyElapsedHours: 48,
   /** 概日リズム: 深夜（0-5 時）の元気度減衰倍率 */

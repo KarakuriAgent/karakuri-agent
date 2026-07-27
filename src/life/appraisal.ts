@@ -165,6 +165,18 @@ export function deltaLevelToNumber(level: DeltaLevel, tuning: LifeTuning = LIFE_
 }
 
 /**
+ * energy 専用の delta 変換。消耗（負）方向のみ maxEnergyExertionPerEvent で
+ * スケールする — 時間経過の疲労は decayInnerState が既にモデル化しているため、
+ * appraisal の消耗は出来事による上乗せに留める。実機（kbx-001）でイベント消耗が
+ * ルール減衰の 2 倍強積まれ、満充電から 4〜10 時間で枯渇していた。
+ * 回復方向（充電・休憩など）は従来どおり maxDeltaPerEvent でスケールする。
+ */
+export function energyDeltaLevelToNumber(level: DeltaLevel, tuning: LifeTuning = LIFE_TUNING): number {
+  const ratio = DELTA_LEVEL_RATIO[level];
+  return ratio * (ratio < 0 ? tuning.maxEnergyExertionPerEvent : tuning.maxDeltaPerEvent);
+}
+
+/**
  * hunger 専用の delta 変換。回復（負）方向のみ maxHungerRecoveryPerEvent で
  * スケールする — 食事は 1 回でしっかり満腹に近づく行為なので、他パラメータと
  * 同じ上限（0.3）では自然増（hungerIncreasePerHour）に追いつけず、実機で
@@ -278,7 +290,7 @@ export function applyAppraisalGuardrails(
 ): GuardedAppraisal {
   const rejections: string[] = [];
 
-  let energyDelta = deltaLevelToNumber(output.energy_delta, tuning);
+  let energyDelta = energyDeltaLevelToNumber(output.energy_delta, tuning);
   // 符号の妥当性: 睡眠に入るイベントで元気度マイナスは常識に反するため棄却する
   if (output.sleep === 'fell_asleep' && energyDelta < 0) {
     rejections.push(`energy_delta ${output.energy_delta} rejected: negative energy on fell_asleep`);

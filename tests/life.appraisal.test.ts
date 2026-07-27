@@ -11,6 +11,7 @@ import {
   AppraisalService,
   appraiseEvent,
   deltaLevelToNumber,
+  energyDeltaLevelToNumber,
   hungerDeltaLevelToNumber,
   isDeclarativeText,
   isTransientNetworkError,
@@ -98,6 +99,17 @@ describe('deltaLevelToNumber', () => {
     expect(deltaLevelToNumber('large_up')).toBe(LIFE_TUNING.maxDeltaPerEvent);
     expect(deltaLevelToNumber('large_down')).toBe(-LIFE_TUNING.maxDeltaPerEvent);
     expect(Math.abs(deltaLevelToNumber('small_up'))).toBeLessThan(LIFE_TUNING.maxDeltaPerEvent);
+  });
+});
+
+describe('energyDeltaLevelToNumber', () => {
+  it('scales exertion (negative) by maxEnergyExertionPerEvent and recovery by maxDeltaPerEvent', () => {
+    // 時間経過の疲労はルール側（decayInnerState）が持つため、消耗のみ狭いクランプ
+    expect(energyDeltaLevelToNumber('large_down')).toBe(-LIFE_TUNING.maxEnergyExertionPerEvent);
+    expect(energyDeltaLevelToNumber('down')).toBe(-LIFE_TUNING.maxEnergyExertionPerEvent / 2);
+    expect(energyDeltaLevelToNumber('none')).toBe(0);
+    expect(energyDeltaLevelToNumber('large_up')).toBe(LIFE_TUNING.maxDeltaPerEvent);
+    expect(energyDeltaLevelToNumber('up')).toBe(LIFE_TUNING.maxDeltaPerEvent / 2);
   });
 });
 
