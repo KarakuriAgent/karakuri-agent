@@ -10,11 +10,28 @@ import type {
   SnsActivity,
   SnsActivityType,
   SnsProviderType,
+  SnsWriteActionKind,
 } from './types.js';
+
+/** 書き込みアクション種別 → sns_activities の判別述語（値は固定文字列のみで組む） */
+function writeActionKindPredicate(kind: SnsWriteActionKind): string {
+  switch (kind) {
+    case 'post':
+      return "type = 'post' AND reply_to_id IS NULL";
+    case 'reply':
+      return "type = 'post' AND reply_to_id IS NOT NULL";
+    case 'like':
+      return "type = 'like'";
+    case 'repost':
+      return "type = 'repost'";
+  }
+}
 
 const logger = createLogger('SnsActivityStore');
 const RECENT_ACTIVITY_WINDOW_MS = 3 * 24 * 60 * 60 * 1_000;
 const DEFAULT_RECENT_ACTIVITY_LIMIT = 10;
+/** 窓内が空のときのフォールバック件数（#111 — 会話の継続性のため古くても直近を見せる。時刻つき） */
+const FALLBACK_ACTIVITY_LIMIT = 3;
 const LAST_NOTIFICATION_ID_KEY = 'last_notification_id';
 
 interface ActivityRow {
@@ -183,6 +200,26 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
     return Promise.resolve();
   }
 
+  /** M8: レート制限用の sliding window 集計。reply は type='post' + reply_to_id で判別する */
+  async countWriteActionsSince(kind: SnsWriteActionKind, since: Date): Promise<{ count: number; earliestAt: string | null }> {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count, MIN(created_at) AS earliest
+      FROM sns_activities
+      WHERE ${writeActionKindPredicate(kind)} AND created_at >= ?
+    `).get(since.toISOString()) as { count: number; earliest: string | null };
+    return Promise.resolve({ count: row.count, earliestAt: row.earliest });
+  }
+
+  /** M8: 同種アクションの直近実行時刻（最小間隔の判定用） */
+  async getLastWriteActionAt(kind: SnsWriteActionKind): Promise<string | null> {
+    const row = this.db.prepare(`
+      SELECT MAX(created_at) AS latest
+      FROM sns_activities
+      WHERE ${writeActionKindPredicate(kind)}
+    `).get() as { latest: string | null };
+    return Promise.resolve(row.latest);
+  }
+
   async hasLiked(postId: string): Promise<boolean> {
     return Promise.resolve(this.hasLikedStatement.get(postId) != null);
   }
@@ -200,10 +237,18 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
   }
 
   async getRecentActivities(limit = DEFAULT_RECENT_ACTIVITY_LIMIT): Promise<SnsActivity[]> {
-    const rows = this.getRecentActivitiesStatement.all(
+    let rows = this.getRecentActivitiesStatement.all(
       new Date(this.now().getTime() - RECENT_ACTIVITY_WINDOW_MS).toISOString(),
       Math.max(1, limit),
     );
+    if (rows.length === 0) {
+      // 窓内が空でも「最後に何をしたか」は会話の継続性の足場になる（#111）。
+      // created_at つきで返すため、古さはそのまま文脈として伝わる
+      rows = this.getRecentActivitiesStatement.all(
+        new Date(0).toISOString(),
+        Math.min(Math.max(1, limit), FALLBACK_ACTIVITY_LIMIT),
+      );
+    }
     return Promise.resolve(rows.map((row): SnsActivity => {
       if (row.type === 'post') {
         return {
@@ -247,7 +292,7 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
         throw new Error(`Notification reservation not found during commit (token: ${reservationToken})`);
       }
       const committed = this.getMetadataStatement.get(LAST_NOTIFICATION_ID_KEY)?.value ?? null;
-      const nextNotificationId = maxNotificationId(committed, reservation.notification_id);
+      const nextNotificationId = resolveCommittedNotificationId(committed, reservation.notification_id);
       if (nextNotificationId != null) {
         this.upsertMetadataStatement.run(LAST_NOTIFICATION_ID_KEY, nextNotificationId);
       }
@@ -315,22 +360,30 @@ export class SqliteSnsActivityStore implements ISnsActivityStore {
   }
 }
 
-function maxNotificationId(left: string | null, right: string | null): string | null {
-  if (left == null) {
-    return right;
+/**
+ * コミット時のカーソル解決。
+ * - 数値 id（X / Mastodon の snowflake）: 大小 = 新旧なので、並行 turn の
+ *   コミット順が入れ替わっても後退しないよう大きい方を採用する
+ * - 非数値 id（ELYTH の UUID）: id に順序が無いため、後から確定した予約を
+ *   そのまま採用する。localeCompare の見かけの順序でガードすると、たまたま
+ *   辞書順の大きい UUID に当たった時点でカーソルが永久に固着する
+ *   （実機で `f4655bdc…` に固着し、通常前進も強制前進も全て棄却されていた）。
+ *   稀な並行コミットの入れ替わりによる後退は、同じ通知の再取得（重複は
+ *   記録・表示の両方で確認済み扱い）として許容される
+ */
+function resolveCommittedNotificationId(committed: string | null, reserved: string | null): string | null {
+  if (committed == null) {
+    return reserved;
   }
-  if (right == null) {
-    return left;
+  if (reserved == null) {
+    return committed;
   }
-  return compareNotificationIds(left, right) >= 0 ? left : right;
-}
-
-function compareNotificationIds(left: string, right: string): number {
   const numericPattern = /^\d+$/;
-  if (numericPattern.test(left) && numericPattern.test(right)) {
-    if (left.length !== right.length) {
-      return left.length - right.length;
+  if (numericPattern.test(committed) && numericPattern.test(reserved)) {
+    if (committed.length !== reserved.length) {
+      return committed.length > reserved.length ? committed : reserved;
     }
+    return committed.localeCompare(reserved) >= 0 ? committed : reserved;
   }
-  return left.localeCompare(right);
+  return reserved;
 }

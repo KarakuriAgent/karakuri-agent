@@ -1,7 +1,10 @@
 import type { ToolSet } from 'ai';
 
 import type { SnsCredentials } from '../../config.js';
+import type { IActionLedgerStore } from '../../life/action-ledger.js';
+import type { ExperienceRecorder } from '../../life/recorder.js';
 import { isReservedSkillName } from '../../skill/reserved.js';
+import type { SnsRateLimiter } from '../../sns/rate-limiter.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
 import type { SkillDefinition } from '../../skill/types.js';
 import type { IUserStore } from '../../user/types.js';
@@ -17,9 +20,13 @@ export interface AvailableGatedToolSources {
   dataDir?: string | undefined;
   snsActivityStores?: Map<SnsCredentials['provider'], ISnsActivityStore> | undefined;
   userStore?: IUserStore | undefined;
-  evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
   reportError?: ((message: string) => void) | undefined;
-  evaluatedUsers?: Set<string> | undefined;
+  experienceRecorder?: ExperienceRecorder | undefined;
+  actionLedger?: IActionLedgerStore | undefined;
+  /** M8: provider 別の書き込みレート制限 */
+  snsRateLimiters?: Map<SnsCredentials['provider'], SnsRateLimiter> | undefined;
+  /** #111: SNS 投稿ツールを「返信のみ」に制限する（check_phone / browse_sns の turn） */
+  snsReplyOnly?: boolean | undefined;
 }
 
 export function buildGatedToolSets(
@@ -91,9 +98,13 @@ function buildAllGatedTools(availableToolSources: AvailableGatedToolSources): To
         ? { activityStore: availableToolSources.snsActivityStores.get(sns.provider)! }
         : {}),
       ...(availableToolSources.userStore != null ? { userStore: availableToolSources.userStore } : {}),
-      ...(availableToolSources.evaluateUser != null ? { evaluateUser: availableToolSources.evaluateUser } : {}),
       ...(availableToolSources.reportError != null ? { reportError: availableToolSources.reportError } : {}),
-      evaluatedUsers: availableToolSources.evaluatedUsers ?? new Set<string>(),
+      ...(availableToolSources.experienceRecorder != null ? { experienceRecorder: availableToolSources.experienceRecorder } : {}),
+      ...(availableToolSources.actionLedger != null ? { actionLedger: availableToolSources.actionLedger } : {}),
+      ...(availableToolSources.snsRateLimiters?.get(sns.provider) != null
+        ? { rateLimiter: availableToolSources.snsRateLimiters.get(sns.provider)! }
+        : {}),
+      ...(availableToolSources.snsReplyOnly === true ? { replyOnly: true } : {}),
     });
     Object.assign(allGatedTools, providerTools);
     if (availableToolSources.snsList == null && availableToolSources.sns != null) {

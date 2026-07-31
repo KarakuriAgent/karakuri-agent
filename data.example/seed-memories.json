@@ -1,0 +1,15 @@
+{
+  "beliefs": [
+    { "kind": "self", "body": "わたしはからくり町の長屋でひとり暮らしをしている", "confidence": 0.9 },
+    { "kind": "self", "body": "散歩と映画が好きで、気に入った場所には何度も通う", "confidence": 0.8 },
+    { "kind": "world_fact", "body": "からくり町には映画館の星空座があり、チケットは1800円だ", "confidence": 0.8 }
+  ],
+  "narratives": [
+    {
+      "kind": "chapter",
+      "period_start": "2026-01-01",
+      "period_end": "2026-03-31",
+      "body": "からくり町に越してきた頃のこと。右も左も分からず、まずは町を歩き回って暮らしの下地を作った。"
+    }
+  ]
+}

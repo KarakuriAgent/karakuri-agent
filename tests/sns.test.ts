@@ -32,13 +32,6 @@ function createPublicLookup(): LookupFn {
   return vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]);
 }
 
-async function flushPromises(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
-}
-
 async function waitFor(predicate: () => boolean, attempts = 50): Promise<void> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (predicate()) {
@@ -84,6 +77,90 @@ describe('sns tools', () => {
   it('exports only the six supported SNS tools', () => {
     const tools = createSnsTools({ ...SNS_OPTIONS, fetch: vi.fn() });
     expect(Object.keys(tools)).toEqual(EXPECTED_TOOL_NAMES);
+  });
+
+  it('blocks non-reply posts on reply-only turns without calling the provider (#111)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify(createStatus()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, replyOnly: true });
+
+    const blocked = await tools.sns_post!.execute!({ text: '新規投稿' }, DEFAULT_OPTIONS) as { status?: string };
+    expect(blocked.status).toBe('reply_required');
+    expect(fetch).not.toHaveBeenCalled();
+
+    // reply_to_id 付きは通る
+    const replied = await tools.sns_post!.execute!({ text: '返信', reply_to_id: 'p1' }, DEFAULT_OPTIONS) as { status?: string };
+    expect(replied.status).toBeUndefined();
+    expect(fetch).toHaveBeenCalled();
+  });
+
+  it('returns rate_limited from the deterministic gate without calling the provider (M8)', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const checkWrite = vi.fn(async (kind: string) => ({ allowed: false as const, message: `limited:${kind}`, retryAt: null }));
+    const tools = createSnsTools({
+      ...SNS_OPTIONS,
+      fetch,
+      rateLimiter: { checkWrite } as never,
+    });
+
+    await expect(tools.sns_post!.execute!({ text: 'hi' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:post' });
+    await expect(tools.sns_post!.execute!({ text: 'hi', reply_to_id: 'p1' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:reply' });
+    await expect(tools.sns_like!.execute!({ post_id: 'p1' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:like' });
+    await expect(tools.sns_repost!.execute!({ post_id: 'p1' }, DEFAULT_OPTIONS))
+      .resolves.toEqual({ status: 'rate_limited', message: 'limited:repost' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('serializes the rate-limit gate across parallel write calls (M8 review fix)', async () => {
+    // 残枠 1 の like を 2 件同時に実行しても 1 件しか通らないこと（check-then-act の原子化）
+    const likedAt: string[] = [];
+    const activityStore: ISnsActivityStore = {
+      recordPost: vi.fn(async () => {}),
+      recordLike: vi.fn(async () => {
+        likedAt.push(new Date().toISOString());
+      }),
+      recordRepost: vi.fn(async () => {}),
+      hasLiked: vi.fn(async () => false),
+      hasReposted: vi.fn(async () => false),
+      hasReplied: vi.fn(async () => false),
+      hasQuoted: vi.fn(async () => false),
+      getRecentActivities: vi.fn(async () => []),
+      getLastNotificationId: vi.fn(async () => null),
+      setLastNotificationId: vi.fn(async () => {}),
+      countWriteActionsSince: vi.fn(async () => ({ count: likedAt.length, earliestAt: likedAt[0] ?? null })),
+      getLastWriteActionAt: vi.fn(async () => likedAt.at(-1) ?? null),
+      close: vi.fn(async () => {}),
+    };
+    const { SnsRateLimiter } = await import('../src/sns/rate-limiter.js');
+    const rateLimiter = new SnsRateLimiter({
+      limits: { postPerHour: 5, postPerDay: 5, postMinIntervalMinutes: 0, replyPerHour: 5, likePerHour: 1, repostPerHour: 5 },
+      fetchIntervals: { notificationsMinutes: 0, timelineMinutes: 0, trendsMinutes: 0 },
+      counter: activityStore as never,
+      timezone: 'Asia/Tokyo',
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      new Response(JSON.stringify(createStatus()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    const tools = createSnsTools({ ...SNS_OPTIONS, fetch, activityStore, rateLimiter });
+
+    const [first, second] = await Promise.all([
+      tools.sns_like!.execute!({ post_id: 'post-a' }, DEFAULT_OPTIONS),
+      tools.sns_like!.execute!({ post_id: 'post-b' }, DEFAULT_OPTIONS),
+    ]);
+
+    const results = [first, second] as Array<Record<string, unknown>>;
+    const limited = results.filter((result) => result.status === 'rate_limited');
+    expect(limited).toHaveLength(1);
+    expect(likedAt).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('posts statuses with reply, quote, media, and visibility parameters', async () => {
@@ -230,14 +307,12 @@ describe('sns tools', () => {
       close: vi.fn(async () => {}),
     };
     const userStore = { ensureUser: vi.fn(async () => ({ userId: 'sns:mastodon:acct-1' })) };
-    const evaluateUser = vi.fn();
     const reportError = vi.fn();
     const tools = createSnsTools({
       ...SNS_OPTIONS,
       fetch,
       activityStore,
       userStore: userStore as never,
-      evaluateUser,
       reportError,
     });
 
@@ -253,54 +328,9 @@ describe('sns tools', () => {
     expect(reportError).toHaveBeenCalledWith(expect.stringContaining('sns_like'));
     expect(reportError).toHaveBeenCalledWith(expect.stringContaining('sns_repost'));
     expect(userStore.ensureUser).toHaveBeenCalled();
-    expect(evaluateUser).toHaveBeenCalledTimes(1);
   });
 
-  it('caps user evaluations at MAX_USER_EVALUATIONS_PER_TURN', async () => {
-    const users = ['alice', 'bob', 'carol', 'dave'].map((name, i) => ({
-      id: `acct-${i + 1}`,
-      display_name: name,
-      username: name,
-      acct: `${name}@example.com`,
-      url: `https://social.example/@${name}`,
-    }));
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    for (const [i, user] of users.entries()) {
-      fetch.mockResolvedValueOnce(new Response(JSON.stringify(
-        createStatus({ id: `post-${i + 1}`, account: user }),
-      ), { status: 200 }));
-    }
-    const activityStore: ISnsActivityStore = {
-      recordPost: vi.fn(async () => {}),
-      recordLike: vi.fn(async () => {}),
-      recordRepost: vi.fn(async () => {}),
-      hasLiked: vi.fn(async () => false),
-      hasReposted: vi.fn(async () => false),
-      hasReplied: vi.fn(async () => false),
-      hasQuoted: vi.fn(async () => false),
-      getRecentActivities: vi.fn(async () => []),
-      getLastNotificationId: vi.fn(async () => null),
-      setLastNotificationId: vi.fn(async () => {}),
-      close: vi.fn(async () => {}),
-    };
-    const evaluateUser = vi.fn();
-    const tools = createSnsTools({
-      ...SNS_OPTIONS,
-      fetch,
-      activityStore,
-      userStore: { ensureUser: vi.fn(async () => ({})) } as never,
-      evaluateUser,
-    });
-
-    for (let i = 0; i < 4; i++) {
-      await tools.sns_get_post!.execute!({ post_id: `post-${i + 1}` }, DEFAULT_OPTIONS);
-    }
-
-    // MAX_USER_EVALUATIONS_PER_TURN = 3, so the 4th user should be skipped
-    expect(evaluateUser).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not register or evaluate the bot from its own newly created post', async () => {
+  it('does not register the bot from its own newly created post', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(createStatus({ id: 'post-self' })), { status: 200 }));
@@ -318,13 +348,11 @@ describe('sns tools', () => {
       close: vi.fn(async () => {}),
     };
     const userStore = { ensureUser: vi.fn(async () => ({ userId: 'sns:mastodon:acct-1' })) };
-    const evaluateUser = vi.fn();
     const tools = createSnsTools({
       ...SNS_OPTIONS,
       fetch,
       activityStore,
       userStore: userStore as never,
-      evaluateUser,
     });
 
     await expect(tools.sns_post!.execute!({ text: 'hello' }, DEFAULT_OPTIONS)).resolves.toEqual(
@@ -332,7 +360,6 @@ describe('sns tools', () => {
     );
 
     expect(userStore.ensureUser).not.toHaveBeenCalled();
-    expect(evaluateUser).not.toHaveBeenCalled();
   });
 
   it('serializes duplicate-protected SNS actions across concurrent executions', async () => {

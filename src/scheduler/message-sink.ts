@@ -59,6 +59,18 @@ export class DiscordMessageSink implements IMessageSink {
     }
   }
 
+  /**
+   * M8: 未読スレッドへの返信投稿。返信先はユーザーが実際に書き込んだスレッド
+   * そのものなので allowlist（能動的な postMessage の送信先制限）の対象外とする。
+   */
+  async postReply(threadIdOrChannelId: string, text: string): Promise<void> {
+    const channelId = resolveDiscordReplyChannelId(threadIdOrChannelId);
+    const chunks = splitMessageForDiscord(text.trim());
+    for (const chunk of chunks) {
+      await this.postChunk(channelId, chunk);
+    }
+  }
+
   private async postChunk(channelId: string, chunk: string): Promise<void> {
     const url = `${this.apiBaseUrl}/channels/${encodeURIComponent(channelId)}/messages`;
 
@@ -88,6 +100,23 @@ export class DiscordMessageSink implements IMessageSink {
       await this.sleep(retryAfterMs);
     }
   }
+}
+
+function resolveDiscordReplyChannelId(threadIdOrChannelId: string): string {
+  if (!threadIdOrChannelId.startsWith('discord:')) {
+    return threadIdOrChannelId;
+  }
+
+  const parts = threadIdOrChannelId.split(':');
+  if (parts.length !== 3 && parts.length !== 4) {
+    throw new Error('Invalid Discord thread ID for reply: ' + threadIdOrChannelId);
+  }
+
+  const channelId = parts[3] ?? parts[2];
+  if (channelId == null || !/^\d+$/.test(channelId)) {
+    throw new Error('Discord thread ID does not contain a channel snowflake: ' + threadIdOrChannelId);
+  }
+  return channelId;
 }
 
 async function resolveRetryAfterMs(response: Response): Promise<number> {

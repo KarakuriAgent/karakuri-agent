@@ -2,6 +2,7 @@ import type { ZodType } from 'zod';
 import { describe, expect, it } from 'vitest';
 
 import { createUserLookupTool } from '../src/agent/tools/user-lookup.js';
+import type { IBeliefStore } from '../src/life/beliefs.js';
 import type { IUserStore, UserRecord } from '../src/user/types.js';
 
 interface UserLookupResult {
@@ -29,16 +30,11 @@ class UserStoreStub implements IUserStore {
     throw new Error('not implemented');
   }
 
-  async updateProfile(): Promise<void> {}
-
-  async updateDisplayName(): Promise<void> {}
-
   async searchUsers(query: string, options?: { limit?: number; offset?: number }): Promise<UserRecord[]> {
     this.searchCalls.push(options != null ? { query, options } : { query });
     const normalized = query.toLowerCase();
     const users = this.users.filter((user) =>
-      user.displayName.toLowerCase().includes(normalized)
-      || user.profile?.toLowerCase().includes(normalized),
+      user.displayName.toLowerCase().includes(normalized),
     );
     const offset = options?.offset ?? 0;
     const limit = options?.limit ?? users.length;
@@ -48,22 +44,41 @@ class UserStoreStub implements IUserStore {
   async close(): Promise<void> {}
 }
 
+function createBeliefStoreStub(factsByUser: Record<string, string[]>): IBeliefStore {
+  return {
+    listActive: async ({ subject }: { subject?: string }) =>
+      (subject != null ? factsByUser[subject] ?? [] : []).map((body, index) => ({
+        id: index + 1,
+        kind: 'person_fact' as const,
+        subject: subject ?? null,
+        body,
+        confidence: 0.8,
+        active: true,
+        supersedes: null,
+        provenance: [1],
+        procVersion: 'test',
+        createdAt: '',
+        updatedAt: '',
+      })),
+  } as unknown as IBeliefStore;
+}
+
 describe('userLookup tool', () => {
-  it('returns matching users', async () => {
+  it('returns matching users with beliefs-derived profiles', async () => {
     const tool = createUserLookupTool({
       userStore: new UserStoreStub([
         {
           userId: 'user-1',
           displayName: 'Alice',
-          profile: 'Works on robotics',
           createdAt: '',
           updatedAt: '',
         },
       ]),
+      beliefStore: createBeliefStoreStub({ 'user-1': ['Works on robotics'] }),
     });
 
     const result = await tool.execute!(
-      { query: 'robot' },
+      { query: 'alice' },
       { toolCallId: 'c1', messages: [], abortSignal: undefined as never },
     );
 
@@ -76,7 +91,7 @@ describe('userLookup tool', () => {
         {
           userId: 'user-1',
           displayName: 'Alice',
-          profile: 'Works on robotics',
+          profile: '- Works on robotics',
         },
       ],
     });
@@ -100,7 +115,6 @@ describe('userLookup tool', () => {
       {
         userId: 'user-1',
         displayName: 'Alice',
-        profile: null,
         createdAt: '',
         updatedAt: '',
       },
@@ -138,10 +152,12 @@ describe('userLookup tool', () => {
       userStore: new UserStoreStub(Array.from({ length: 7 }, (_, index) => ({
         userId: `user-${index}`,
         displayName: `Alice ${index}`,
-        profile: 'x'.repeat(700),
         createdAt: '',
         updatedAt: '',
       }))),
+      beliefStore: createBeliefStoreStub(Object.fromEntries(
+        Array.from({ length: 7 }, (_, index) => [`user-${index}`, ['x'.repeat(700)]]),
+      )),
     });
 
     const result = await tool.execute!(

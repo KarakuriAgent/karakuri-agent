@@ -32,10 +32,21 @@ describe('loadConfig', () => {
     expect(config.tokenBudget).toBe(80_000);
     expect(config.port).toBe(3_000);
     expect(config.heartbeatIntervalMinutes).toBe(120);
-    expect(config.memoryMaintenanceIntervalMinutes).toBeUndefined();
-    expect(config.memoryMaintenanceRecentDiaryDays).toBeUndefined();
-    expect(config.snsLoopMinIntervalMinutes).toBe(60);
-    expect(config.snsLoopMaxIntervalMinutes).toBe(180);
+    expect(config.snsRateLimits.defaults).toEqual({
+      postPerHour: 3,
+      postPerDay: 20,
+      postMinIntervalMinutes: 15,
+      replyPerHour: 10,
+      likePerHour: 30,
+      repostPerHour: 10,
+    });
+    expect(config.snsRateLimits.perProvider).toEqual({});
+    expect(config.snsRateLimits.fetchIntervals).toEqual({
+      notificationsMinutes: 10,
+      timelineMinutes: 30,
+      trendsMinutes: 60,
+    });
+    expect(config.worldActionCommands).toEqual({});
     expect(config.braveApiKey).toBeUndefined();
     expect(config.postMessageChannelIds).toBeUndefined();
     expect(config.allowedChannelIds).toBeUndefined();
@@ -49,10 +60,6 @@ describe('loadConfig', () => {
       REPORT_CHANNEL_ID: 'report-1',
       ADMIN_USER_IDS: 'admin-1, admin-2',
       HEARTBEAT_INTERVAL_MINUTES: '15',
-      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '45',
-      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '120',
-      SNS_LOOP_MIN_INTERVAL_MINUTES: '30',
-      SNS_LOOP_MAX_INTERVAL_MINUTES: '90',
     });
 
     expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
@@ -60,10 +67,6 @@ describe('loadConfig', () => {
     expect(config.reportChannelId).toBe('report-1');
     expect(config.adminUserIds).toEqual(['admin-1', 'admin-2']);
     expect(config.heartbeatIntervalMinutes).toBe(15);
-    expect(config.memoryMaintenanceIntervalMinutes).toBe(45);
-    expect(config.memoryMaintenanceRecentDiaryDays).toBe(120);
-    expect(config.snsLoopMinIntervalMinutes).toBe(30);
-    expect(config.snsLoopMaxIntervalMinutes).toBe(90);
   });
 
   it('treats an empty REPORT_CHANNEL_ID as omitted', () => {
@@ -76,24 +79,6 @@ describe('loadConfig', () => {
     expect(config.reportChannelId).toBeUndefined();
     expect(config.postMessageChannelIds).toEqual(['channel-1', 'channel-2']);
     expect(config.allowedChannelIds).toEqual(['channel-1', 'channel-2']);
-  });
-
-  it('treats an empty MEMORY_MAINTENANCE_INTERVAL_MINUTES as undefined', () => {
-    const config = loadConfig({
-      ...validEnv,
-      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '',
-    });
-
-    expect(config.memoryMaintenanceIntervalMinutes).toBeUndefined();
-  });
-
-  it('treats an empty MEMORY_MAINTENANCE_RECENT_DIARY_DAYS as undefined', () => {
-    const config = loadConfig({
-      ...validEnv,
-      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '',
-    });
-
-    expect(config.memoryMaintenanceRecentDiaryDays).toBeUndefined();
   });
 
   it('keeps report-only channels out of the postMessage allowlist', () => {
@@ -268,48 +253,6 @@ describe('loadConfig', () => {
     expect(config.tokenBudget).toBe(4_000);
   });
 
-  it('parses optional post-response LLM settings', () => {
-    const config = loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_MODEL: 'openai/gpt-4o-mini',
-      POST_RESPONSE_LLM_API_KEY: 'post-key',
-      POST_RESPONSE_LLM_BASE_URL: 'https://example.com/post/',
-    });
-
-    expect(config.postResponseLlmModel).toBe('openai/gpt-4o-mini');
-    expect(config.postResponseLlmModelSelector?.selector).toBe('openai/gpt-4o-mini');
-    expect(config.postResponseLlmApiKey).toBe('post-key');
-    expect(config.postResponseLlmBaseUrl).toBe('https://example.com/post');
-  });
-
-  it('treats blank post-response LLM settings as undefined', () => {
-    const config = loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_MODEL: '   ',
-      POST_RESPONSE_LLM_API_KEY: '   ',
-      POST_RESPONSE_LLM_BASE_URL: '   ',
-    });
-
-    expect(config.postResponseLlmModel).toBeUndefined();
-    expect(config.postResponseLlmModelSelector).toBeUndefined();
-    expect(config.postResponseLlmApiKey).toBeUndefined();
-    expect(config.postResponseLlmBaseUrl).toBeUndefined();
-  });
-
-  it('rejects invalid POST_RESPONSE_LLM_BASE_URL with correct label', () => {
-    expect(() => loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_BASE_URL: 'not-a-url',
-    })).toThrow('POST_RESPONSE_LLM_BASE_URL must be a valid URL');
-  });
-
-  it('rejects POST_RESPONSE_LLM_BASE_URL with credentials', () => {
-    expect(() => loadConfig({
-      ...validEnv,
-      POST_RESPONSE_LLM_BASE_URL: 'https://user:pass@example.com',
-    })).toThrow('POST_RESPONSE_LLM_BASE_URL must not include credentials');
-  });
-
   it('accepts BRAVE_API_KEY as an optional setting', () => {
     const config = loadConfig({
       ...validEnv,
@@ -469,12 +412,82 @@ describe('loadConfig', () => {
     }).snsList).toEqual([]);
   });
 
-  it('throws when SNS loop min exceeds max', () => {
+  it('parses SNS rate limit overrides and world action commands', () => {
+    const config = loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://kw.example.com',
+      KARAKURI_WORLD_API_KEY: 'kw-key',
+      REPORT_CHANNEL_ID: 'report-1',
+      KW_COMMAND_CHECK_PHONE: 'check_phone',
+      KW_COMMAND_BROWSE_SNS: 'browse_sns',
+      SNS_RATE_LIMIT_POST_PER_HOUR: '2',
+      X_RATE_LIMIT_POST_PER_DAY: '5',
+      X_RATE_LIMIT_LIKE_PER_HOUR: '4',
+      SNS_FETCH_MIN_INTERVAL_TRENDS_MINUTES: '120',
+    });
+
+    expect(config.worldActionCommands).toEqual({ checkPhone: 'check_phone', browseSns: 'browse_sns' });
+    expect(config.snsRateLimits.defaults.postPerHour).toBe(2);
+    expect(config.snsRateLimits.perProvider).toEqual({ x: { postPerDay: 5, likePerHour: 4 } });
+    expect(config.snsRateLimits.fetchIntervals.trendsMinutes).toBe(120);
+  });
+
+  it('throws when KW_COMMAND_* is set without karakuri-world credentials', () => {
     expect(() => loadConfig({
       ...validEnv,
-      SNS_LOOP_MIN_INTERVAL_MINUTES: '181',
-      SNS_LOOP_MAX_INTERVAL_MINUTES: '180',
-    })).toThrow('SNS_LOOP_MIN_INTERVAL_MINUTES must be less than or equal to SNS_LOOP_MAX_INTERVAL_MINUTES');
+      KW_COMMAND_CHECK_PHONE: 'check_phone',
+    })).toThrow('World action commands require karakuri-world integration');
+  });
+
+  it('throws when world action command names collide', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://kw.example.com',
+      KARAKURI_WORLD_API_KEY: 'kw-key',
+      KW_COMMAND_CHECK_PHONE: 'same',
+      KW_COMMAND_POST_SNS: 'same',
+    })).toThrow('must be distinct command names');
+  });
+
+  it('throws when KW_COMMAND_CHECK_PHONE is set without a reply sink', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://kw.example.com',
+      KARAKURI_WORLD_API_KEY: 'kw-key',
+      KW_COMMAND_CHECK_PHONE: 'check_phone',
+    })).toThrow('requires a Discord message sink');
+  });
+
+  it('parses KW_COMMAND_SEND_MESSAGE and requires KW_COMMAND_CHECK_PHONE (M9 #110)', () => {
+    const config = loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://kw.example.com',
+      KARAKURI_WORLD_API_KEY: 'kw-key',
+      ALLOWED_CHANNEL_IDS: 'channel-1',
+      KW_COMMAND_CHECK_PHONE: 'check_phone',
+      KW_COMMAND_SEND_MESSAGE: 'send_message',
+    });
+    expect(config.worldActionCommands).toEqual({ checkPhone: 'check_phone', sendMessage: 'send_message' });
+
+    expect(() => loadConfig({
+      ...validEnv,
+      KARAKURI_WORLD_API_BASE_URL: 'https://kw.example.com',
+      KARAKURI_WORLD_API_KEY: 'kw-key',
+      ALLOWED_CHANNEL_IDS: 'channel-1',
+      KW_COMMAND_SEND_MESSAGE: 'send_message',
+    })).toThrow('KW_COMMAND_SEND_MESSAGE requires KW_COMMAND_CHECK_PHONE');
+  });
+
+  it('parses APPRAISAL_TIMEOUT_MS', () => {
+    expect(loadConfig({ ...validEnv, APPRAISAL_TIMEOUT_MS: '600000' }).appraisalTimeoutMs).toBe(600_000);
+    expect(loadConfig({ ...validEnv }).appraisalTimeoutMs).toBeUndefined();
+  });
+
+  it('throws on an invalid provider rate limit override', () => {
+    expect(() => loadConfig({
+      ...validEnv,
+      X_RATE_LIMIT_POST_PER_HOUR: '-1',
+    })).toThrow('Invalid X_RATE_LIMIT_POST_PER_HOUR value');
   });
 
   it('throws when a required field is missing', () => {
@@ -579,6 +592,29 @@ describe('loadConfig', () => {
     );
   });
 
+  it('defaults llmDisableThinkingRequestParam to false when LLM_DISABLE_THINKING_REQUEST_PARAM is not set', () => {
+    const config = loadConfig(validEnv);
+    expect(config.llmDisableThinkingRequestParam).toBe(false);
+  });
+
+  it.each([
+    ['false', false],
+    ['0', false],
+    ['no', false],
+    ['true', true],
+    ['1', true],
+    ['yes', true],
+  ])('parses LLM_DISABLE_THINKING_REQUEST_PARAM=%s as %s', (input, expected) => {
+    const config = loadConfig({ ...validEnv, LLM_DISABLE_THINKING_REQUEST_PARAM: input });
+    expect(config.llmDisableThinkingRequestParam).toBe(expected);
+  });
+
+  it('throws for an invalid LLM_DISABLE_THINKING_REQUEST_PARAM value', () => {
+    expect(() => loadConfig({ ...validEnv, LLM_DISABLE_THINKING_REQUEST_PARAM: 'maybe' })).toThrow(
+      'Invalid LLM_DISABLE_THINKING_REQUEST_PARAM value: "maybe"',
+    );
+  });
+
   it('throws for an invalid timezone', () => {
     expect(() => loadConfig({
       ...validEnv,
@@ -598,5 +634,29 @@ describe('loadConfig', () => {
       ...validEnv,
       PORT: '65536',
     })).toThrow('Invalid configuration');
+  });
+
+  it('parses AGENT_SELF_NAMES into agentSelfNames (#106)', () => {
+    const config = loadConfig({
+      ...validEnv,
+      AGENT_SELF_NAMES: 'ちび花音, kanon',
+    });
+    expect(config.agentSelfNames).toEqual(['ちび花音', 'kanon']);
+  });
+
+  it('warns about deprecated env vars without failing (#108)', () => {
+    // 廃止変数が設定されていても起動は成功する（警告のみ）
+    const config = loadConfig({
+      ...validEnv,
+      SNS_LOOP_MIN_INTERVAL_MINUTES: '240',
+      SNS_PROVIDER: 'mastodon',
+      MEMORY_MAINTENANCE_INTERVAL_MINUTES: '45',
+      MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '120',
+      POST_RESPONSE_LLM_MODEL: 'openai/gpt-4o-mini',
+      POST_RESPONSE_LLM_API_KEY: 'post-key',
+      POST_RESPONSE_LLM_BASE_URL: 'https://example.com/post/',
+      POST_RESPONSE_EVALUATOR_ENABLED: 'true',
+    });
+    expect(config.llmModel).toBe('openai/gpt-4o');
   });
 });

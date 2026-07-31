@@ -89,4 +89,50 @@ describe('DiscordMessageSink', () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledWith(5_000);
   });
+
+  it('posts replies to the channel embedded in a Chat SDK Discord thread id', async () => {
+    const fetchFn = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const sink = new DiscordMessageSink({
+      botToken: 'token',
+      allowedChannelIds: [],
+      fetchFn,
+    });
+
+    await sink.postReply('discord:1467356661617528863:1473562574791643353', 'hello');
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith(
+      'https://discord.com/api/v10/channels/1473562574791643353/messages',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('posts replies to the Discord thread channel when the Chat SDK id contains one', async () => {
+    const fetchFn = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const sink = new DiscordMessageSink({
+      botToken: 'token',
+      allowedChannelIds: [],
+      fetchFn,
+    });
+
+    await sink.postReply('discord:1467356661617528863:1473562574791643353:1473563000000000000', 'hello');
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith(
+      'https://discord.com/api/v10/channels/1473563000000000000/messages',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('rejects malformed Chat SDK Discord thread ids before calling the Discord API', async () => {
+    const fetchFn = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch;
+    const sink = new DiscordMessageSink({
+      botToken: 'token',
+      allowedChannelIds: [],
+      fetchFn,
+    });
+
+    await expect(sink.postReply('discord:guild:not-a-snowflake', 'hello')).rejects.toThrow(/snowflake/);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
 });

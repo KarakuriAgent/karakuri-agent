@@ -35,18 +35,26 @@ describe('SqliteUserStore', () => {
 
     expect(user.userId).toBe('user-1');
     expect(user.displayName).toBe('Alice');
-    expect(user.profile).toBeNull();
   });
 
-  it('preserves the saved display name on repeated ensureUser', async () => {
+  it('refreshes the display name on repeated ensureUser', async () => {
     const { store } = await createStore();
 
     const first = await store.ensureUser('user-1', 'Alice');
     await new Promise((resolve) => setTimeout(resolve, 5));
     const user = await store.ensureUser('user-1', 'Alice Renamed');
 
-    expect(user.displayName).toBe('Alice');
+    expect(user.displayName).toBe('Alice Renamed');
     expect(Date.parse(user.updatedAt)).toBeGreaterThan(Date.parse(first.updatedAt));
+  });
+
+  it('keeps the saved display name when ensureUser receives a blank name', async () => {
+    const { store } = await createStore();
+
+    await store.ensureUser('user-1', 'Alice');
+    const user = await store.ensureUser('user-1', '   ');
+
+    expect(user.displayName).toBe('Alice');
   });
 
   it('returns null for missing users and the record for existing users', async () => {
@@ -60,39 +68,17 @@ describe('SqliteUserStore', () => {
     });
   });
 
-  it('updates and clears profile text', async () => {
+  it('searches users by partial display name matches', async () => {
     const { store } = await createStore();
 
     await store.ensureUser('user-1', 'Alice');
-    await store.updateProfile('user-1', 'Likes TypeScript');
-    await expect(store.getUser('user-1')).resolves.toMatchObject({ profile: 'Likes TypeScript' });
-
-    await store.updateProfile('user-1', null);
-    await expect(store.getUser('user-1')).resolves.toMatchObject({ profile: null });
-  });
-
-  it('updates display names explicitly', async () => {
-    const { store } = await createStore();
-
-    await store.ensureUser('user-1', 'Alice');
-    await store.updateDisplayName('user-1', 'Alicia');
-
-    await expect(store.getUser('user-1')).resolves.toMatchObject({ displayName: 'Alicia' });
-  });
-
-  it('searches users by partial display name and profile matches', async () => {
-    const { store } = await createStore();
-
-    await store.ensureUser('user-1', 'Alice');
-    await store.updateProfile('user-1', 'Works on robotics');
     await store.ensureUser('user-2', 'Bob');
-    await store.updateProfile('user-2', 'Enjoys music');
 
     await expect(store.searchUsers('ali')).resolves.toMatchObject([
       { userId: 'user-1', displayName: 'Alice' },
     ]);
-    await expect(store.searchUsers('robot')).resolves.toMatchObject([
-      { userId: 'user-1', displayName: 'Alice' },
+    await expect(store.searchUsers('bob')).resolves.toMatchObject([
+      { userId: 'user-2', displayName: 'Bob' },
     ]);
   });
 
@@ -126,7 +112,6 @@ describe('SqliteUserStore', () => {
     await store.ensureUser('user-1', 'Alice');
     await new Promise((resolve) => setTimeout(resolve, 5));
     await store.ensureUser('user-2', 'Bob');
-    await store.updateProfile('user-2', 'Most recently updated');
 
     await expect(store.searchUsers('', { limit: 2 })).resolves.toMatchObject([
       { userId: 'user-2', displayName: 'Bob' },
@@ -144,7 +129,7 @@ describe('SqliteUserStore', () => {
     await store.ensureUser('user-1', 'Alice Renamed');
 
     await expect(store.searchUsers('', { limit: 2 })).resolves.toMatchObject([
-      { userId: 'user-1', displayName: 'Alice' },
+      { userId: 'user-1', displayName: 'Alice Renamed' },
       { userId: 'user-2', displayName: 'Bob' },
     ]);
   });
@@ -153,7 +138,6 @@ describe('SqliteUserStore', () => {
     const { dataDir, store } = await createStore();
 
     await store.ensureUser('user-1', 'Alice');
-    await store.updateProfile('user-1', 'Persistent profile');
     await store.close();
     stores.splice(stores.indexOf(store), 1);
 
@@ -162,7 +146,6 @@ describe('SqliteUserStore', () => {
 
     await expect(reopened.getUser('user-1')).resolves.toMatchObject({
       displayName: 'Alice',
-      profile: 'Persistent profile',
     });
   });
 
@@ -183,19 +166,6 @@ describe('SqliteUserStore', () => {
     ]);
     await store.unlinkUserAlias('sns:mastodon:1');
     await expect(store.resolveAlias('sns:mastodon:1')).resolves.toEqual({ primaryUserId: 'sns:mastodon:1', aliasOf: null });
-  });
-
-  it('writes alias profile updates to the primary user only', async () => {
-    const { store } = await createStore();
-
-    await store.ensureUser('discord:1', 'Alice');
-    await store.ensureUser('sns:x:1', 'Alice on X');
-    await store.linkUserAlias('sns:x:1', 'discord:1');
-    await store.updateProfile('sns:x:1', 'Unified profile');
-    await store.updateDisplayName('sns:x:1', 'X Alice');
-
-    await expect(store.getUser('discord:1')).resolves.toMatchObject({ profile: 'Unified profile', displayName: 'Alice' });
-    await expect(store.getUser('sns:x:1')).resolves.toMatchObject({ profile: null, displayName: 'X Alice' });
   });
 
   it('rejects invalid alias relationships', async () => {
@@ -228,14 +198,10 @@ describe('SqliteUserStore', () => {
     await store.ensureUser('discord:1', 'Alice');
     await store.ensureUser('sns:x:1', 'X Alice');
     await store.linkUserAlias('sns:x:1', 'discord:1');
-    await store.updateProfile('sns:x:1', 'Primary profile via alias');
 
     const aliasRaw = await store.getUser('sns:x:1');
     expect(aliasRaw?.userId).toBe('sns:x:1');
-    expect(aliasRaw?.profile).toBeNull();
-
-    const primaryRow = await store.getUser('discord:1');
-    expect(primaryRow?.profile).toBe('Primary profile via alias');
+    expect(aliasRaw?.displayName).toBe('X Alice');
   });
 
   it('resolveAlias follows multi-hop chains with bounded depth', async () => {

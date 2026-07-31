@@ -124,7 +124,57 @@ describe('SqliteSnsActivityStore', () => {
     await store.close();
   });
 
+  it('commits non-numeric (UUID) notification cursors as last-write-wins', async () => {
+    // UUID には順序が無い。localeCompare の見かけの順序でガードすると、辞書順の
+    // 大きい UUID に当たった時点でカーソルが固着する（実機の ELYTH で発生 —
+    // 通常前進も強制前進も全てコミットで棄却され、同じページを再取得し続けた）
+    const dataDir = createDataDir('notification-reservation-uuid');
+    await mkdir(dataDir, { recursive: true });
+    const store = new SqliteSnsActivityStore({ dataDir });
 
+    await store.setLastNotificationId('f4655bdc-2d4f-4c5f-9cde-e1e2a7cc4b19');
+    const token = await store.reserveLastNotificationId?.('da592def-7179-4c48-92e6-b0dd3ab6bf6e');
+    await store.commitLastNotificationReservation?.(token!);
+    await expect(store.getLastNotificationId()).resolves.toBe('da592def-7179-4c48-92e6-b0dd3ab6bf6e');
+
+    await store.close();
+  });
+
+
+
+  it('counts write actions per kind for rate limiting (M8)', async () => {
+    const dataDir = createDataDir('rate-counter');
+    await mkdir(dataDir, { recursive: true });
+    let nowIso = '2026-07-06T10:00:00.000Z';
+    const store = new SqliteSnsActivityStore({ dataDir, now: () => new Date(nowIso) });
+
+    await store.recordPost('post-1', 'new post');
+    nowIso = '2026-07-06T10:10:00.000Z';
+    await store.recordPost('post-2', 'reply text', 'target-1');
+    nowIso = '2026-07-06T10:20:00.000Z';
+    await store.recordLike('post-3');
+
+    const since = new Date('2026-07-06T09:30:00.000Z');
+    await expect(store.countWriteActionsSince('post', since)).resolves.toEqual({
+      count: 1,
+      earliestAt: '2026-07-06T10:00:00.000Z',
+    });
+    await expect(store.countWriteActionsSince('reply', since)).resolves.toEqual({
+      count: 1,
+      earliestAt: '2026-07-06T10:10:00.000Z',
+    });
+    await expect(store.countWriteActionsSince('like', since)).resolves.toEqual({
+      count: 1,
+      earliestAt: '2026-07-06T10:20:00.000Z',
+    });
+    await expect(store.countWriteActionsSince('repost', since)).resolves.toEqual({ count: 0, earliestAt: null });
+    // ウィンドウ外は数えない
+    await expect(store.countWriteActionsSince('post', new Date('2026-07-06T10:05:00.000Z'))).resolves.toEqual({ count: 0, earliestAt: null });
+    await expect(store.getLastWriteActionAt('post')).resolves.toBe('2026-07-06T10:00:00.000Z');
+    await expect(store.getLastWriteActionAt('reply')).resolves.toBe('2026-07-06T10:10:00.000Z');
+
+    await store.close();
+  });
 
   it('close is idempotent', async () => {
     const dataDir = createDataDir('close-idem');

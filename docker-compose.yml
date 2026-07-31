@@ -15,7 +15,8 @@ services:
     volumes:
       - ./data:/app/data
     healthcheck:
-      test: ["CMD", "wget", "-q", "--tries=1", "--spider", "http://127.0.0.1:${PORT:-3000}/healthz"]
+      # node:20-slim には wget が無いため Node の fetch で healthz を叩く
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 3

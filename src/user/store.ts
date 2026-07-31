@@ -19,7 +19,6 @@ interface SqliteUserStoreOptions {
 interface UserRow {
   user_id: string;
   display_name: string;
-  profile: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -38,10 +37,8 @@ export class SqliteUserStore implements IUserStore {
   private readonly db: Database.Database;
   private readonly getUserStatement: Database.Statement<[string], UserRow>;
   private readonly ensureUserStatement: Database.Statement<[string, string, string, string]>;
-  private readonly updateProfileStatement: Database.Statement<[string | null, string, string]>;
-  private readonly updateDisplayNameStatement: Database.Statement<[string, string, string]>;
   private readonly searchUsersStatement: Database.Statement<
-    [string, string, string, string, string, string, number, number],
+    [string, string, string, string, string, number, number],
     UserRow
   >;
   private readonly getAliasStatement: Database.Statement<[string], UserAliasRow>;
@@ -66,7 +63,6 @@ export class SqliteUserStore implements IUserStore {
       CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
         display_name TEXT NOT NULL,
-        profile TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -87,36 +83,28 @@ export class SqliteUserStore implements IUserStore {
     `);
 
     this.getUserStatement = this.db.prepare<[string], UserRow>(`
-      SELECT user_id, display_name, profile, created_at, updated_at
+      SELECT user_id, display_name, created_at, updated_at
       FROM users
       WHERE user_id = ?
     `);
+    // 旧 post-response evaluator の updateDisplayName 削除に伴い、表示名は観測のたびに
+    // ここで追随させる（空文字での上書きだけは防ぐ）
     this.ensureUserStatement = this.db.prepare(`
-      INSERT INTO users (user_id, display_name, profile, created_at, updated_at)
-      VALUES (?, ?, NULL, ?, ?)
+      INSERT INTO users (user_id, display_name, created_at, updated_at)
+      VALUES (?, ?, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET
+        display_name = COALESCE(NULLIF(excluded.display_name, ''), display_name),
         updated_at = excluded.updated_at
     `);
-    this.updateProfileStatement = this.db.prepare(`
-      UPDATE users
-      SET profile = ?, updated_at = ?
-      WHERE user_id = ?
-    `);
-    this.updateDisplayNameStatement = this.db.prepare(`
-      UPDATE users
-      SET display_name = ?, updated_at = ?
-      WHERE user_id = ?
-    `);
     this.searchUsersStatement = this.db.prepare<
-      [string, string, string, string, string, string, number, number],
+      [string, string, string, string, string, number, number],
       UserRow
     >(`
-      SELECT user_id, display_name, profile, created_at, updated_at
+      SELECT user_id, display_name, created_at, updated_at
       FROM (
         SELECT
           user_id,
           display_name,
-          profile,
           created_at,
           updated_at,
           CASE
@@ -127,8 +115,7 @@ export class SqliteUserStore implements IUserStore {
           END AS match_rank
         FROM users
         WHERE (? = ''
-          OR display_name LIKE ? ESCAPE '\\'
-          OR COALESCE(profile, '') LIKE ? ESCAPE '\\')
+          OR display_name LIKE ? ESCAPE '\\')
       )
       ORDER BY match_rank ASC, updated_at DESC, display_name COLLATE NOCASE ASC, user_id ASC
       LIMIT ? OFFSET ?
@@ -216,17 +203,6 @@ export class SqliteUserStore implements IUserStore {
     return Promise.resolve(mapUserRow(user));
   }
 
-  async updateProfile(userId: string, profile: string | null): Promise<void> {
-    const { primaryUserId } = await this.resolveAlias(userId);
-    this.updateProfileStatement.run(profile, new Date().toISOString(), primaryUserId);
-    return Promise.resolve();
-  }
-
-  async updateDisplayName(userId: string, displayName: string): Promise<void> {
-    this.updateDisplayNameStatement.run(displayName.trim(), new Date().toISOString(), userId);
-    return Promise.resolve();
-  }
-
   async searchUsers(query: string, options?: UserSearchOptions): Promise<UserRecord[]> {
     const normalizedQuery = query.trim();
     const escapedQuery = escapeLikePattern(normalizedQuery);
@@ -239,7 +215,6 @@ export class SqliteUserStore implements IUserStore {
       normalizedQuery,
       prefixNeedle,
       normalizedQuery,
-      containsNeedle,
       containsNeedle,
       limit,
       offset,
@@ -333,7 +308,6 @@ function mapUserRow(row: UserRow): UserRecord {
   return {
     userId: row.user_id,
     displayName: row.display_name,
-    profile: row.profile,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

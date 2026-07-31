@@ -40,12 +40,25 @@ export interface BotRuntime {
   shutdown(): Promise<void>;
 }
 
+/**
+ * M8: チャット未読キュー化。KW カスタムコマンド統合が有効なとき、対象メッセージは
+ * 即応答せず未読として積む（エージェントが世界内で「スマホを見る」まで応答しない）。
+ * リアクションも付けない — まだ見ていないものに既読の印は付かない。
+ */
+export interface UnreadDiversion {
+  shouldDivert(message: Message): boolean;
+  enqueue(message: Message): Promise<void>;
+}
+
 export interface CreateBotOptions {
   messageSink?: IMessageSink | undefined;
+  unreadDiversion?: UnreadDiversion | undefined;
+  /** M8: PhoneService と共有するスレッド単位 mutex（check_phone 返信と即時処理の並行防止） */
+  threadMutex?: KeyedMutex | undefined;
 }
 
 export function createBot(config: Config, agent: IAgent, options?: CreateBotOptions): BotRuntime {
-  const threadMutex = new KeyedMutex();
+  const threadMutex = options?.threadMutex ?? new KeyedMutex();
   const inFlightHandlers = new Set<Promise<void>>();
   let gatewayConnected = false;
   const chat = new Chat<KarakuriAdapters>({
@@ -80,8 +93,49 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
     return tracked;
   };
 
+  const divertToUnread = async (thread: Thread, message: Message, subscribeFirst: boolean): Promise<boolean> => {
+    if (options?.unreadDiversion == null
+      || !hasProcessableText(message)
+      || !options.unreadDiversion.shouldDivert(message)) {
+      return false;
+    }
+
+    try {
+      if (subscribeFirst) {
+        // 後続メッセージも未読として届くよう購読だけは行う
+        await thread.subscribe();
+      }
+      await options.unreadDiversion.enqueue(message);
+      logger.info('Message diverted to phone unread queue', { threadId: message.threadId });
+    } catch (error) {
+      // キュー登録に失敗したメッセージは無音で失わず、従来の即時処理へフォールバックする
+      logger.error('Failed to divert message to unread queue; falling back to immediate handling', error);
+      void reportSafely(
+        options?.messageSink,
+        config.reportChannelId,
+        `⚠️ チャット未読キューへの登録に失敗したため、このメッセージは即時処理にフォールバックします (message: ${message.id})\n${formatError(error)}`,
+        {
+          error: (_message, reportError) => {
+            logger.error('Failed to report unread diversion error', reportError);
+          },
+        },
+      );
+      return false;
+    }
+    return true;
+  };
+
+  // KW bot とのスレッドではステータスリアクションを付けない（#104）:
+  // 高頻度 system turn のリアクション付け外しが Discord 429 と恒常的に衝突する
+  const statusReactionEnabledFor = (message: Message): boolean =>
+    !(config.karakuriWorldBotIds ?? []).includes(message.author.userId);
+
   const handleNewThread = async (thread: Thread, message: Message): Promise<void> => {
-    const controller = createStatusReactionController(thread, message);
+    if (await divertToUnread(thread, message, true)) {
+      return;
+    }
+
+    const controller = createStatusReactionController(thread, message, statusReactionEnabledFor(message));
     if (hasProcessableText(message)) {
       controller.setQueued();
     }
@@ -122,7 +176,11 @@ export function createBot(config: Config, agent: IAgent, options?: CreateBotOpti
   });
 
   chat.onSubscribedMessage(async (thread, message) => {
-    const controller = createStatusReactionController(thread, message);
+    if (await divertToUnread(thread, message, false)) {
+      return;
+    }
+
+    const controller = createStatusReactionController(thread, message, statusReactionEnabledFor(message));
     if (hasProcessableText(message)) {
       controller.setQueued();
     }
@@ -410,8 +468,15 @@ function hasProcessableText(message: Message): boolean {
   return message.text.trim().length > 0;
 }
 
-function createStatusReactionController(thread: Thread, message: Message): StatusReactionController {
-  return new StatusReactionController(thread.adapter, message.threadId, message.id);
+function createStatusReactionController(thread: Thread, message: Message, enabled = true): StatusReactionController {
+  return new StatusReactionController(
+    thread.adapter,
+    message.threadId,
+    message.id,
+    undefined,
+    undefined,
+    enabled,
+  );
 }
 
 async function safePost(thread: Thread, text: string): Promise<void> {

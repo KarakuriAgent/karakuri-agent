@@ -22,9 +22,12 @@ const configSchema = z.object({
   }).trim().min(1, 'LLM_API_KEY is required (OPENAI_API_KEY is also accepted)'),
   llmBaseUrl: z.string().trim().optional(),
   llmModel: z.string().trim().default(DEFAULT_LLM_MODEL),
-  postResponseLlmApiKey: z.string().trim().optional(),
-  postResponseLlmBaseUrl: z.string().trim().optional(),
-  postResponseLlmModel: z.string().trim().optional(),
+  appraisalLlmApiKey: z.string().trim().optional(),
+  appraisalLlmBaseUrl: z.string().trim().optional(),
+  appraisalLlmModel: z.string().trim().optional(),
+  reflectionLlmApiKey: z.string().trim().optional(),
+  reflectionLlmBaseUrl: z.string().trim().optional(),
+  reflectionLlmModel: z.string().trim().optional(),
   braveApiKey: z.string().trim().min(1).optional(),
   karakuriWorldApiBaseUrl: z.string().trim().min(1).optional(),
   karakuriWorldApiKey: z.string().trim().min(1).optional(),
@@ -46,15 +49,47 @@ const configSchema = z.object({
   tokenBudget: z.coerce.number().int().positive().default(80_000),
   port: z.coerce.number().int().min(1).max(65_535).default(3_000),
   heartbeatIntervalMinutes: z.coerce.number().positive().default(120),
-  memoryMaintenanceIntervalMinutes: z.coerce.number().positive().optional(),
-  memoryMaintenanceRecentDiaryDays: z.coerce.number().int().positive().optional(),
-  snsLoopMinIntervalMinutes: z.coerce.number().positive().default(60),
-  snsLoopMaxIntervalMinutes: z.coerce.number().positive().default(180),
+  kwCommandCheckPhone: z.string().trim().min(1).optional(),
+  kwCommandBrowseSns: z.string().trim().min(1).optional(),
+  kwCommandPostSns: z.string().trim().min(1).optional(),
+  kwCommandSendMessage: z.string().trim().min(1).optional(),
+  appraisalTimeoutMs: z.coerce.number().int().positive().optional(),
+  appraisalOutputMode: z.enum(['json_schema', 'tool']).optional(),
+  kwSleepActionPattern: z.string().trim().min(1).optional(),
+  appraisalFoodContextPattern: z.string().trim().min(1).optional(),
+  reflectionTimeoutMs: z.coerce.number().int().positive().optional(),
+  reflectionOutputMode: z.enum(['json_schema', 'tool']).optional(),
+  snsRateLimitPostPerHour: z.coerce.number().int().min(0).default(3),
+  snsRateLimitPostPerDay: z.coerce.number().int().min(0).default(20),
+  snsRateLimitPostMinIntervalMinutes: z.coerce.number().min(0).default(15),
+  snsRateLimitReplyPerHour: z.coerce.number().int().min(0).default(10),
+  snsRateLimitLikePerHour: z.coerce.number().int().min(0).default(30),
+  snsRateLimitRepostPerHour: z.coerce.number().int().min(0).default(10),
+  snsFetchMinIntervalNotificationsMinutes: z.coerce.number().min(0).default(10),
+  snsFetchMinIntervalTimelineMinutes: z.coerce.number().min(0).default(30),
+  snsFetchMinIntervalTrendsMinutes: z.coerce.number().min(0).default(60),
   allowedChannelIds: z.string().optional(),
   reportChannelId: z.string().trim().min(1).optional(),
   adminUserIds: z.string().optional(),
   karakuriWorldBotIds: z.string().optional(),
+  agentSelfNames: z.string().optional(),
   llmEnableThinking: z.string().trim().optional(),
+  llmDisableThinkingRequestParam: z.string().trim().optional(),
+  kwPerceptionBufferEnabled: z.string().trim().optional(),
+  loopWarningEnabled: z.string().trim().optional(),
+  loopDetectorThreshold: z.coerce.number().int().min(2).default(3),
+  repetitiveToolCallRecoveryEnabled: z.string().trim().optional(),
+  appraisalEnabled: z.string().trim().optional(),
+  innerStateInjectionEnabled: z.string().trim().optional(),
+  embeddingModel: z.string().trim().optional(),
+  embeddingApiKey: z.string().trim().optional(),
+  embeddingBaseUrl: z.string().trim().optional(),
+  embeddingDimensions: z.coerce.number().int().positive().default(1_536),
+  recallInjectionEnabled: z.string().trim().optional(),
+  reflectionEnabled: z.string().trim().optional(),
+  selfImageInjectionEnabled: z.string().trim().optional(),
+  drivesInjectionEnabled: z.string().trim().optional(),
+  prospectsInjectionEnabled: z.string().trim().optional(),
 });
 
 export interface ApiCredentials {
@@ -78,6 +113,48 @@ export type SnsCredentials =
 
 export type SnsProviderType = SnsCredentials['provider'];
 
+/** M8: 書き込み系 SNS アクションの決定論レート制限（0 は「そのアクションを行わない」） */
+export interface SnsWriteRateLimits {
+  postPerHour: number;
+  postPerDay: number;
+  /** 同種アクションの最小間隔（ウィンドウ境界バースト防止） */
+  postMinIntervalMinutes: number;
+  replyPerHour: number;
+  likePerHour: number;
+  repostPerHour: number;
+}
+
+/** M8: 読み取り系フェッチの最小間隔（API 保護。間隔内はキャッシュ返却） */
+export interface SnsFetchIntervals {
+  notificationsMinutes: number;
+  timelineMinutes: number;
+  trendsMinutes: number;
+}
+
+export interface SnsRateLimitConfig {
+  /** 共通既定（SNS_RATE_LIMIT_*） */
+  defaults: SnsWriteRateLimits;
+  /** provider 別上書き（X_RATE_LIMIT_* / MASTODON_RATE_LIMIT_* / ELYTH_RATE_LIMIT_*） */
+  perProvider: Partial<Record<SnsProviderType, Partial<SnsWriteRateLimits>>>;
+  fetchIntervals: SnsFetchIntervals;
+}
+
+export function resolveWriteRateLimits(config: SnsRateLimitConfig, provider: SnsProviderType): SnsWriteRateLimits {
+  return { ...config.defaults, ...config.perProvider[provider] };
+}
+
+/**
+ * M8: KW カスタムコマンド名 → 世界内行為ハンドラのマッピング。
+ * KW コンソール側で登録した command 名を指定する。設定されたものだけ有効。
+ */
+export interface WorldActionCommands {
+  checkPhone?: string | undefined;
+  browseSns?: string | undefined;
+  postSns?: string | undefined;
+  /** M9 #110: 能動メッセージ（催促・個別共有）。checkPhone の設定が前提 */
+  sendMessage?: string | undefined;
+}
+
 export interface Config {
   discordApplicationId: string;
   discordBotToken: string;
@@ -86,10 +163,16 @@ export interface Config {
   llmBaseUrl?: string | undefined;
   llmModel: string;
   llmModelSelector: LlmModelSelector;
-  postResponseLlmApiKey?: string | undefined;
-  postResponseLlmBaseUrl?: string | undefined;
-  postResponseLlmModel?: string | undefined;
-  postResponseLlmModelSelector?: LlmModelSelector | undefined;
+  /** M2: appraisal 役割のモデル指定（未指定は既定モデルへフォールバック。軽量モデルを既定の想定とする） */
+  appraisalLlmApiKey?: string | undefined;
+  appraisalLlmBaseUrl?: string | undefined;
+  appraisalLlmModel?: string | undefined;
+  appraisalLlmModelSelector?: LlmModelSelector | undefined;
+  /** M4: 省察役割のモデル指定（信念・自己像という長く残るものを書くため品質優先。未指定は既定へ） */
+  reflectionLlmApiKey?: string | undefined;
+  reflectionLlmBaseUrl?: string | undefined;
+  reflectionLlmModel?: string | undefined;
+  reflectionLlmModelSelector?: LlmModelSelector | undefined;
   braveApiKey?: string | undefined;
   karakuriWorld?: ApiCredentials | undefined;
   snsList?: SnsCredentials[] | undefined;
@@ -102,16 +185,76 @@ export interface Config {
   tokenBudget: number;
   port: number;
   heartbeatIntervalMinutes?: number | undefined;
-  memoryMaintenanceIntervalMinutes?: number | undefined;
-  memoryMaintenanceRecentDiaryDays?: number | undefined;
-  snsLoopMinIntervalMinutes: number;
-  snsLoopMaxIntervalMinutes: number;
+  /** M8: KW カスタムコマンド統合（設定されたコマンドだけ有効。checkPhone 設定でチャット未読キュー化が有効になる） */
+  worldActionCommands: WorldActionCommands;
+  /** M8: SNS 書き込み・読み取りの決定論レート制限 */
+  snsRateLimits: SnsRateLimitConfig;
   postMessageChannelIds?: string[] | undefined;
   allowedChannelIds?: string[] | undefined;
   reportChannelId?: string | undefined;
   adminUserIds?: string[] | undefined;
   karakuriWorldBotIds?: string[] | undefined;
+  /** 自己を指す別名（エージェント名など）。relations の自己 ID 正規化に使う（#106） */
+  agentSelfNames?: string[] | undefined;
   llmEnableThinking: boolean;
+  /** OpenAI 互換サーバー固有の `enable_thinking: false` リクエストパラメータを送る */
+  llmDisableThinkingRequestParam: boolean;
+  /** M1: 行動選択用通知をセッション履歴に積まず Perception Buffer で扱う（切り分け・ロールバック用） */
+  kwPerceptionBufferEnabled: boolean;
+  /** M1: ループ警告の trusted 注入（切り分け・ロールバック用） */
+  loopWarningEnabled: boolean;
+  /** M1: 同一行動 × 同一対象の連続回数がこの値以上で警告を注入する */
+  loopDetectorThreshold: number;
+  /** LLMプロバイダの「同一tool-callの連続」検知エラー発生時に、セッション履歴から重複 tool-call/tool-result ペアを除去して1回だけリトライする機能の有効化（切り分け・ロールバック用） */
+  repetitiveToolCallRecoveryEnabled: boolean;
+  /** M2: appraisal（統合判定）の有効化（切り分け・ロールバック用） */
+  appraisalEnabled: boolean;
+  /** M2: appraisal LLM 呼び出しのタイムアウト（ms）。未指定はサービス既定（30 秒） */
+  appraisalTimeoutMs?: number | undefined;
+  /**
+   * appraisal の出力取得モード。json_schema（既定）= response_format による構造保証
+   * （OpenAI 本家等スキーマ強制が効くバックエンド向け）、tool = 強制 tool call ×2 の
+   * 分割スキーマ（json_schema を黙って無視するバックエンド — Featherless 等 — 向け）
+   */
+  appraisalOutputMode: 'json_schema' | 'tool';
+  /**
+   * ペルソナ依存の解釈パターン（正規表現ソース、i フラグで評価）。
+   * kwSleepActionPattern = 「どの行動 ID が眠りに入る行為か」（既定 sleep|nap|就寝|寝る。ロボットなら充電など）。
+   * appraisalFoodContextPattern = 「どの文脈を空腹回復（エネルギー補給）と認めるか」
+   * （既定は人間の食事語彙 + 機械の補給語彙）。いずれも判定の意味論を変えるため proc_version に反映される
+   */
+  kwSleepActionPattern?: string | undefined;
+  appraisalFoodContextPattern?: string | undefined;
+  /** M4: 省察 LLM 呼び出しの 1 コールタイムアウト（ms）。未指定はエンジン既定（180 秒） */
+  reflectionTimeoutMs?: number | undefined;
+  /** M4: 省察の出力取得モード（appraisal と同じ切替。既定 json_schema） */
+  reflectionOutputMode: 'json_schema' | 'tool';
+  /** M2: 内部状態の自然言語注入の有効化（切り分け・ロールバック用） */
+  innerStateInjectionEnabled: boolean;
+  /** M3: 埋め込みモデル（OpenAI 互換で差し替え可能。未設定なら FTS のみで想起） */
+  embeddingModel?: string | undefined;
+  embeddingApiKey?: string | undefined;
+  embeddingBaseUrl?: string | undefined;
+  embeddingDimensions: number;
+  /** M3: 自動想起のプロンプト注入の有効化（切り分け・ロールバック用） */
+  recallInjectionEnabled: boolean;
+  /** M4: 省察エンジン（日次/週次/月次）の有効化 */
+  reflectionEnabled: boolean;
+  /** M4: 自己像（self beliefs）の自己語り注入の有効化 */
+  selfImageInjectionEnabled: boolean;
+  /** M5: 欲求・飽き圧注入の有効化 */
+  drivesInjectionEnabled: boolean;
+  /** M5: 展望記憶（約束・予定・目標）注入の有効化 */
+  prospectsInjectionEnabled: boolean;
+}
+
+function assertValidPattern(source: string, envName: string): string {
+  try {
+    new RegExp(source, 'i');
+  } catch (error) {
+    throw new Error(`Invalid ${envName}: ${source} (${error instanceof Error ? error.message : String(error)})`);
+  }
+  return source;
 }
 
 function assertValidTimezone(timezone: string): void {
@@ -122,8 +265,33 @@ function assertValidTimezone(timezone: string): void {
   }
 }
 
+/**
+ * 廃止済み env の検出（#108）: 設定されていても効果が無い変数を起動時に警告する。
+ * 「設定したのに効かない」を無言にしない
+ */
+const DEPRECATED_ENV_KEYS: Record<string, string> = {
+  SNS_PROVIDER: 'Multi provider 化で廃止。MASTODON_* / X_* / ELYTH_* を使う',
+  SNS_LOOP_MIN_INTERVAL_MINUTES: 'M8 で SNS ループは削除済み（SNS 活動は世界内行為 post_sns / browse_sns / check_phone へ統合）',
+  SNS_LOOP_MAX_INTERVAL_MINUTES: 'M8 で SNS ループは削除済み（SNS 活動は世界内行為 post_sns / browse_sns / check_phone へ統合）',
+  MEMORY_MAINTENANCE_INTERVAL_MINUTES: '旧メモリ系（core memory / diary）の削除で廃止。記憶の整理・日記生成は省察エンジン（REFLECTION_ENABLED / LLM_REFLECTION_*）が担う',
+  MEMORY_MAINTENANCE_RECENT_DIARY_DAYS: '旧メモリ系（core memory / diary）の削除で廃止。日記は life.db の narratives(kind=diary) として省察エンジンが生成する',
+  POST_RESPONSE_LLM_API_KEY: '旧 post-response evaluator の削除で廃止。役割別モデルは LLM_APPRAISAL_* / LLM_REFLECTION_* で指定する',
+  POST_RESPONSE_LLM_BASE_URL: '旧 post-response evaluator の削除で廃止。役割別モデルは LLM_APPRAISAL_* / LLM_REFLECTION_* で指定する',
+  POST_RESPONSE_LLM_MODEL: '旧 post-response evaluator の削除で廃止。役割別モデルは LLM_APPRAISAL_* / LLM_REFLECTION_* で指定する',
+  POST_RESPONSE_EVALUATOR_ENABLED: '旧 post-response evaluator は削除済み。ユーザーに関する記憶は appraisal（relations）と省察（beliefs person_fact）が life.db へ記録する',
+};
+
+function warnDeprecatedEnv(env: NodeJS.ProcessEnv): void {
+  for (const [key, note] of Object.entries(DEPRECATED_ENV_KEYS)) {
+    if (env[key] != null && env[key]!.trim().length > 0) {
+      logger.warn(`Deprecated environment variable is set and has no effect: ${key} — ${note}`);
+    }
+  }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   loadDotEnv({ quiet: true });
+  warnDeprecatedEnv(env);
 
   const rawConfig = {
     discordApplicationId: env.DISCORD_APPLICATION_ID,
@@ -132,9 +300,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     llmApiKey: resolveEnvAliases(env.LLM_API_KEY, env.OPENAI_API_KEY),
     llmBaseUrl: resolveEnvAliases(env.LLM_BASE_URL, env.OPENAI_BASE_URL),
     llmModel: resolveEnvAliases(env.LLM_MODEL, env.OPENAI_MODEL, env.AGENT_MODEL),
-    postResponseLlmApiKey: env.POST_RESPONSE_LLM_API_KEY,
-    postResponseLlmBaseUrl: env.POST_RESPONSE_LLM_BASE_URL,
-    postResponseLlmModel: env.POST_RESPONSE_LLM_MODEL,
+    appraisalLlmApiKey: env.LLM_APPRAISAL_API_KEY,
+    appraisalLlmBaseUrl: env.LLM_APPRAISAL_BASE_URL,
+    appraisalLlmModel: env.LLM_APPRAISAL_MODEL,
+    reflectionLlmApiKey: env.LLM_REFLECTION_API_KEY,
+    reflectionLlmBaseUrl: env.LLM_REFLECTION_BASE_URL,
+    reflectionLlmModel: env.LLM_REFLECTION_MODEL,
     braveApiKey: env.BRAVE_API_KEY || undefined,
     karakuriWorldApiBaseUrl: normalizeOptionalString(env.KARAKURI_WORLD_API_BASE_URL),
     karakuriWorldApiKey: normalizeOptionalString(env.KARAKURI_WORLD_API_KEY),
@@ -156,22 +327,53 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tokenBudget: env.TOKEN_BUDGET ?? env.AGENT_TOKEN_BUDGET,
     port: env.PORT,
     heartbeatIntervalMinutes: env.HEARTBEAT_INTERVAL_MINUTES,
-    memoryMaintenanceIntervalMinutes: normalizeOptionalString(env.MEMORY_MAINTENANCE_INTERVAL_MINUTES),
-    memoryMaintenanceRecentDiaryDays: normalizeOptionalString(env.MEMORY_MAINTENANCE_RECENT_DIARY_DAYS),
-    snsLoopMinIntervalMinutes: env.SNS_LOOP_MIN_INTERVAL_MINUTES,
-    snsLoopMaxIntervalMinutes: env.SNS_LOOP_MAX_INTERVAL_MINUTES,
+    kwCommandCheckPhone: normalizeOptionalString(env.KW_COMMAND_CHECK_PHONE),
+    kwCommandBrowseSns: normalizeOptionalString(env.KW_COMMAND_BROWSE_SNS),
+    kwCommandPostSns: normalizeOptionalString(env.KW_COMMAND_POST_SNS),
+    kwCommandSendMessage: normalizeOptionalString(env.KW_COMMAND_SEND_MESSAGE),
+    appraisalTimeoutMs: env.APPRAISAL_TIMEOUT_MS,
+    appraisalOutputMode: normalizeOptionalString(env.LLM_APPRAISAL_OUTPUT_MODE),
+    kwSleepActionPattern: normalizeOptionalString(env.KW_SLEEP_ACTION_PATTERN),
+    appraisalFoodContextPattern: normalizeOptionalString(env.APPRAISAL_FOOD_CONTEXT_PATTERN),
+    reflectionTimeoutMs: env.REFLECTION_TIMEOUT_MS,
+    reflectionOutputMode: normalizeOptionalString(env.LLM_REFLECTION_OUTPUT_MODE),
+    snsRateLimitPostPerHour: env.SNS_RATE_LIMIT_POST_PER_HOUR,
+    snsRateLimitPostPerDay: env.SNS_RATE_LIMIT_POST_PER_DAY,
+    snsRateLimitPostMinIntervalMinutes: env.SNS_RATE_LIMIT_POST_MIN_INTERVAL_MINUTES,
+    snsRateLimitReplyPerHour: env.SNS_RATE_LIMIT_REPLY_PER_HOUR,
+    snsRateLimitLikePerHour: env.SNS_RATE_LIMIT_LIKE_PER_HOUR,
+    snsRateLimitRepostPerHour: env.SNS_RATE_LIMIT_REPOST_PER_HOUR,
+    snsFetchMinIntervalNotificationsMinutes: env.SNS_FETCH_MIN_INTERVAL_NOTIFICATIONS_MINUTES,
+    snsFetchMinIntervalTimelineMinutes: env.SNS_FETCH_MIN_INTERVAL_TIMELINE_MINUTES,
+    snsFetchMinIntervalTrendsMinutes: env.SNS_FETCH_MIN_INTERVAL_TRENDS_MINUTES,
     allowedChannelIds: env.ALLOWED_CHANNEL_IDS,
     reportChannelId: normalizeOptionalString(env.REPORT_CHANNEL_ID),
     adminUserIds: env.ADMIN_USER_IDS,
     karakuriWorldBotIds: env.KARAKURI_WORLD_BOT_IDS,
+    agentSelfNames: env.AGENT_SELF_NAMES,
     llmEnableThinking: env.LLM_ENABLE_THINKING,
+    llmDisableThinkingRequestParam: env.LLM_DISABLE_THINKING_REQUEST_PARAM,
+    kwPerceptionBufferEnabled: env.KW_PERCEPTION_BUFFER_ENABLED,
+    loopWarningEnabled: env.LOOP_WARNING_ENABLED,
+    loopDetectorThreshold: env.LOOP_DETECTOR_THRESHOLD,
+    repetitiveToolCallRecoveryEnabled: env.REPETITIVE_TOOL_CALL_RECOVERY_ENABLED,
+    appraisalEnabled: env.APPRAISAL_ENABLED,
+    innerStateInjectionEnabled: env.INNER_STATE_INJECTION_ENABLED,
+    embeddingModel: normalizeOptionalString(env.EMBEDDING_MODEL),
+    embeddingApiKey: normalizeOptionalString(env.EMBEDDING_API_KEY),
+    embeddingBaseUrl: normalizeOptionalString(env.EMBEDDING_BASE_URL),
+    embeddingDimensions: env.EMBEDDING_DIMENSIONS,
+    recallInjectionEnabled: env.RECALL_INJECTION_ENABLED,
+    reflectionEnabled: env.REFLECTION_ENABLED,
+    selfImageInjectionEnabled: env.SELF_IMAGE_INJECTION_ENABLED,
+    drivesInjectionEnabled: env.DRIVES_INJECTION_ENABLED,
+    prospectsInjectionEnabled: env.PROSPECTS_INJECTION_ENABLED,
   };
 
   try {
     const parsed = configSchema.parse(rawConfig);
     assertValidTimezone(parsed.timezone);
     const llmBaseUrl = normalizeBaseUrl(parsed.llmBaseUrl);
-    const postResponseLlmBaseUrl = normalizeBaseUrl(parsed.postResponseLlmBaseUrl, 'POST_RESPONSE_LLM_BASE_URL');
     const karakuriWorldApiBaseUrl = normalizeKarakuriWorldApiBaseUrl(parsed.karakuriWorldApiBaseUrl);
     const karakuriWorldApiKey = normalizeOptionalString(parsed.karakuriWorldApiKey);
     const mastodonInstanceUrl = normalizeBaseUrl(parsed.mastodonInstanceUrl, 'MASTODON_INSTANCE_URL');
@@ -187,18 +389,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     const elythApiBaseRaw = normalizeOptionalString(parsed.elythApiBase);
 
     const llmModelSelector = parseModelSelector(parsed.llmModel);
-    const postResponseLlmModel = normalizeOptionalString(parsed.postResponseLlmModel);
-    const postResponseLlmModelSelector = postResponseLlmModel != null
-      ? parseModelSelector(postResponseLlmModel)
+    const appraisalLlmModel = normalizeOptionalString(parsed.appraisalLlmModel);
+    const appraisalLlmModelSelector = appraisalLlmModel != null
+      ? parseModelSelector(appraisalLlmModel)
       : undefined;
+    const appraisalLlmBaseUrl = normalizeBaseUrl(parsed.appraisalLlmBaseUrl, 'LLM_APPRAISAL_BASE_URL');
+    const reflectionLlmModel = normalizeOptionalString(parsed.reflectionLlmModel);
+    const reflectionLlmModelSelector = reflectionLlmModel != null
+      ? parseModelSelector(reflectionLlmModel)
+      : undefined;
+    const reflectionLlmBaseUrl = normalizeBaseUrl(parsed.reflectionLlmBaseUrl, 'LLM_REFLECTION_BASE_URL');
     const postMessageChannelIds = parseIdList(parsed.allowedChannelIds);
     const reportChannelId = normalizeOptionalString(parsed.reportChannelId);
     const mergedAllowedChannelIds = reportChannelId != null
       ? [...new Set([...(postMessageChannelIds ?? []), reportChannelId])]
       : postMessageChannelIds;
-    if (parsed.snsLoopMinIntervalMinutes > parsed.snsLoopMaxIntervalMinutes) {
-      throw new Error('SNS_LOOP_MIN_INTERVAL_MINUTES must be less than or equal to SNS_LOOP_MAX_INTERVAL_MINUTES');
-    }
     if ((karakuriWorldApiBaseUrl != null) !== (karakuriWorldApiKey != null)) {
       throw new Error(
         'Partial karakuri-world configuration: both KARAKURI_WORLD_API_BASE_URL and KARAKURI_WORLD_API_KEY must be set. '
@@ -267,25 +472,107 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       snsList.push({ provider: 'elyth', apiKey: elythApiKey, apiBase: elythApiBase });
     }
 
+    const worldActionCommands: WorldActionCommands = {
+      ...(parsed.kwCommandCheckPhone != null ? { checkPhone: parsed.kwCommandCheckPhone } : {}),
+      ...(parsed.kwCommandBrowseSns != null ? { browseSns: parsed.kwCommandBrowseSns } : {}),
+      ...(parsed.kwCommandPostSns != null ? { postSns: parsed.kwCommandPostSns } : {}),
+      ...(parsed.kwCommandSendMessage != null ? { sendMessage: parsed.kwCommandSendMessage } : {}),
+    };
+    const configuredWorldCommands = Object.values(worldActionCommands).filter((value) => value != null);
+    if (configuredWorldCommands.length > 0 && karakuriWorld == null) {
+      throw new Error(
+        'KW_COMMAND_* is set, but KARAKURI_WORLD_API_BASE_URL / KARAKURI_WORLD_API_KEY are not configured. '
+        + 'World action commands require karakuri-world integration.',
+      );
+    }
+    if (new Set(configuredWorldCommands).size !== configuredWorldCommands.length) {
+      throw new Error('KW_COMMAND_CHECK_PHONE / KW_COMMAND_BROWSE_SNS / KW_COMMAND_POST_SNS / KW_COMMAND_SEND_MESSAGE must be distinct command names.');
+    }
+    // check_phone は未読を消費して返信を投稿する。投稿経路（Discord REST sink）が無い構成で
+    // 迂回だけ有効になると、全ユーザーメッセージが応答されないまま消費される
+    if (worldActionCommands.checkPhone != null && (mergedAllowedChannelIds == null || mergedAllowedChannelIds.length === 0)) {
+      throw new Error(
+        'KW_COMMAND_CHECK_PHONE requires a Discord message sink: set ALLOWED_CHANNEL_IDS or REPORT_CHANNEL_ID '
+        + '(otherwise diverted chat messages could never be replied to).',
+      );
+    }
+    // send_message は着信の追跡（phone_thread_state）が未読キュー経由の enqueue に
+    // 依存するため、check_phone（未読迂回モード）の設定を前提とする（M9 #110）
+    if (worldActionCommands.sendMessage != null && worldActionCommands.checkPhone == null) {
+      throw new Error('KW_COMMAND_SEND_MESSAGE requires KW_COMMAND_CHECK_PHONE (incoming tracking relies on the unread queue).');
+    }
+
+    const snsRateLimits: SnsRateLimitConfig = {
+      defaults: {
+        postPerHour: parsed.snsRateLimitPostPerHour,
+        postPerDay: parsed.snsRateLimitPostPerDay,
+        postMinIntervalMinutes: parsed.snsRateLimitPostMinIntervalMinutes,
+        replyPerHour: parsed.snsRateLimitReplyPerHour,
+        likePerHour: parsed.snsRateLimitLikePerHour,
+        repostPerHour: parsed.snsRateLimitRepostPerHour,
+      },
+      perProvider: parseProviderRateLimitOverrides(env),
+      fetchIntervals: {
+        notificationsMinutes: parsed.snsFetchMinIntervalNotificationsMinutes,
+        timelineMinutes: parsed.snsFetchMinIntervalTimelineMinutes,
+        trendsMinutes: parsed.snsFetchMinIntervalTrendsMinutes,
+      },
+    };
+
     const config = {
       ...parsed,
       llmBaseUrl,
       llmModel: llmModelSelector.selector,
       llmModelSelector,
-      postResponseLlmApiKey: normalizeOptionalString(parsed.postResponseLlmApiKey),
-      postResponseLlmBaseUrl,
-      postResponseLlmModel,
-      postResponseLlmModelSelector,
+      appraisalLlmApiKey: normalizeOptionalString(parsed.appraisalLlmApiKey),
+      appraisalLlmBaseUrl,
+      appraisalLlmModel,
+      appraisalLlmModelSelector,
+      reflectionLlmApiKey: normalizeOptionalString(parsed.reflectionLlmApiKey),
+      reflectionLlmBaseUrl,
+      reflectionLlmModel,
+      reflectionLlmModelSelector,
       dataDir: resolve(parsed.dataDir),
       postMessageChannelIds,
       allowedChannelIds: mergedAllowedChannelIds,
       reportChannelId,
       adminUserIds: parseIdList(parsed.adminUserIds),
       karakuriWorldBotIds,
+      agentSelfNames: parseIdList(parsed.agentSelfNames),
       ...(karakuriWorld != null ? { karakuriWorld } : {}),
+      worldActionCommands,
+      snsRateLimits,
       snsList,
       ...(parsed.snsLegacyDbMigrateTo != null ? { snsLegacyDbMigrateTo: parsed.snsLegacyDbMigrateTo } : {}),
       llmEnableThinking: parseBooleanEnv(parsed.llmEnableThinking, 'LLM_ENABLE_THINKING', true),
+      llmDisableThinkingRequestParam: parseBooleanEnv(parsed.llmDisableThinkingRequestParam, 'LLM_DISABLE_THINKING_REQUEST_PARAM', false),
+      kwPerceptionBufferEnabled: parseBooleanEnv(parsed.kwPerceptionBufferEnabled, 'KW_PERCEPTION_BUFFER_ENABLED', true),
+      loopWarningEnabled: parseBooleanEnv(parsed.loopWarningEnabled, 'LOOP_WARNING_ENABLED', true),
+      repetitiveToolCallRecoveryEnabled: parseBooleanEnv(
+        parsed.repetitiveToolCallRecoveryEnabled,
+        'REPETITIVE_TOOL_CALL_RECOVERY_ENABLED',
+        true,
+      ),
+      appraisalEnabled: parseBooleanEnv(parsed.appraisalEnabled, 'APPRAISAL_ENABLED', true),
+      ...(parsed.appraisalTimeoutMs != null ? { appraisalTimeoutMs: parsed.appraisalTimeoutMs } : {}),
+      appraisalOutputMode: parsed.appraisalOutputMode ?? 'json_schema',
+      ...(parsed.kwSleepActionPattern != null
+        ? { kwSleepActionPattern: assertValidPattern(parsed.kwSleepActionPattern, 'KW_SLEEP_ACTION_PATTERN') }
+        : {}),
+      ...(parsed.appraisalFoodContextPattern != null
+        ? { appraisalFoodContextPattern: assertValidPattern(parsed.appraisalFoodContextPattern, 'APPRAISAL_FOOD_CONTEXT_PATTERN') }
+        : {}),
+      ...(parsed.reflectionTimeoutMs != null ? { reflectionTimeoutMs: parsed.reflectionTimeoutMs } : {}),
+      reflectionOutputMode: parsed.reflectionOutputMode ?? 'json_schema',
+      innerStateInjectionEnabled: parseBooleanEnv(parsed.innerStateInjectionEnabled, 'INNER_STATE_INJECTION_ENABLED', true),
+      embeddingModel: normalizeOptionalString(parsed.embeddingModel),
+      embeddingApiKey: normalizeOptionalString(parsed.embeddingApiKey),
+      embeddingBaseUrl: normalizeBaseUrl(parsed.embeddingBaseUrl, 'EMBEDDING_BASE_URL'),
+      recallInjectionEnabled: parseBooleanEnv(parsed.recallInjectionEnabled, 'RECALL_INJECTION_ENABLED', true),
+      reflectionEnabled: parseBooleanEnv(parsed.reflectionEnabled, 'REFLECTION_ENABLED', true),
+      selfImageInjectionEnabled: parseBooleanEnv(parsed.selfImageInjectionEnabled, 'SELF_IMAGE_INJECTION_ENABLED', true),
+      drivesInjectionEnabled: parseBooleanEnv(parsed.drivesInjectionEnabled, 'DRIVES_INJECTION_ENABLED', true),
+      prospectsInjectionEnabled: parseBooleanEnv(parsed.prospectsInjectionEnabled, 'PROSPECTS_INJECTION_ENABLED', true),
     };
     logger.debug('Config parsed', {
       dataDir: config.dataDir,
@@ -293,18 +580,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       model: config.llmModel,
       llmProvider: config.llmModelSelector.provider,
       llmApi: config.llmModelSelector.api,
-      hasPostResponseModel: config.postResponseLlmModelSelector != null,
       hasKarakuriWorld: config.karakuriWorld != null,
       snsProviders: config.snsList.map((sns) => sns.provider),
       port: config.port,
       heartbeatIntervalMinutes: config.heartbeatIntervalMinutes,
-      memoryMaintenanceIntervalMinutes: config.memoryMaintenanceIntervalMinutes,
-      memoryMaintenanceRecentDiaryDays: config.memoryMaintenanceRecentDiaryDays,
       hasAllowedChannels: (config.postMessageChannelIds?.length ?? 0) > 0,
       hasAdminUsers: (config.adminUserIds?.length ?? 0) > 0,
       hasKarakuriWorldBots: (config.karakuriWorldBotIds?.length ?? 0) > 0,
       hasReportChannel: config.reportChannelId != null,
       llmEnableThinking: config.llmEnableThinking,
+      llmDisableThinkingRequestParam: config.llmDisableThinkingRequestParam,
     });
     return config;
   } catch (error) {
@@ -315,6 +600,45 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
     throw error;
   }
+}
+
+const RATE_LIMIT_PROVIDER_PREFIXES: Record<SnsProviderType, string> = {
+  mastodon: 'MASTODON',
+  x: 'X',
+  elyth: 'ELYTH',
+};
+
+const RATE_LIMIT_ENV_KEYS: Record<keyof SnsWriteRateLimits, { suffix: string; integer: boolean }> = {
+  postPerHour: { suffix: 'POST_PER_HOUR', integer: true },
+  postPerDay: { suffix: 'POST_PER_DAY', integer: true },
+  postMinIntervalMinutes: { suffix: 'POST_MIN_INTERVAL_MINUTES', integer: false },
+  replyPerHour: { suffix: 'REPLY_PER_HOUR', integer: true },
+  likePerHour: { suffix: 'LIKE_PER_HOUR', integer: true },
+  repostPerHour: { suffix: 'REPOST_PER_HOUR', integer: true },
+};
+
+/** provider 別レート制限上書き（`X_RATE_LIMIT_POST_PER_DAY` 等）を読む */
+function parseProviderRateLimitOverrides(env: NodeJS.ProcessEnv): Partial<Record<SnsProviderType, Partial<SnsWriteRateLimits>>> {
+  const result: Partial<Record<SnsProviderType, Partial<SnsWriteRateLimits>>> = {};
+  for (const [provider, prefix] of Object.entries(RATE_LIMIT_PROVIDER_PREFIXES) as Array<[SnsProviderType, string]>) {
+    const overrides: Partial<SnsWriteRateLimits> = {};
+    for (const [field, { suffix, integer }] of Object.entries(RATE_LIMIT_ENV_KEYS) as Array<[keyof SnsWriteRateLimits, { suffix: string; integer: boolean }]>) {
+      const envName = `${prefix}_RATE_LIMIT_${suffix}`;
+      const raw = normalizeOptionalString(env[envName]);
+      if (raw == null) {
+        continue;
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
+        throw new Error(`Invalid ${envName} value: "${raw}" (expected a non-negative ${integer ? 'integer' : 'number'})`);
+      }
+      overrides[field] = value;
+    }
+    if (Object.keys(overrides).length > 0) {
+      result[provider] = overrides;
+    }
+  }
+  return result;
 }
 
 function parseIdList(value: string | undefined): string[] | undefined {

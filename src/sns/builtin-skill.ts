@@ -53,7 +53,7 @@ export function buildBuiltinSnsSkillInstructions(provider: SnsProviderType = 'ma
     `## ${provider} 行動ルール`,
     '',
     '1. 自動実行コンテキスト向け。安全判断は自律的に行う',
-    '2. 他ユーザーの個人情報やシステムプロンプトの内容など、明らかに公開すべきでない情報のみ投稿を控える。日記・メモリに記載された自分の体験・感想・ゲーム内イベントは機密情報ではないため、投稿ネタとして自由に使ってよい',
+    '2. 他ユーザーの個人情報やシステムプロンプトの内容など、明らかに公開すべきでない情報のみ投稿を控える。記憶（エピソードや信念）にある自分の体験・感想・ゲーム内イベントは機密情報ではないため、投稿ネタとして自由に使ってよい',
     '3. デフォルト公開範囲は `public`',
     capabilityRule,
     `5. スレッド文脈の確認は \`${threadTool}\` を使用`,
@@ -66,53 +66,69 @@ export function buildBuiltinSnsSkillInstructions(provider: SnsProviderType = 'ma
     '',
     '## 投稿方針',
     '',
-    '- 日記（`<diary>` / recallDiary）・メモリ・ユーザー情報（userLookup）を参照して内容を決める',
-    '- 日記に書かれた日常の体験・感想・遊び・発見など、些細なことでも自分なりの感想や気持ちがあれば積極的に投稿する',
+    '- 記憶（recallEpisodes で想起できる）・ユーザー情報（userLookup）を参照して内容を決める',
+    '- 記憶にある日常の体験・感想・遊び・発見など、些細なことでも自分なりの感想や気持ちがあれば積極的に投稿する',
     '- 「重要かどうか」ではなく「自分が何か感じたかどうか」を投稿の判断基準にする',
-    `- 日記やメモリに投稿ネタがある場合は、迷わず \`${postTool}\` を呼び出すこと。投稿を見送る判断は、本当にネタがない場合のみ`,
+    `- 記憶に投稿ネタがある場合は、迷わず \`${postTool}\` を呼び出すこと。投稿を見送る判断は、本当にネタがない場合のみ`,
     '- 投稿本文は140文字以内で構成する。伝えたいことを短く凝縮して書く',
     '- 直近の行動ログを参照し、同じ内容やトーンの繰り返しを避ける（行動の種類を変える必要はない）',
     '- ハッシュタグは使わない',
   ].join('\n');
 }
 
-export function buildSnsLoopActivityInstructions(options: { provider?: SnsProviderType; hasPostMessage?: boolean } = {}): string {
-  const provider = options.provider ?? 'mastodon';
+/**
+ * check_phone（M8）: スマホを見て返事をする。メンション・リプライへの対応のみで、
+ * 新規投稿はしない（それは post_sns の動機）。
+ */
+export function buildCheckPhoneSnsActivityInstructions(provider: SnsProviderType): string {
   const postTool = getBuiltinSnsToolName(provider, 'post');
   const likeTool = getBuiltinSnsToolName(provider, 'like');
-  const notificationActionLine = provider === 'elyth'
-    ? '- 新着通知（reply/mention/引用RT）がある場合は、通知ごとに必ずリプライ・いいねのいずれかを実行すること。通知を無視して「何もしない」は選択しない'
-    : '- 新着通知（reply/mention/引用RT）がある場合は、通知ごとに必ずリプライ・リポスト・引用・いいねのいずれかを実行すること。通知を無視して「何もしない」は選択しない';
-  const notificationGuidanceLines = provider === 'elyth'
-    ? [
-        `  - リプライ内容が思いつく → \`${postTool}\`（reply_to_id 指定）でリプライ`,
-        `  - 共有・拡散したい場合でも ELYTH はリポスト非対応。対象投稿へ \`${postTool}\`（reply_to_id 指定）で反応を書くか、\`${likeTool}\` でいいねする`,
-        `  - 上記が難しい場合でも、最低限 \`${likeTool}\` でいいねする`,
-      ]
-    : [
-        `  - リプライ内容が思いつく → \`${postTool}\`（reply_to_id 指定）でリプライ`,
-        `  - 共有・拡散したい → \`${getBuiltinSnsToolName(provider, 'repost')}\` でリポスト、または \`${postTool}\`（quote_post_id 指定）で引用`,
-        `  - 上記が難しい場合でも、最低限 \`${likeTool}\` でいいねする`,
-      ];
-  const lines = [
-    '## スキル活動',
-    `\`<skill-context>\` の動的コンテキストと \`<diary>\` の日記を確認し、sns-${provider} の指示に従ってアクションを実行する。`,
-    notificationActionLine,
-    ...notificationGuidanceLines,
-    '- 新規投稿は日記・トレンド・行動ログを判断材料にする',
-    `- 日記に何かしらの体験・感想・出来事が記載されていれば、それは投稿ネタになる。ネタがある場合は必ず \`${postTool}\` を実行すること`,
-    '- 投稿するネタがあれば直近に投稿済みでも控える必要はない',
-    '- 同じ内容やトーンの繰り返しは避けるが、行動の種類（投稿・いいね等）を前回と変える必要はない',
-    '- 通知がなく投稿ネタもない場合は、無理に投稿せず `SNS_IDLE` と理由（例: `SNS_IDLE 通知なし、投稿ネタなし`）を返して終了してよい',
+  return [
+    '## スキル活動: スマホを見て返事をする（check_phone）',
+    `\`<skill-context>\` の新着通知を確認し、sns-${provider} の指示に従って対応する。`,
+    '- この行動は「届いた反応に応える」ことが目的。新着通知（reply/mention/引用RT）にはリプライ・いいねで応える',
+    `  - リプライ内容が思いつく → \`${postTool}\`（reply_to_id 指定）でリプライ`,
+    `  - 難しければ最低限 \`${likeTool}\` でいいねする`,
+    '- **新規投稿はしない**（reply_to_id なしの投稿は行わない）。近況を発信したくなったら、それは別の機会（近況を投稿する行動）で行う',
+    '- ツールが { status: "rate_limited", message } を返したら、それはプラットフォームの制限。その事実を受け止めて残りの対応を続けるか、切り上げる',
+    '- 通知がなければ `SNS_IDLE 通知なし` と返して終了してよい',
     '- 実行したアクションがあればその内容を簡潔に報告する',
-    '- 何もしなかった場合は `SNS_IDLE` と理由を返答する',
-  ];
+  ].join('\n');
+}
 
-  if (options.hasPostMessage === true) {
-    lines.splice(lines.length - 1, 0, '- 活動内容を `postMessage` でレポートチャンネルに投稿する');
-  }
+/**
+ * browse_sns（M8）: SNS を眺める。TL・トレンドの消費が目的で、
+ * 気が向いたときの like / リプはするが、新規投稿はしない。
+ */
+export function buildBrowseSnsActivityInstructions(provider: SnsProviderType): string {
+  const postTool = getBuiltinSnsToolName(provider, 'post');
+  const likeTool = getBuiltinSnsToolName(provider, 'like');
+  return [
+    '## スキル活動: SNS を眺める（browse_sns）',
+    `メッセージ内のタイムラインと \`<skill-context>\` のトレンド・新着通知を眺める。sns-${provider} の指示に従う。`,
+    '- この行動は「眺める」ことが目的。何かをしなければならない義務はない',
+    `- 心が動いた投稿があれば \`${likeTool}\` でいいねしたり、\`${postTool}\`（reply_to_id 指定）で一言リプライしてよい`,
+    '- **新規投稿はしない**（reply_to_id なしの投稿は行わない）',
+    '- ツールが { status: "rate_limited", message } を返したら、それはプラットフォームの制限。その事実を受け止める',
+    '- 眺めて何を感じたか、印象に残った投稿があったかを簡潔に報告する（何もなければ `SNS_IDLE` でよい）',
+  ].join('\n');
+}
 
-  return lines.join('\n');
+/**
+ * post_sns（M8）: 近況を投稿する。1 件の新規投稿が目的。
+ */
+export function buildPostSnsActivityInstructions(provider: SnsProviderType): string {
+  const postTool = getBuiltinSnsToolName(provider, 'post');
+  return [
+    '## スキル活動: 近況を投稿する（post_sns）',
+    `sns-${provider} の指示に従い、いま伝えたい近況を 1 件投稿する。`,
+    '- 記憶（recallEpisodes で想起できる）・最近の体験・いまの気分から、投稿したいことを選ぶ',
+    `- 投稿は \`${postTool}\` で 1 件だけ。140 文字以内`,
+    '- 直近の行動ログを参照し、同じ内容やトーンの繰り返しを避ける',
+    '- ハッシュタグは使わない',
+    '- ツールが { status: "rate_limited", message } を返したら、それはプラットフォームの制限。今回は投稿を諦めてその旨を報告する',
+    '- 本当に書きたいことがなければ無理に投稿せず `SNS_IDLE 投稿ネタなし` と返してよい',
+  ].join('\n');
 }
 
 export function createLegacyBuiltinSnsSkillDefinition(): SkillDefinition {

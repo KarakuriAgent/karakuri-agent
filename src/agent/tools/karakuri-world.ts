@@ -65,13 +65,19 @@ export const karakuriWorldNotificationResponseSchema = z
   })
   .passthrough();
 
+// 実サーバーのエラーボディは {error, message, details, hint, suggestions, ...} 形式。
+// 以前は .strict() だったため hint / suggestions 付きのボディがパース失敗し、
+// code=undefined に落ちて busy 変換が本番で一度も効かないバグがあった（未知キーは
+// 拒否せず受け流す）
 const errorResponseSchema = z
   .object({
     error: z.string().min(1),
     message: z.string().min(1),
     details: z.unknown().optional(),
+    hint: z.string().optional(),
+    suggestions: z.unknown().optional(),
   })
-  .strict();
+  .passthrough();
 
 export type KarakuriWorldCommandInput = z.infer<typeof karakuriWorldCommandInputSchema>;
 export type KarakuriWorldNotificationResponse = z.infer<typeof karakuriWorldNotificationResponseSchema>;
@@ -82,6 +88,49 @@ export interface CreateKarakuriWorldToolsOptions extends ApiCredentials {
   notificationId: string;
   allowedCommands?: readonly string[];
   fetch?: typeof fetch;
+  /** 通知の応答期限（ms epoch）。期限切れなら API を呼ばず案内を返す（#103） */
+  expiresAt?: number | undefined;
+  /** 現在地（通知の perception 由来）。move の same_node を API を呼ばず検出する（#103） */
+  currentNode?: KarakuriWorldCurrentNode | undefined;
+  /**
+   * コマンド実行の成否フック（失敗ストリーク検出用 — #103）。
+   * - 成功 → failed: false（ストリーク解消）
+   * - same_node の事前検出・API エラー → failed: true（無効だった試み）
+   * - busy / not_logged_in / stale の事前検出 → フックを呼ばない（中立。
+   *   正当な状態や積み残し通知の期限切れでストリークを消しも増やしもしない）
+   */
+  onCommandOutcome?: ((outcome: { command: string; failed: boolean }) => void) | undefined;
+  now?: (() => Date) | undefined;
+}
+
+export interface KarakuriWorldCurrentNode {
+  nodeId?: string | undefined;
+  buildingId?: string | undefined;
+  label?: string | undefined;
+}
+
+/** 通知の perception から現在地を取り出す（無ければ null。構造は変わりうるため安全に辿る） */
+export function extractKarakuriWorldCurrentNode(
+  notificationResponse: KarakuriWorldNotificationResponse,
+): KarakuriWorldCurrentNode | null {
+  const perception = notificationResponse.notification.perception;
+  if (typeof perception !== 'object' || perception == null) {
+    return null;
+  }
+  const currentNode = (perception as { current_node?: unknown }).current_node;
+  if (typeof currentNode !== 'object' || currentNode == null) {
+    return null;
+  }
+  const node = currentNode as { node_id?: unknown; building_id?: unknown; location_label?: unknown; label?: unknown };
+  const nodeId = typeof node.node_id === 'string' ? node.node_id : undefined;
+  const buildingId = typeof node.building_id === 'string' ? node.building_id : undefined;
+  const label = typeof node.location_label === 'string'
+    ? node.location_label
+    : typeof node.label === 'string' ? node.label : undefined;
+  if (nodeId == null && buildingId == null) {
+    return null;
+  }
+  return { nodeId, buildingId, label };
 }
 
 export interface FetchKarakuriWorldNotificationOptions extends ApiCredentials {
@@ -117,8 +166,7 @@ const TRANSIENT_FETCH_ERROR_CODES = new Set([
 ]);
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_RETRIES = 1;
-const BUSY_ERROR_CODES = new Set(['state_conflict', 'not_your_turn']);
-const BUSY_INSTRUCTION = '同じ通知で別 command を連続実行せず、次の通知を待ってください。';
+const BUSY_INSTRUCTION = 'このコマンドは実行されていません。行動が進行中か、世界の状態が変わったか、通知が新しいものに置き換わっています。同じ通知で command を再実行せず、次の通知で選び直してください。';
 
 function normalizeApiBaseUrl(apiBaseUrl: string): string {
   return apiBaseUrl.replace(/\/+$/, '');
@@ -242,6 +290,8 @@ export class KarakuriWorldApiError extends Error {
   readonly code: string | undefined;
   readonly apiMessage: string;
   readonly details: unknown;
+  /** サーバーが返す対処ヒント（例:「受諾または拒否を選んでください」）。あれば LLM へそのまま見せる */
+  readonly hint: string | undefined;
 
   constructor(
     operation: KarakuriWorldOperation,
@@ -250,6 +300,7 @@ export class KarakuriWorldApiError extends Error {
     message: string,
     code?: string,
     details?: unknown,
+    hint?: string,
   ) {
     super(`karakuri-world API returned ${status} for "${operation}" at ${url}: ${message}`);
     this.name = 'KarakuriWorldApiError';
@@ -259,6 +310,7 @@ export class KarakuriWorldApiError extends Error {
     this.apiMessage = message;
     this.code = code;
     this.details = details;
+    this.hint = hint;
   }
 }
 
@@ -352,6 +404,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
           operation,
           status: response.status,
           code: parsedError.data.error,
+          hint: parsedError.data.hint,
         });
         throw new KarakuriWorldApiError(
           operation,
@@ -360,6 +413,7 @@ async function requestJson<TSchema extends JsonResponseSchema>({
           parsedError.data.message,
           parsedError.data.error,
           parsedError.data.details,
+          parsedError.data.hint,
         );
       }
 
@@ -399,13 +453,18 @@ async function requestJson<TSchema extends JsonResponseSchema>({
   throw new KarakuriWorldNetworkError(operation, url, attempts, lastError);
 }
 
-function isBusyError(error: unknown): error is KarakuriWorldApiError {
+/**
+ * command への 409 は「世界側の状態と噛み合わなかった」正常系 — 行動の進行中、
+ * 会話/譲渡の応答待ち、通知の置き換え・失効（サーバー仕様で notification_id は
+ * 最新のもの以外無効になる）など。生の例外として LLM へ見せると「サーバーが
+ * 混んでいる」等と誤解釈して待機戦略を学習するため（実機で発生）、code の
+ * 有無によらず常に informational な結果へ変換する。
+ */
+function isCommandConflictError(error: unknown): error is KarakuriWorldApiError {
   return (
     error instanceof KarakuriWorldApiError
     && error.operation === 'command'
     && error.status === 409
-    && error.code !== undefined
-    && BUSY_ERROR_CODES.has(error.code)
   );
 }
 
@@ -436,12 +495,29 @@ export async function fetchKarakuriWorldNotification({
   });
 }
 
+interface ExecuteCommandGuards {
+  expiresAt?: number | undefined;
+  currentNode?: KarakuriWorldCurrentNode | undefined;
+  onCommandOutcome?: ((outcome: { command: string; failed: boolean }) => void) | undefined;
+  now?: (() => Date) | undefined;
+}
+
 async function executeKarakuriWorldCommand(
   notificationId: string,
   input: Record<string, unknown>,
   context: RequestContext,
   allowedCommands: ReadonlySet<string> | null,
+  guards: ExecuteCommandGuards = {},
 ): Promise<unknown> {
+  const command = typeof input['command'] === 'string' ? input['command'] : 'unknown';
+  const reportOutcome = (failed: boolean): void => {
+    try {
+      guards.onCommandOutcome?.({ command, failed });
+    } catch (hookError) {
+      logger.warn('Command outcome hook failed', { error: hookError });
+    }
+  };
+
   try {
     const parsed = karakuriWorldCommandInputSchema.parse(input);
     if (allowedCommands != null && !allowedCommands.has(parsed.command)) {
@@ -453,7 +529,46 @@ async function executeKarakuriWorldCommand(
       throw new Error(`karakuri-world command is not allowed by this notification: ${parsed.command}`);
     }
 
-    return await requestJson({
+    // 事前検証（#103）: API を呼ばずに無効な試みを案内へ変換する
+    const nowMs = (guards.now?.() ?? new Date()).getTime();
+    // expires_at は ms epoch（実 API で確認済み）。単位が疑わしい小さな値は
+    // 誤判定（全コマンド停止）を避けるため検査しない
+    const expiresAtLooksLikeMs = guards.expiresAt != null && guards.expiresAt > 1_000_000_000_000;
+    if (expiresAtLooksLikeMs && nowMs > guards.expiresAt!) {
+      logger.info('Notification is already expired, returning informational response', {
+        notificationId,
+        expiresAt: guards.expiresAt,
+      });
+      // 積み残し通知の期限切れはエージェントの選択の失敗ではないため中立
+      return {
+        status: 'stale',
+        message: 'この通知は応答期限切れです。この通知への応答は不要です。最新の通知を待って行動してください。',
+      };
+    }
+    if (parsed.command === 'move' && guards.currentNode != null) {
+      const targetNode = parsed.params['target_node_id'];
+      const targetBuilding = parsed.params['target_building_id'];
+      const sameNode = guards.currentNode.nodeId != null && targetNode === guards.currentNode.nodeId;
+      // 建物一致は target_node_id の指定が無いときだけ見る（建物内の別ノードへの
+      // 移動は正当なため誤ブロックしない）
+      const sameBuilding = targetNode == null
+        && guards.currentNode.buildingId != null
+        && targetBuilding === guards.currentNode.buildingId;
+      if (sameNode || sameBuilding) {
+        logger.info('Move to the current location prevented, returning informational response', {
+          notificationId,
+          targetNode,
+          targetBuilding,
+        });
+        reportOutcome(true);
+        return {
+          status: 'same_node',
+          message: `既に${guards.currentNode.label != null ? `「${guards.currentNode.label}」` : 'その場所'}にいます。移動は不要です。get_available_actions で実行可能なアクションを確認するか、現在地と異なる場所を選んでください。`,
+        };
+      }
+    }
+
+    const response = await requestJson({
       ...context,
       operation: 'command',
       method: 'POST',
@@ -465,20 +580,28 @@ async function executeKarakuriWorldCommand(
       },
       responseSchema: z.unknown(),
     });
+    reportOutcome(false);
+    return response;
   } catch (error) {
     if (error instanceof z.ZodError) {
       logger.error('Tool input validation failed', { operation: 'command', issues: error.issues });
+      reportOutcome(true);
       throw error;
     }
 
-    if (isBusyError(error)) {
-      logger.info('Agent is busy, returning informational response', {
+    if (isCommandConflictError(error)) {
+      logger.info('Command conflicted with current world state, returning informational response', {
         status: error.status,
         code: error.code,
+        hint: error.hint,
       });
+      // 進行中・応答待ち・通知置き換えは世界側の正当な状態。中立（ストリークを消しも増やしもしない）。
+      // サーバーの hint（「受諾または拒否を選んでください」等）は次の行動選択の
+      // 最重要情報なのでそのまま渡す
       return {
         status: 'busy',
         message: error.apiMessage,
+        ...(error.hint != null ? { hint: error.hint } : {}),
         instruction: BUSY_INSTRUCTION,
       };
     }
@@ -495,6 +618,7 @@ async function executeKarakuriWorldCommand(
     }
 
     logger.error('Tool execution failed', { operation: 'command', error });
+    reportOutcome(true);
     throw error;
   }
 }
@@ -505,8 +629,13 @@ export function createKarakuriWorldTools({
   notificationId,
   allowedCommands,
   fetch: fetchImpl = (...args) => globalThis.fetch(...args),
+  expiresAt,
+  currentNode,
+  onCommandOutcome,
+  now,
 }: CreateKarakuriWorldToolsOptions): ToolSet {
   const context: RequestContext = { apiBaseUrl, apiKey, fetchImpl };
+  const guards: ExecuteCommandGuards = { expiresAt, currentNode, onCommandOutcome, now };
   const normalizedAllowedCommands = normalizeAllowedCommands(allowedCommands);
   const allowedCommandSet = normalizedAllowedCommands.length > 0 ? new Set(normalizedAllowedCommands) : null;
   const allowedCommandDescription = normalizedAllowedCommands.length > 0
@@ -520,7 +649,7 @@ export function createKarakuriWorldTools({
         'get_notification 済みの保存済み通知に対して、notification.choices[] から選んだ command を最大1回だけ実行する。notification_id はシステム側で固定されるため入力しない。params は JSON object にする。'
         + allowedCommandDescription,
       inputSchema,
-      execute: async (input) => executeKarakuriWorldCommand(notificationId, input, context, allowedCommandSet),
+      execute: async (input) => executeKarakuriWorldCommand(notificationId, input, context, allowedCommandSet, guards),
     }),
   };
 }

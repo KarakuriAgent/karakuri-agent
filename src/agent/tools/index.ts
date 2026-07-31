@@ -1,8 +1,11 @@
 import type { ToolSet } from 'ai';
 
 import type { SnsCredentials } from '../../config.js';
-import type { IMemoryStore } from '../../memory/types.js';
+import type { ExperienceRecorder } from '../../life/recorder.js';
+import type { IProspectStore } from '../../life/prospects.js';
+import type { EpisodeRetrievalService } from '../../life/retrieval.js';
 import type { IMessageSink, ISchedulerStore } from '../../scheduler/types.js';
+import type { SnsRateLimiter } from '../../sns/rate-limiter.js';
 import type { ISnsActivityStore } from '../../sns/types.js';
 import type { SkillContextScope } from '../../skill/context-provider.js';
 import type { ISkillStore, SkillDefinition } from '../../skill/types.js';
@@ -14,7 +17,8 @@ import { buildGatedToolSets } from './gated-tools.js';
 import { createLoadSkillTool } from './load-skill.js';
 import { createManageCronTool } from './manage-cron.js';
 import { createPostMessageTool } from './post-message.js';
-import { createRecallDiaryTool } from './recall-diary.js';
+import { createProspectReminderTool } from './prospect-reminder.js';
+import { createRecallEpisodesTool } from './recall-episodes.js';
 import { createLinkUserTool, createUnlinkUserTool } from './user-alias.js';
 import { createUserLookupTool } from './user-lookup.js';
 import { createWebFetchTool } from './web-fetch.js';
@@ -23,13 +27,14 @@ import { createWebSearchTool } from './web-search.js';
 const logger = createLogger('AgentTools');
 
 export interface CreateAgentToolsOptions {
-  memoryStore: IMemoryStore;
   dataDir?: string | undefined;
   braveApiKey?: string | undefined;
   snsList?: SnsCredentials[] | undefined;
   /** @deprecated Use snsList. */
   sns?: SnsCredentials | undefined;
   snsActivityStores?: Map<SnsCredentials['provider'], ISnsActivityStore> | undefined;
+  /** M8: provider 別の書き込みレート制限 */
+  snsRateLimiters?: Map<SnsCredentials['provider'], SnsRateLimiter> | undefined;
   skillStore?: ISkillStore | undefined;
   skills?: SkillDefinition[] | undefined;
   autoLoadedSkills?: SkillDefinition[] | undefined;
@@ -44,16 +49,24 @@ export interface CreateAgentToolsOptions {
   includeSystemOnly?: boolean | undefined;
   contextScope?: SkillContextScope | undefined;
   kwMode?: boolean | undefined;
-  evaluateUser?: ((snsUserId: string, displayName: string, postText: string) => void) | undefined;
+  experienceRecorder?: ExperienceRecorder | undefined;
+  retrievalService?: EpisodeRetrievalService | undefined;
+  prospectStore?: IProspectStore | undefined;
+  actionLedger?: import('../../life/action-ledger.js').IActionLedgerStore | undefined;
+  beliefStore?: import('../../life/beliefs.js').IBeliefStore | undefined;
+  relationStore?: import('../../life/relations.js').IRelationStore | undefined;
+  timezone?: string | undefined;
+  /** #111: SNS 投稿ツールを「返信のみ」に制限する（check_phone / browse_sns の turn） */
+  snsReplyOnly?: boolean | undefined;
 }
 
 export function createAgentTools({
-  memoryStore,
   dataDir,
   braveApiKey,
   snsList,
   sns,
   snsActivityStores,
+  snsRateLimiters,
   skillStore,
   skills = [],
   autoLoadedSkills = [],
@@ -68,18 +81,28 @@ export function createAgentTools({
   includeSystemOnly,
   contextScope,
   kwMode = false,
-  evaluateUser,
+  experienceRecorder,
+  retrievalService,
+  prospectStore,
+  actionLedger,
+  beliefStore,
+  relationStore,
+  timezone,
+  snsReplyOnly,
 }: CreateAgentToolsOptions): ToolSet {
   const hasAdminAccess = hasAdminToolAccess(userId, adminUserIds);
   const shouldExposePostMessage = (postMessageEnabled ?? (postMessageChannelIds?.length ?? 0) > 0)
     && hasAdminAccess;
   const manageCronEnabled = hasAdminAccess && schedulerStore != null;
-  // alias 系は人間 admin の手動運用専用。system turn (heartbeat / cron / SNS loop / memory maintenance) からは露出しない。
+  // alias 系は人間 admin の手動運用専用。system turn (heartbeat / cron) からは露出しない。
   const shouldExposeUserAlias = isAdminUser(userId, adminUserIds) && !kwMode && userStore != null;
-  const evaluatedUsers = new Set<string>();
 
   const tools: ToolSet = {
-    recallDiary: createRecallDiaryTool({ memoryStore }),
+    ...(retrievalService != null
+      ? {
+          recallEpisodes: createRecallEpisodesTool({ retrievalService, timezone: timezone ?? 'Asia/Tokyo' }),
+        }
+      : {}),
     webFetch: createWebFetchTool(),
     ...(braveApiKey != null
       ? {
@@ -88,7 +111,7 @@ export function createAgentTools({
       : {}),
     ...(userStore != null
       ? {
-          userLookup: createUserLookupTool({ userStore }),
+          userLookup: createUserLookupTool({ userStore, beliefStore, relationStore }),
         }
       : {}),
     ...(shouldExposePostMessage && messageSink != null
@@ -118,6 +141,19 @@ export function createAgentTools({
           unlinkUser: createUnlinkUserTool({ userStore: userStore!, adminUserIds, userId }),
         }
       : {}),
+    // 展望記憶のリマインダー型自己登録（M5）。manageCron と違い admin-gated ではないが、
+    // 「prospect を時刻 T に想起する」形に限定される（prospect-reminder.ts 参照）
+    ...(!kwMode && schedulerStore != null && prospectStore != null
+      ? {
+          scheduleProspectReminder: createProspectReminderTool({
+            schedulerStore,
+            prospectStore,
+            timezone: timezone ?? 'Asia/Tokyo',
+            messageSink,
+            reportChannelId,
+          }),
+        }
+      : {}),
   };
 
   const reportError = messageSink != null && reportChannelId != null
@@ -131,10 +167,12 @@ export function createAgentTools({
     snsList,
     dataDir,
     snsActivityStores,
+    snsRateLimiters,
     userStore,
-    evaluateUser,
     reportError,
-    evaluatedUsers,
+    experienceRecorder,
+    actionLedger,
+    ...(snsReplyOnly === true ? { snsReplyOnly: true } : {}),
   });
   // Auto-loaded skills have their gated tools registered immediately.
   // loadSkill.execute() also mutates this tools object to dynamically register

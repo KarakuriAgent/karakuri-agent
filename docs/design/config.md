@@ -17,9 +17,6 @@
 | `LLM_API_KEY` | ✅ | - | メイン会話 LLM の API キー（`OPENAI_API_KEY` alias あり） |
 | `LLM_BASE_URL` |  | - | メイン会話 LLM の Base URL（`http` / `https` のみ、末尾 `/` は正規化） |
 | `LLM_MODEL` |  | `openai/gpt-4o` | メイン会話 LLM のモデルセレクタ |
-| `POST_RESPONSE_LLM_API_KEY` |  | fallback to `LLM_API_KEY` | ポストレスポンス evaluator / memory maintenance 専用 API キー |
-| `POST_RESPONSE_LLM_BASE_URL` |  | fallback to `LLM_BASE_URL` | ポストレスポンス evaluator / memory maintenance 専用 Base URL |
-| `POST_RESPONSE_LLM_MODEL` |  | fallback to `LLM_MODEL` | ポストレスポンス evaluator / memory maintenance 専用モデルセレクタ |
 | `BRAVE_API_KEY` |  | - | Brave Search API キー（設定時のみ `webSearch` を有効化） |
 | `KARAKURI_WORLD_API_BASE_URL` |  | - | karakuri-world API の Base URL（例: `https://karakuri.example.com/api`。`/api` なしの値は末尾へ `/api` を補完。`KARAKURI_WORLD_API_KEY` と両方あるときのみ、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーへ KW モードを有効化） |
 | `KARAKURI_WORLD_API_KEY` |  | - | karakuri-world API の Bearer token |
@@ -41,44 +38,51 @@
 | `TOKEN_BUDGET` |  | `80000` | 要約トリガーのトークン予算 |
 | `PORT` |  | `3000` | Webhook / healthcheck HTTP サーバーの待受ポート |
 | `HEARTBEAT_INTERVAL_MINUTES` |  | `120` | Heartbeat scheduler の実行間隔（API コスト削減のため長めの既定値） |
-| `MEMORY_MAINTENANCE_INTERVAL_MINUTES` |  | - | メモリメンテナンス専用ループの実行間隔（分）。設定時のみ有効 |
-| `MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` |  | `30` | メモリメンテナンスが diary 本文を読み込む日数。全 diary 日付一覧は常に参照しつつ、より古い本文も見せたい場合に広げる |
-| `SNS_LOOP_MIN_INTERVAL_MINUTES` |  | `60` | SNS 専用ループの最短実行間隔（分） |
-| `SNS_LOOP_MAX_INTERVAL_MINUTES` |  | `180` | SNS 専用ループの最長実行間隔（分）。`MIN` 以上である必要がある |
+| `KW_COMMAND_CHECK_PHONE` |  | - | M8: KW カスタムコマンド名（スマホを見て返事をする）。設定時にチャット未読キュー化が有効になる |
+| `KW_COMMAND_BROWSE_SNS` |  | - | M8: KW カスタムコマンド名（SNS を眺める） |
+| `KW_COMMAND_POST_SNS` |  | - | M8: KW カスタムコマンド名（近況を投稿する） |
+| `SNS_RATE_LIMIT_POST_PER_HOUR` |  | `3` | M8: 投稿の 1 時間上限（共通既定。0 で禁止） |
+| `SNS_RATE_LIMIT_POST_PER_DAY` |  | `20` | M8: 投稿の 24 時間上限 |
+| `SNS_RATE_LIMIT_POST_MIN_INTERVAL_MINUTES` |  | `15` | M8: 投稿の最小間隔（分。ウィンドウ境界バースト防止） |
+| `SNS_RATE_LIMIT_REPLY_PER_HOUR` |  | `10` | M8: リプライの 1 時間上限 |
+| `SNS_RATE_LIMIT_LIKE_PER_HOUR` |  | `30` | M8: いいねの 1 時間上限 |
+| `SNS_RATE_LIMIT_REPOST_PER_HOUR` |  | `10` | M8: リポストの 1 時間上限 |
+| `<PROVIDER>_RATE_LIMIT_*` |  | - | M8: provider 別上書き（`X_RATE_LIMIT_POST_PER_DAY` 等。prefix は `MASTODON` / `X` / `ELYTH`） |
+| `SNS_FETCH_MIN_INTERVAL_NOTIFICATIONS_MINUTES` |  | `10` | M8: 通知フェッチの最小間隔（分。間隔内はキャッシュ返却） |
+| `SNS_FETCH_MIN_INTERVAL_TIMELINE_MINUTES` |  | `30` | M8: タイムラインフェッチの最小間隔（分） |
+| `SNS_FETCH_MIN_INTERVAL_TRENDS_MINUTES` |  | `60` | M8: トレンドフェッチの最小間隔（分） |
 | `ALLOWED_CHANNEL_IDS` |  | - | `postMessage` で送信可能なチャンネル ID 一覧（`,` 区切り） |
-| `REPORT_CHANNEL_ID` |  | - | Heartbeat / Cron / memory maintenance / SNS ループの実行レポートや各種診断通知向けの専用チャンネル ID。`allowedChannelIds` には含まれるが `postMessageChannelIds` には自動追加しない |
+| `REPORT_CHANNEL_ID` |  | - | Heartbeat / Cron / 省察 / 世界内行為（M8）の実行レポートや各種診断通知向けの専用チャンネル ID。`allowedChannelIds` には含まれるが `postMessageChannelIds` には自動追加しない |
 | `ADMIN_USER_IDS` |  | - | admin-only tool を使えるユーザー ID 一覧（`,` 区切り） |
 | `KARAKURI_WORLD_BOT_IDS` |  | - | KW モード専用の bot ユーザー ID 一覧（`,` 区切り。`ADMIN_USER_IDS` とは独立） |
-| `LLM_ENABLE_THINKING` |  | `true` | `false` / `0` / `no` なら OpenAI 互換 LLM 呼び出しで no-thinking fetch + provider options を使う。通常応答・要約・post-response evaluator に反映される。memory maintenance はこの設定に関係なく常に no-thinking |
+| `LLM_ENABLE_THINKING` |  | `true` | `false` / `0` / `no` なら OpenAI 互換 LLM 呼び出しで no-thinking fetch + provider options を使う。通常応答・要約に反映される。appraisal / 省察はこの設定に関係なく常に no-thinking |
+| `LLM_DISABLE_THINKING_REQUEST_PARAM` |  | `false` | `true` / `1` / `yes` なら no-thinking fetch が JSON body に OpenAI 非標準の `enable_thinking: false` を追加する。DashScope/Qwen など必要な互換サーバー向けの opt-in |
 
 ## モデルセレクタ
 
-`LLM_MODEL` / `POST_RESPONSE_LLM_MODEL` は API 面も含めた selector として扱う。
+`LLM_MODEL`（および `LLM_APPRAISAL_MODEL` / `LLM_REFLECTION_MODEL`）は API 面も含めた selector として扱う。
 
 - `openai/<model>`: OpenAI Responses API を使う
 - `openai/chat/<model>`: OpenAI Chat API を使う
 - bare model 名（例: `gpt-4o`）も互換用に受け付け、内部では `openai/gpt-4o` として正規化する
 
-`LLM_BASE_URL` / `POST_RESPONSE_LLM_BASE_URL` は canonical 化して保持する。具体的には:
+`LLM_BASE_URL`（および役割別 `LLM_APPRAISAL_BASE_URL` / `LLM_REFLECTION_BASE_URL`）は canonical 化して保持する。具体的には:
 
 - 空文字は未設定として扱う
 - `http` / `https` 以外は拒否する
 - credentials / query / fragment を含む URL は拒否する
 - 末尾の `/` は削除してから SDK に渡す
 
-## ポストレスポンス evaluator / memory maintenance のフォールバック
+## 役割別モデル（appraisal / reflection）のフォールバック
 
-ポストレスポンス evaluator と memory maintenance runner は、それぞれ `src/agent/core.ts` / `src/index.ts` で以下の独立したフォールバックを行う。
+appraisal / 省察エンジンは `src/index.ts` で以下の独立したフォールバックを行う。
 
-- model selector: `postResponseLlmModelSelector ?? llmModelSelector`
-- API key: `postResponseLlmApiKey ?? llmApiKey`
-- base URL: `postResponseLlmBaseUrl ?? llmBaseUrl`
+- model selector: `appraisalLlmModelSelector ?? llmModelSelector`（reflection も同様）
+- API key: `appraisalLlmApiKey ?? llmApiKey`
+- base URL: `appraisalLlmBaseUrl ?? llmBaseUrl`
 
-つまり:
-
-- `POST_RESPONSE_LLM_MODEL` だけ設定 → 同じ provider/baseURL/API key のまま evaluator / memory maintenance だけ別モデルに切り替え
-- `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` だけ設定 → evaluator / memory maintenance 用 client を別資格情報 / 別 endpoint で生成し、モデルはメイン設定を継続利用
-- 3 つ全て未設定 → evaluator / memory maintenance もメイン会話 LLM 設定をそのまま利用
+いずれも未設定ならメイン会話 LLM 設定をそのまま利用する。
+旧 `POST_RESPONSE_LLM_*` / `MEMORY_MAINTENANCE_*` は旧メモリ系の削除で廃止され、設定されていても起動時警告のみ（DEPRECATED_ENV_KEYS）。
 
 ## 設定オブジェクト
 
@@ -112,15 +116,6 @@ interface Config {
     modelId: string;
     selector: string;
   };
-  postResponseLlmApiKey?: string | undefined;
-  postResponseLlmBaseUrl?: string | undefined;
-  postResponseLlmModel?: string | undefined;
-  postResponseLlmModelSelector?: {
-    provider: 'openai';
-    api: 'responses' | 'chat';
-    modelId: string;
-    selector: string;
-  } | undefined;
   braveApiKey?: string | undefined;
   karakuriWorld?: {
     apiBaseUrl: string;
@@ -136,8 +131,6 @@ interface Config {
   tokenBudget: number;
   port: number;
   heartbeatIntervalMinutes?: number | undefined;
-  memoryMaintenanceIntervalMinutes?: number | undefined;
-  memoryMaintenanceRecentDiaryDays?: number | undefined;
   snsLoopMinIntervalMinutes: number;
   snsLoopMaxIntervalMinutes: number;
   postMessageChannelIds?: string[] | undefined;
@@ -149,14 +142,12 @@ interface Config {
 }
 ```
 
-`llmModel` / `postResponseLlmModel` は常に canonical な selector 文字列を保持する。
+`llmModel` は常に canonical な selector 文字列を保持する。
 `postMessageChannelIds` は `ALLOWED_CHANNEL_IDS` 由来の「送信可能チャンネル」のみを保持し、
 `allowedChannelIds` は `REPORT_CHANNEL_ID` をマージした bot 全体の許可チャンネル一覧を保持する。
 `karakuriWorld` は `KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` が両方そろったときだけ含まれる。`KARAKURI_WORLD_API_BASE_URL` は最新の karakuri-world と同じ `/api` 付きの REST API base URL に正規化し、未指定なら末尾へ `/api` を補完する。
-`memoryMaintenanceIntervalMinutes` は `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を空文字列なら `undefined` に正規化したうえで保持する。
-`memoryMaintenanceRecentDiaryDays` は `MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` を空文字列なら `undefined` に正規化したうえで保持し、未設定時は runner 側の既定値 30 日を使う。
 `snsList` は provider ごとの必須設定がそろった SNS credentials をすべて保持する。Mastodon は `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`（その他の X OAuth 情報は任意）、ELYTH は `ELYTH_API_KEY` + `ELYTH_API_BASE` が必要。いずれか片方だけの partial provider config は fail-fast で拒否する。旧 `sns` は legacy test fixture 用の deprecated property で、`loadConfig()` は設定しない。旧 `SNS_PROVIDER` / `SNS_*` credentials は読み込まれず、旧 `DATA_DIR/sns-activity.db` の扱いだけ `SNS_LEGACY_DB_MIGRATE_TO` に保持する。
-`llmEnableThinking` は `LLM_ENABLE_THINKING` を boolean に正規化した値で、`false` のときは通常応答・要約・post-response evaluator が no-thinking 設定を使う。memory maintenance は別途常時 no-thinking で実行される。
+`llmEnableThinking` は `LLM_ENABLE_THINKING` を boolean に正規化した値で、`false` のときは通常応答・要約が no-thinking 設定を使う。appraisal / 省察は別途常時 no-thinking で実行される。`llmDisableThinkingRequestParam` は `LLM_DISABLE_THINKING_REQUEST_PARAM` を boolean に正規化した値で、`true` のときだけ OpenAI 非標準の `enable_thinking: false` を送る。
 
 ## `loadConfig()` の動作
 
@@ -166,14 +157,14 @@ function loadConfig(): Config {
   // 必須項目が未設定の場合は起動時に Error をスロー
   // 任意項目はデフォルト値を使用
   // LLM selector を parse して canonical 形式へ正規化する
-  // post-response evaluator 用 selector / endpoint も同様に解決する
+  // appraisal / reflection 用 selector / endpoint も同様に解決する
   // KARAKURI_WORLD_* は 2 変数の部分設定を fail-fast で拒否する
-  // SNS_LOOP_MIN_INTERVAL_MINUTES <= SNS_LOOP_MAX_INTERVAL_MINUTES を検証する
-  // MEMORY_MAINTENANCE_INTERVAL_MINUTES は空文字列を undefined に正規化して optional number として扱う
-  // MEMORY_MAINTENANCE_RECENT_DIARY_DAYS は空文字列を undefined に正規化して optional number として扱う
+  // KW_COMMAND_* は karakuri-world 設定なし・コマンド名重複を fail-fast で拒否する
+  // SNS_RATE_LIMIT_* / <PROVIDER>_RATE_LIMIT_* / SNS_FETCH_MIN_INTERVAL_* は非負数として検証する
   // MASTODON_* / X_* / ELYTH_* は provider ごとの部分設定を検出して検証し、完全な provider を snsList に追加する
   // SNS_LEGACY_DB_MIGRATE_TO は mastodon/x/elyth/skip のみ受け付ける
-  // LLM_ENABLE_THINKING は true/false/1/0/yes/no を受け付け、通常応答・要約・post-response evaluator に反映する
+  // LLM_ENABLE_THINKING は true/false/1/0/yes/no を受け付け、通常応答・要約に反映する
+  // 廃止 env（MEMORY_MAINTENANCE_* / POST_RESPONSE_* / SNS_PROVIDER / SNS_LOOP_*）は設定されていても警告のみ
 }
 ```
 

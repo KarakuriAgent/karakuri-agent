@@ -4,18 +4,16 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 
 ## 特徴
 
-- ファイルベースのコアメモリ・セッション管理（write-through キャッシュ付き）
-- SQLite による日記永続化と直近範囲検索、LLM による定期メモリ整理
-- SQLite によるユーザー情報・プロフィール永続化と応答後の自動評価更新
+- life.db（experience_log / episodes / beliefs / narratives / relations）による生きたエージェントの記憶（appraisal・省察・想起）
+- SQLite によるユーザー ID・表示名・alias 台帳（人物知識は beliefs / relations 側に蓄積）
 - `data/AGENT.md` / `data/RULES.md` / `data/skills/*/SKILL.md` / `data/system-skills/*/SKILL.md` による Markdown-first の prompt / skill 拡張
-- trusted prompt context / skills は `fs.watch()` で eager reload、memory は write-through + watcher で外部変更に追随
+- trusted prompt context / skills は `fs.watch()` で eager reload
 - `webFetch` / `webSearch` による Web 情報取得（Readability + Brave Search API）
 - `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザー向けの karakuri-world 専用 KW モード（Discord の `notification_id` から自動で `get_notification` し、取得した `notification.choices[]` から `karakuri_world_command` を1回だけ実行。`comment` のキャラ口調の判断コメントを返信に使用）
-- provider namespaced な `sns_<provider>_<action>` ツールによる Mastodon / X / ELYTH 向け SNS 投稿・取得・通知確認・メディアアップロード（skill-gated。例: `sns_mastodon_post`, `sns_x_like`, `sns_elyth_get_thread`）。SNS 専用ループが provider ごとにビルトイン SNS スキル（`sns-mastodon` / `sns-x` / `sns-elyth`）を自動ロードし、投稿や通知対応を行う。X / ELYTH は `public` 投稿のみ対応、ELYTH は repost / quote / メディアアップロード非対応）
+- provider namespaced な `sns_<provider>_<action>` ツールによる Mastodon / X / ELYTH 向け SNS 投稿・取得・通知確認・メディアアップロード（skill-gated。例: `sns_mastodon_post`, `sns_x_like`, `sns_elyth_get_thread`）。SNS 活動は KW カスタムコマンド（M8: check_phone / browse_sns / post_sns）の世界内行為として実行され、provider ごとにビルトイン SNS スキル（`sns-mastodon` / `sns-x` / `sns-elyth`）を自動ロードして投稿や通知対応を行う。X / ELYTH は `public` 投稿のみ対応、ELYTH は repost / quote / メディアアップロード非対応）
 - `data/HEARTBEAT.md` と `data/cron/*/CRON.md` による Heartbeat / Cron 実行
-- `MEMORY_MAINTENANCE_INTERVAL_MINUTES` によるコアメモリ・日記の自動整理
 - `postMessage` / `manageCron` ツールによる管理者限定のプロアクティブ投稿と Cron 管理
-- `REPORT_CHANNEL_ID` への Heartbeat / Cron / memory maintenance / SNS ループの実行結果、Cron 登録変更、チャット処理エラー詳細、SNS context のカーソル保存まわり警告の通知
+- `REPORT_CHANNEL_ID` への Heartbeat / Cron / 省察の実行結果、Cron 登録変更、チャット処理エラー詳細、SNS context のカーソル保存まわり警告の通知
 - Discord メッセージに処理状態を表すリアクション絵文字を表示（完了は 2 秒後に除去、エラーは保持）
 - 各層をインターフェースで抽象化し、実装の差し替えが容易
 - v1 はテキストメッセージのみ対応
@@ -23,23 +21,31 @@ OpenClaw 風の AI エージェント。Vercel AI SDK + Chat SDK + OpenAI 互換
 ## セットアップ
 
 1. `cp .env.example .env`
-2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーは karakuri-world 専用 KW モードで動作する。Base URL は最新の karakuri-world と同じ `https://.../api` 形式を正とし、`/api` なしの値は起動時に補完される。Discord 通知本文の `notification_id` から保存済み通知を自動取得し、LLM には汎用 `karakuri_world_command` だけを公開する。`comment` フィールドのキャラ口調の判断コメントが Discord 返信として使われる。`get_notification` が失敗した通知（ログアウト通知など）は LLM に渡さずログだけ残してスキップする。SNS は provider ごとの環境変数で同時有効化される。Mastodon は `MASTODON_INSTANCE_URL` / `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`（必要なら `X_CLIENT_ID` / `X_CLIENT_SECRET` / `X_REFRESH_TOKEN` または `X_API_KEY` / `X_API_SECRET` / `X_ACCESS_TOKEN_SECRET`）、ELYTH は `ELYTH_API_KEY` / `ELYTH_API_BASE`（例: `https://elythworld.com`）を両方設定する。system ユーザー向けには provider 別のビルトイン SNS スキル（`sns-mastodon` / `sns-x` / `sns-elyth`）が追加され、cron では `loadSkill("sns-mastodon")` のように provider 名付き skill を使う。SNS 専用ループでは provider ごとに動的コンテキストと `sns_<provider>_<action>` ツールが自動ロードされる。`SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` でループ間隔を指定できる（デフォルト 60〜180 分）。`data/system-skills/sns-*/SKILL.md` は不要で、同名の system skill が存在しても system ユーザー文脈ではビルトイン定義が優先される。対話ユーザーにも公開したい場合は、運用側で `data/skills/*/SKILL.md` に shared skill を追加する。必要なら `POST_RESPONSE_LLM_MODEL` / `POST_RESPONSE_LLM_API_KEY` / `POST_RESPONSE_LLM_BASE_URL` で応答後評価専用モデルを分離できる）
+2. `.env` に Discord / LLM の設定を入力（`LLM_BASE_URL` は OpenAI 互換 API を使うときのみ設定。`http` / `https` のみ受け付け、末尾の `/` は正規化される。`BRAVE_API_KEY` を設定すると `webSearch` も有効化。未設定でも `webFetch` は利用可能。`KARAKURI_WORLD_API_BASE_URL` と `KARAKURI_WORLD_API_KEY` を両方設定すると、`KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーは karakuri-world 専用 KW モードで動作する。Base URL は最新の karakuri-world と同じ `https://.../api` 形式を正とし、`/api` なしの値は起動時に補完される。Discord 通知本文の `notification_id` から保存済み通知を自動取得し、LLM には汎用 `karakuri_world_command` だけを公開する。`comment` フィールドのキャラ口調の判断コメントが Discord 返信として使われる。`get_notification` が失敗した通知（ログアウト通知など）は LLM に渡さずログだけ残してスキップする。SNS は provider ごとの環境変数で同時有効化される。Mastodon は `MASTODON_INSTANCE_URL` / `MASTODON_ACCESS_TOKEN`、X は `X_ACCESS_TOKEN`（必要なら `X_CLIENT_ID` / `X_CLIENT_SECRET` / `X_REFRESH_TOKEN` または `X_API_KEY` / `X_API_SECRET` / `X_ACCESS_TOKEN_SECRET`）、ELYTH は `ELYTH_API_KEY` / `ELYTH_API_BASE`（例: `https://elythworld.com`）を両方設定する。system ユーザー向けには provider 別のビルトイン SNS スキル（`sns-mastodon` / `sns-x` / `sns-elyth`）が追加され、cron では `loadSkill("sns-mastodon")` のように provider 名付き skill を使う。SNS の自動実行は KW カスタムコマンド（`KW_COMMAND_CHECK_PHONE` / `KW_COMMAND_BROWSE_SNS` / `KW_COMMAND_POST_SNS` で command 名をマッピング）の世界内行為として行われ、provider ごとに動的コンテキストと `sns_<provider>_<action>` ツールが自動ロードされる。書き込み頻度は `SNS_RATE_LIMIT_*`（+ provider 別 `X_RATE_LIMIT_*` 等）の決定論レート制限で管理する。`data/system-skills/sns-*/SKILL.md` は不要で、同名の system skill が存在しても system ユーザー文脈ではビルトイン定義が優先される。対話ユーザーにも公開したい場合は、運用側で `data/skills/*/SKILL.md` に shared skill を追加する。役割別モデルは `LLM_APPRAISAL_*` / `LLM_REFLECTION_*` で分離できる）
    - 旧 `SNS_PROVIDER` / `SNS_*` credentials は読み込まれない。既存の Mastodon 運用は `MASTODON_INSTANCE_URL` + `MASTODON_ACCESS_TOKEN` へ移行する。旧 `data/sns-activity.db` がある場合は初回起動前に `SNS_LEGACY_DB_MIGRATE_TO=mastodon|x|elyth|skip` を一度だけ指定する
    - X で `X_REFRESH_TOKEN` を使う場合、OAuth 2.0 の refresh-token rotation 後の状態は `DATA_DIR/sns-token-state.json` に保存される。再起動後も継続利用するには `DATA_DIR` を永続化する
    - `LLM_MODEL` は `openai/gpt-4o` のような OpenAI Responses API セレクタ、または `openai/chat/gpt-4o` のような OpenAI Chat API セレクタで指定する
    - 旧形式の bare model 名（例: `gpt-4o`）も互換用に受け付けるが、内部では `openai/gpt-4o` として扱う
    - `LLM_API_KEY` 未設定時のエラーでは legacy alias の `OPENAI_API_KEY` も案内する
    - Heartbeat / Cron を使う場合は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` を設定し、必要に応じて `REPORT_CHANNEL_ID` / `HEARTBEAT_INTERVAL_MINUTES` も指定（デフォルトは 120 分）
-   - `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を設定すると、post-response 用 LLM 設定（未設定ならメイン LLM）を使う専用メモリメンテナンスループが有効化され、`runExclusiveSystemTurn` + shared persistence mutex 下で core memory / diary を read → LLM → overwrite / rewrite / delete まで atomic に実行する。post-response evaluator / SNS 観測ユーザー評価は core memory 読み取りと LLM 判定を lock 外で行い、append/write の apply だけ同じ mutex に入るため、maintenance は background evaluator の LLM 待ちで system turn を止めない。maintenance は全 diary 日付を常に参照しつつ、`MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` で既定 30 日分の diary 本文読み込み範囲だけを広げられる
-   - `LLM_ENABLE_THINKING=false` にすると、通常応答・要約・post-response evaluator が no-thinking 設定を使う。memory maintenance は issue #58 の設計どおり、この設定に関係なく常に no-thinking で実行される
+   - `LLM_ENABLE_THINKING=false` にすると、通常応答・要約が no-thinking 設定を使う。appraisal / 省察は設計上常に no-thinking で実行される。OpenAI 互換サーバー固有の `enable_thinking=false` を送る必要がある場合だけ `LLM_DISABLE_THINKING_REQUEST_PARAM=true` を設定する
 3. `cp -r data.example data`
 4. `npm install`
 5. `npm run dev`
 
 `data.example/` にはサンプルの `AGENT.md`・`RULES.md`・スキル定義に加えて、`HEARTBEAT.md` と `cron/daily-summary/CRON.md` も含まれている。
 `data/` はユーザーごとにカスタマイズするため `.gitignore` で除外されている。
-SNS 専用ループ対応へ更新する既存環境では、ローカルの `data/HEARTBEAT.md` も手動で見直す。以前の SNS 活動手順や legacy `loadSkill("sns")` 前提の記述が残っている場合は削除し、heartbeat には本来の監視・報告だけを残す。
+既存環境では、ローカルの `data/HEARTBEAT.md` も手動で見直す。以前の SNS 活動手順や legacy `loadSkill("sns")` 前提の記述が残っている場合は削除し、heartbeat には本来の監視・報告だけを残す（SNS 活動は M8 の世界内行為として実行される）。
 同様に KW モード移行後は、ローカルの `data/skills/karakuri-world/SKILL.md` と `data/system-skills/karakuri-world/SKILL.md` を削除する。これらの legacy ファイルは通常モードでは無視されるが、今後の運用混乱を避けるためにも手動で消しておく。
+
+### 既存 `data/` ディレクトリの移行チェックリスト
+
+旧バージョンから `data/` を引き継ぐ場合、新バージョンで追加されたファイルは自動生成されない（欠落は起動ログと初回 report 通知で知らせる）。`diff -rq data.example/ data/` で差分を確認し、以下を検討する:
+
+- `data/traits.json` — 気質（resilience / socialBaseline / curiosity）。無ければ全係数 1 のデフォルトで稼働する。人格定義（`data/AGENT.md`）と整合させる
+- `data/seed-memories.json` — 立ち上げ時の seed 記憶（beliefs / narratives）。無ければ自己認識の白紙から人生が始まる。後から置いても、まだ未取り込みなら次回起動時に一度だけ取り込まれる
+- `data/HEARTBEAT.md` — 無ければ heartbeat 自体が無効（`ALLOWED_CHANNEL_IDS` 等の設定だけでは動かない）
+- `.env` の廃止変数 — `SNS_PROVIDER` / `SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` は効果がない（起動時に警告が出る）。削除する
 
 Discord Developer Portal では `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` を取得し、
 Interactions Endpoint を `POST /webhooks/discord` に向ける。通常メッセージ受信には
@@ -101,13 +107,13 @@ npm run docker:dev
 ## 実装メモ
 
 - `data/AGENT.md` はエージェント人格、`data/RULES.md` は trusted な行動ルール、`data/skills/*/SKILL.md` は全ユーザー向けスキル、`data/system-skills/*/SKILL.md` は `userId === 'system'`（Cron / Heartbeat）でのみ見える system 専用スキル定義
-- `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、Heartbeat は単発の ephemeral session で走る。SNS 活動は heartbeat から分離された専用ループで実行される。`data/cron/*/CRON.md` で Cron ジョブも定義できる
-- `MEMORY_MAINTENANCE_INTERVAL_MINUTES` を設定すると、専用のメモリメンテナンスループが `runExclusiveSystemTurn` + shared persistence mutex 内で core memory / diary を read → LLM → overwrite / rewrite / delete まで atomic に実行し、`REPORT_CHANNEL_ID` には成功時 summary と失敗時メタ情報のみを投稿する。post-response evaluator / SNS 観測ユーザー評価は snapshot read + LLM を lock 外で行い、apply だけ同じ mutex に入るため、heartbeat / cron / SNS loop の system turn が evaluator の LLM 待ちで詰まらない。全 diary 日付は常に inspection 対象で、`MEMORY_MAINTENANCE_RECENT_DIARY_DAYS` は本文を読む範囲だけを広げる
-- 既存環境の `data/HEARTBEAT.md` は `.gitignore` されて自動更新されないため、旧来の SNS 指示や legacy `loadSkill("sns")` が残っていないか確認する。SNS 活動の正本は専用ループ側のコード内指示
+- `data/HEARTBEAT.md` があると定期 Heartbeat を実行し、Heartbeat は単発の ephemeral session で走る。SNS 活動は KW カスタムコマンド（M8）の世界内行為として実行される。`data/cron/*/CRON.md` で Cron ジョブも定義できる
+- 記憶は life.db（experience_log / episodes / beliefs / narratives / relations）に蓄積され、appraisal（M2）→ エピソード記銘・想起（M3）→ 省察（M4: 日次で日記・信念更新、週次・月次で自伝的階層）が「世界内の行為」として動く。旧コアメモリ / diary.db / メモリメンテナンスは削除済み（`MEMORY_MAINTENANCE_*` / `POST_RESPONSE_*` env は設定しても起動時警告のみ）
+- 既存環境の `data/HEARTBEAT.md` は `.gitignore` されて自動更新されないため、旧来の SNS 指示や legacy `loadSkill("sns")` が残っていないか確認する。SNS 活動の正本は世界内行為（PhoneService）側のコード内指示
 - 1 つ以上のスキルが存在するときだけ `loadSkill` ツールが公開され、システムプロンプトには利用可能なスキル一覧だけを注入する
 - 通常ユーザーには `data/skills/*/SKILL.md` のみ公開され、`data/system-skills/*/SKILL.md` は `userId === 'system'` のときだけ一覧表示・`loadSkill` 対象になる
 - `allowed-tools` を持つスキルは `loadSkill` 後に対応ツールを動的登録する。`karakuri-world` は `allowed-tools` の有無に関係なく通常の skill discovery / `loadSkill` から常に除外され、`karakuri_world_command` は `KARAKURI_WORLD_*` 設定済みかつ `KARAKURI_WORLD_BOT_IDS` に一致する Discord ユーザーの KW モードでのみ直接公開し、事前に自動取得した `notification.choices[]` 以外の command は実行させない
-- `MASTODON_*` / `X_*` / `ELYTH_*` のうち必要項目がそろった provider ごとに、system ユーザー向けビルトイン SNS skill（`sns-mastodon` / `sns-x` / `sns-elyth`）が追加される。cron では `loadSkill("sns-mastodon")` などで provider namespaced skill をロードし、`sns_mastodon_post` / `sns_x_like` / `sns_elyth_get_thread` のような `sns_<provider>_<action>` ツール群を遅延公開する。SNS 専用ループだけが `autoLoadSnsSkill` と動的コンテキストを使って provider ごとに自動実行する。動的コンテキストには新着通知・トレンド・直近行動ログが含まれ、重複いいね/リポスト/返信/引用をツール層で防ぐ。ループ間隔は `SNS_LOOP_MIN_INTERVAL_MINUTES` / `SNS_LOOP_MAX_INTERVAL_MINUTES` で制御する。SNS ループ自体の成功/失敗は `REPORT_CHANNEL_ID` に通知され、追加の活動レポート本文を `postMessage` で同じチャンネルへ送らせたい場合だけ `REPORT_CHANNEL_ID` を `postMessage` の送信許可チャンネルにも含める。X / ELYTH は `*_post` の公開範囲が `public` のみ。ELYTH は repost / quote / メディアアップロード非対応のため、`sns_elyth_repost` / `sns_elyth_upload_media` ツールは公開されず、引用も Zod スキーマで拒否される。対話ユーザーに公開する場合は運用側で shared skill を定義する
+- `MASTODON_*` / `X_*` / `ELYTH_*` のうち必要項目がそろった provider ごとに、system ユーザー向けビルトイン SNS skill（`sns-mastodon` / `sns-x` / `sns-elyth`）が追加される。cron では `loadSkill("sns-mastodon")` などで provider namespaced skill をロードし、`sns_mastodon_post` / `sns_x_like` / `sns_elyth_get_thread` のような `sns_<provider>_<action>` ツール群を遅延公開する。世界内行為（M8）の SNS 処理だけが `autoLoadSnsSkill` と動的コンテキストを使って provider ごとに自動実行する。動的コンテキストには新着通知・トレンド・直近行動ログが含まれ、重複いいね/リポスト/返信/引用と書き込みレート制限（`SNS_RATE_LIMIT_*`）をツール層で防ぐ。実行の成功/失敗は `REPORT_CHANNEL_ID` に通知され、追加の活動レポート本文を `postMessage` で同じチャンネルへ送らせたい場合だけ `REPORT_CHANNEL_ID` を `postMessage` の送信許可チャンネルにも含める。X / ELYTH は `*_post` の公開範囲が `public` のみ。ELYTH は repost / quote / メディアアップロード非対応のため、`sns_elyth_repost` / `sns_elyth_upload_media` ツールは公開されず、引用も Zod スキーマで拒否される。対話ユーザーに公開する場合は運用側で shared skill を定義する
 - `webFetch` は常に有効。URL を取得し Readability + Turndown で Markdown 化して返す
 - `webFetch` は各 redirect hop を再検証し、`http` / `https` 以外のスキームや private / loopback / link-local 宛てへの遷移を拒否して SSRF を抑止する。15 秒のタイムアウトは DNS 解決も含めて適用する
 - `sns_mastodon_upload_media` / `sns_x_upload_media` も `webFetch` と同じ URL 検証を使い、`http` / `https` 以外のスキームや private / loopback / link-local 宛て、そこへ向かう redirect を拒否する。こちらも DNS 解決を含めてタイムアウトを適用する
@@ -115,20 +121,16 @@ npm run docker:dev
 - `webSearch` は `BRAVE_API_KEY` 設定時のみ有効。Brave Search API で Web 検索を行う
 - `postMessage` / `manageCron` は `ALLOWED_CHANNEL_IDS` と `ADMIN_USER_IDS` が設定された管理者コンテキストでのみ公開される
 - Heartbeat は `ALLOWED_CHANNEL_IDS` 設定時のみ有効化され、`REPORT_CHANNEL_ID` は空欄のままでも省略設定として扱われる
-- `REPORT_CHANNEL_ID` を設定すると Heartbeat / Cron / memory maintenance / SNS ループの実行成否、`manageCron` による登録/解除、チャット処理エラー詳細、SNS context のカーソル予約/保存失敗警告を自動投稿する（エージェント応答本文は自動投稿しない）
+- `REPORT_CHANNEL_ID` を設定すると Heartbeat / Cron / 省察の実行成否、`manageCron` による登録/解除、チャット処理エラー詳細、SNS context のカーソル予約/保存失敗警告を自動投稿する（エージェント応答本文は自動投稿しない）
 - Chat SDK の state は `DATA_DIR/state/chat-state.json` に保存するカスタム JSON アダプターを使用
-- コアメモリ / Session は `data/` 配下にファイル保存し、日記は `DATA_DIR/diary.db` に保存する
-- メモリメンテナンスは evaluator ではなく専用パイプラインで行い、`coreMemoryAction` / `diaryOps[]` の structured output をストア層プリミティブへ適用する
-- メモリメンテナンスは共有 persistence mutex を read → LLM → overwrite / replace / delete 全体で保持し、post-response evaluator / SNS 観測ユーザー評価は core memory snapshot read と LLM 判定を lock 外、append/write の apply だけ同じ mutex に入る。これにより background append と maintenance の競合を防ぎつつ、maintenance が evaluator の LLM 待ちで system turn を保持したまま詰まることを避ける。agent 側では evaluator を user ごとに直列化するため、同一 user の後続評価は直前 apply 済みの core memory を見る
-- 初回起動時は旧 `DATA_DIR/memory/diary/*.md` を検出すると `diary.db` へ一度だけ自動インポートする
-- ユーザー情報は `DATA_DIR/users.db` に保存され、`userLookup` ツールと `<user-profile>` コンテキストに利用される
+- Session は `data/` 配下にファイル保存し、記憶は `DATA_DIR/life.db` に保存する
+- ユーザー ID・表示名・alias は `DATA_DIR/users.db` の台帳に保存され、`userLookup` ツールと `<user-profile>` コンテキストは beliefs(person_fact) / relations から人物知識を構築する
 - 元メッセージへのリアクションで `queued` / `thinking` / tool 実行中 / `done` / `error` を表示し、`done` は 2 秒後に自動除去する
 - 添付ファイルは未対応。添付付きメッセージはテキスト部分のみ処理し、注意メッセージを返す
 
 ## ドキュメント
 
 - [高レベル設計](docs/design/README.md)
-- [Memory 層 詳細設計](docs/design/memory.md)
 - [Session 層 詳細設計](docs/design/session.md)
 - [Agent 層 詳細設計](docs/design/agent.md)
 - [Skill 層 詳細設計](docs/design/skill.md)
