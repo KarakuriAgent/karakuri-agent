@@ -9,11 +9,13 @@ import {
   applyAppraisalGuardrails,
   applyInterpretationConfig,
   AppraisalService,
+  appraisalEventText,
   appraiseEvent,
   deltaLevelToNumber,
   energyDeltaLevelToNumber,
   hungerDeltaLevelToNumber,
   isDeclarativeText,
+  isIdleAppraisalEvent,
   isTransientNetworkError,
   resolveSleepTransition,
   salvageAppraisalOutput,
@@ -254,10 +256,61 @@ describe('applyAppraisalGuardrails', () => {
     expect(guarded.rejections).toEqual([]);
   });
 
+  it('rejects hunger progression on idle events (time-based hunger is modeled elsewhere)', () => {
+    // 実機で idle_reminder / wait_completed への上乗せが自然増の 1〜3 倍/日積まれ、
+    // hunger が 1.0 に張り付いて食事しても空腹が抜けなかった
+    const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'up' }), undefined, {
+      eventKind: 'world_event',
+      eventText: '10分間待機しました。',
+      idleEvent: true,
+    });
+    expect(guarded.deltas.hunger).toBe(0);
+    expect(guarded.rejections.some((rejection) => rejection.includes('idle event'))).toBe(true);
+  });
+
+  it('keeps hunger recovery on idle events when eating context is present', () => {
+    // idle 棄却は進行方向のみ — 回復は飲食文脈ゲートだけが判断する
+    const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }), undefined, {
+      eventKind: 'world_event',
+      eventText: '待機中にパンを食べた。',
+      idleEvent: true,
+    });
+    expect(guarded.deltas.hunger).toBeLessThan(0);
+  });
+
   it('skips the eating-context gate when eventText is not provided (replay compatibility)', () => {
     const guarded = applyAppraisalGuardrails(makeOutput({ hunger_delta: 'down' }));
     expect(guarded.deltas.hunger).toBeLessThan(0);
     expect(guarded.rejections).toEqual([]);
+  });
+
+  it('appraisalEventText uses only the KW notification summary, not the choices menu', () => {
+    // choices の「パンを買う」等のメニュー文言が飲食文脈ゲートを素通りさせていた
+    const text = appraisalEventText({
+      ok: true,
+      notification: {
+        kind: 'wait_completed',
+        summary: '10分間待機しました。',
+        choices: [{ command: 'action', label: 'パンを買う (action_id: buy-bakery-bread)' }],
+      },
+    });
+    expect(text).toBe('10分間待機しました。');
+  });
+
+  it('appraisalEventText falls back to the full payload for non-KW shapes', () => {
+    const text = appraisalEventText({ userName: 'A', text: 'パンを食べたよ' });
+    expect(text).toContain('パンを食べたよ');
+  });
+
+  it('isIdleAppraisalEvent treats wait_completed as idle', () => {
+    const idle = isIdleAppraisalEvent(makeEvent({
+      payload: { notification: { kind: 'wait_completed', summary: '10分間待機しました。' } },
+    }));
+    expect(idle).toBe(true);
+    const active = isIdleAppraisalEvent(makeEvent({
+      payload: { notification: { kind: 'item_use_completed', summary: '「パン」を食べました。' } },
+    }));
+    expect(active).toBe(false);
   });
 
   it('filters non-declarative relation and prospect candidates', () => {

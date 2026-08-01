@@ -16,7 +16,13 @@
 //     消耗はルール減衰 0.029/h + appraisal 消耗 0.066/h（グロス）で、満充電から
 //     4〜10 時間で枯渇し 1 日 2〜4 回の分割睡眠になっていた。ルール減衰 0.03/h +
 //     消耗半減で「普通の日は満タンから 14〜16 時間で眠くなる」収支に合わせる
-export const LIFE_TUNING_VERSION = 'tuning-v4';
+// v5: 空腹収支の再々調整 — 実機 tibi-kanon で appraisal が idle_reminder /
+//     wait_completed に hunger_up を上乗せ（自然増の 1〜3 倍/日）して 1.0 に
+//     張り付いていたため、無行動イベントの空腹進行を棄却するガードレールを追加
+//     （appraisal-v5）。増加が自然増のみになる前提で 0.03 → 0.05 へ引き上げ、
+//     「1 日 3 食 + 間食」（-0.3×3 + -0.15 ≒ 覚醒 16h + 睡眠 8h×0.4 の自然増）で
+//     収支が合う経済にする
+export const LIFE_TUNING_VERSION = 'tuning-v5';
 
 export interface LifeTuning {
   valenceHalfLifeHours: number;
@@ -39,11 +45,13 @@ export const LIFE_TUNING: LifeTuning = {
   /** 覚醒中の元気度の自然減衰（1 時間あたり） */
   energyDecayPerHour: 0.03,
   /**
-   * 空腹の自然進行（1 時間あたり）。0 → 満腹限界まで約 33 時間。
-   * 食事の回復（最大 maxHungerRecoveryPerEvent）と合わせて「1 日 2 食で
-   * 収支が合う」経済になるよう調整している
+   * 空腹の自然進行（1 時間あたり）。覚醒 16h + 睡眠 8h（×sleepingHungerFactor）で
+   * 1 日約 0.96 進み、食事 down(-0.3)×3 + 間食 small_down(-0.15) の
+   * 「1 日 3 食 + 間食」で収支が合う。食後 3〜4 時間で「少しお腹が空いてきた」
+   * （0.55 閾値）へ戻るリズム。無行動イベントへの appraisal 上乗せは
+   * ガードレールで棄却される前提の値（棄却なしだと二重計上で慢性的空腹になる）
    */
-  hungerIncreasePerHour: 0.03,
+  hungerIncreasePerHour: 0.05,
   /** 睡眠中の空腹進行の倍率 */
   sleepingHungerFactor: 0.4,
   /** 社交欲求の自然増加（1 時間あたり） */
@@ -86,7 +94,12 @@ export const LIFE_TUNING: LifeTuning = {
 // v4: belief_conflict（訂正・矛盾の検出）を追加し、true なら salience を
 //     medium へ床上げ（#112 — 訂正が low で埋もれ、訂正前の省察で確定した
 //     誤った belief が丸一日生き残った）
-export const APPRAISAL_PROMPT_VERSION = 'appraisal-v4';
+// v5: 空腹判定の 3 点修正 — ①無行動イベント（idle_reminder / wait_completed /
+//     failed_attempt）の hunger_up を棄却（時間経過の空腹はルール側が担う）
+//     ②飲食文脈の正規表現を payload 全体 → KW 通知の summary に限定
+//     （choices の「パンを買う」等のメニュー文言で棄却が素通りしていた）
+//     ③プロンプトに時間経過で hunger_up を出さない指示を明記
+export const APPRAISAL_PROMPT_VERSION = 'appraisal-v5';
 
 /** ペルソナ依存の解釈パターン上書き（env 由来）。設定値は判定の意味論を変えるため proc_version に痕跡を残す */
 export interface InterpretationOverrides {
