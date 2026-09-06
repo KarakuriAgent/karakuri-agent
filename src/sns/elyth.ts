@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { createLogger } from '../utils/logger.js';
 
 import type {
@@ -20,6 +22,15 @@ import type {
 
 const logger = createLogger('ElythProvider');
 const REQUEST_TIMEOUT_MS = 15_000;
+/** Agent API v2 の limit 上限（1〜50、既定 20） */
+const MAX_PAGE_LIMIT = 50;
+/** 通知・スレッドのカーソル追跡で読む最大ページ数（暴走防止） */
+const MAX_NOTIFICATION_PAGES = 5;
+const MAX_THREAD_PAGES = 5;
+/** 1 回の getNotifications で通知の本文取得（GET /posts/{id}）を行う上限 */
+const MAX_NOTIFICATION_POST_FETCHES = 10;
+/** POST /notifications/read の 1 リクエスト上限（API 仕様: 1〜100 件） */
+const MARK_READ_CHUNK_SIZE = 100;
 
 export interface CreateElythProviderOptions {
   apiKey: string;
@@ -27,102 +38,101 @@ export interface CreateElythProviderOptions {
   fetch?: typeof fetch;
 }
 
-interface ElythPostAituber {
+interface ElythAuthor {
   id?: string | null;
-  name?: string | null;
   display_name?: string | null;
   handle?: string | null;
 }
 
 interface ElythPost {
   id: string;
+  author?: ElythAuthor | null;
   content: string;
-  reply_to_id?: string | null;
   thread_id?: string | null;
+  engagement?: {
+    like_count?: number | null;
+    reply_count?: number | null;
+    liked_by_me?: boolean | null;
+  } | null;
   created_at: string;
-  author_id?: string | null;
-  author_name?: string | null;
-  author_handle?: string | null;
-  author_type?: 'user' | 'aituber' | string | null;
-  aituber?: ElythPostAituber | null;
-  like_count?: number | null;
-  reply_count?: number | null;
-  liked_by_me?: boolean | null;
+  kind?: 'post' | 'reply' | string | null;
+  reply_to_id?: string | null;
 }
 
-interface ElythPostsResponse {
-  posts?: ElythPost[];
-  error?: string;
+interface ElythPage {
+  has_more?: boolean | null;
+  next_cursor?: string | null;
 }
 
-interface ElythPostResponse {
-  success?: boolean;
+interface ElythPostData {
   post?: ElythPost;
-  error?: string;
 }
 
-interface ElythLikeResponse {
-  success?: boolean;
-  data?: { liked?: boolean; like_count?: number };
-  error?: string;
+interface ElythPostListData {
+  items?: ElythPost[];
+  page?: ElythPage;
 }
 
-interface ElythFollowResponse {
-  success?: boolean;
-  data?: { following?: boolean; follower_count?: number };
-  error?: string;
+interface ElythThreadData {
+  thread?: {
+    id?: string;
+    root?: ElythPost;
+    replies?: ElythPost[];
+  };
+  page?: ElythPage;
 }
 
-interface ElythAituberProfile {
+interface ElythProfile {
+  id?: string | null;
   display_name: string;
   handle: string;
-  bio: string | null;
-  follower_count: number;
-  following_count: number;
-  post_count: number;
-  followed_by_me?: boolean | null;
+  bio?: string | null;
+  stats?: {
+    follower_count?: number | null;
+    following_count?: number | null;
+    post_count?: number | null;
+  } | null;
+  relationship?: {
+    following?: boolean | null;
+    follows_me?: boolean | null;
+    mutual?: boolean | null;
+  } | null;
 }
 
-interface ElythAituberResponse {
-  profile?: ElythAituberProfile;
-  posts?: ElythPost[];
-  error?: string;
+interface ElythProfileData {
+  profile?: ElythProfile;
 }
 
 interface ElythNotification {
-  notification_id: string;
-  notification_type: 'reply' | 'mention' | 'system' | 'image_failed' | string;
-  notification_created_at: string;
-  post_id?: string | null;
-  post_content?: string | null;
-  post_reply_to_id?: string | null;
-  post_thread_id?: string | null;
-  post_created_at?: string | null;
-  post_author_id?: string | null;
-  post_author_name?: string | null;
-  post_author_handle?: string | null;
-  post_like_count?: number | null;
-  post_reply_count?: number | null;
+  id: string;
+  type: string;
+  created_at: string;
+  actor?: {
+    type?: string | null;
+    id?: string | null;
+    display_name?: string | null;
+    handle?: string | null;
+  } | null;
+  resource?: {
+    type?: string | null;
+    id?: string | null;
+  } | null;
+  preview?: {
+    text?: string | null;
+    truncated?: boolean | null;
+  } | null;
 }
 
-interface ElythInformationResponse {
-  timeline?: ElythPost[];
-  notifications?: ElythNotification[];
-  my_metrics?: {
-    follower_count: number;
-    following_count: number;
-    post_count: number;
-  };
-  error?: string;
+interface ElythNotificationListData {
+  items?: ElythNotification[];
+  page?: ElythPage;
 }
 
-interface ElythMarkNotificationsReadResponse {
-  success?: boolean;
-  marked_count?: number;
-  error?: string;
+interface ElythMarkReadData {
+  received_count?: number;
 }
 
-/** ELYTH API が non-2xx を返したか、レスポンスが論理エラー (`error` フィールド) を含む場合に投げる。retry の判断は `status` を見て行う。 */
+/** ELYTH API が non-2xx またはエラーエンベロープ（`{ error: { code, ... } }`）を返した場合に投げる。retry の判断は `status` / `details` を見て行う。 */
 export class ElythApiError extends Error {
   readonly status: number;
   readonly details: unknown;
@@ -135,7 +145,7 @@ export class ElythApiError extends Error {
   }
 }
 
-/** ELYTH では恒久的にサポートされない機能 (画像・repost・search・非 public visibility) を呼び出した場合に投げる。retry 不要。 */
+/** ELYTH では恒久的にサポートされない機能 (メディア添付・repost・search・非 public visibility) を呼び出した場合に投げる。retry 不要。 */
 export class ElythNotSupportedError extends Error {
   readonly feature: string;
 
@@ -168,6 +178,10 @@ function firstNonEmpty(...values: Array<string | null | undefined>): string | un
   return undefined;
 }
 
+function clampPageLimit(limit: number): number {
+  return Math.min(Math.max(Math.trunc(limit), 1), MAX_PAGE_LIMIT);
+}
+
 async function readResponseBody(response: Response): Promise<unknown> {
   const text = await response.text();
   if (text.length === 0) {
@@ -181,9 +195,9 @@ async function readResponseBody(response: Response): Promise<unknown> {
 }
 
 function mapPost(post: ElythPost, apiBase: string): SnsPost {
-  const authorHandle = firstNonEmpty(post.author_handle, post.aituber?.handle, post.author_id, post.aituber?.id) ?? 'unknown';
-  const authorName = firstNonEmpty(post.author_name, post.aituber?.name, post.aituber?.display_name) ?? authorHandle;
-  const authorId = firstNonEmpty(post.author_id, post.aituber?.id, post.aituber?.handle) ?? authorHandle;
+  const authorHandle = firstNonEmpty(post.author?.handle, post.author?.id) ?? 'unknown';
+  const authorName = firstNonEmpty(post.author?.display_name) ?? authorHandle;
+  const authorId = firstNonEmpty(post.author?.id, post.author?.handle) ?? authorHandle;
 
   return {
     id: post.id,
@@ -197,65 +211,23 @@ function mapPost(post: ElythPost, apiBase: string): SnsPost {
     ...(post.reply_to_id != null ? { inReplyToId: post.reply_to_id } : {}),
     // ELYTH には repost 概念がないため常に 0。
     repostCount: 0,
-    likeCount: post.like_count ?? 0,
-    replyCount: post.reply_count ?? 0,
-    ...(post.liked_by_me != null ? { liked: post.liked_by_me } : {}),
+    likeCount: post.engagement?.like_count ?? 0,
+    replyCount: post.engagement?.reply_count ?? 0,
+    ...(post.engagement?.liked_by_me != null ? { liked: post.engagement.liked_by_me } : {}),
   };
 }
 
-function mapAituberProfilePost(
-  post: ElythPost,
-  profile: ElythAituberProfile | undefined,
-  fallbackHandle: string,
-  apiBase: string,
-): SnsPost {
-  const profileHandle = firstNonEmpty(profile?.handle, fallbackHandle) ?? 'unknown';
-  const profileName = firstNonEmpty(profile?.display_name, profileHandle) ?? profileHandle;
-
-  return mapPost({
-    ...post,
-    author_id: firstNonEmpty(post.author_id, profileHandle) ?? profileHandle,
-    author_name: firstNonEmpty(post.author_name, profileName) ?? profileName,
-    author_handle: firstNonEmpty(post.author_handle, profileHandle) ?? profileHandle,
-  }, apiBase);
-}
-
-function mapNotification(notification: ElythNotification, apiBase: string): SnsNotification {
-  const post = notification.post_id != null && notification.post_id.length > 0
-    ? mapPost({
-        id: notification.post_id,
-        content: notification.post_content ?? '',
-        ...(notification.post_reply_to_id !== undefined ? { reply_to_id: notification.post_reply_to_id } : {}),
-        ...(notification.post_thread_id !== undefined ? { thread_id: notification.post_thread_id } : {}),
-        created_at: notification.post_created_at ?? notification.notification_created_at,
-        ...(notification.post_author_id !== undefined ? { author_id: notification.post_author_id } : {}),
-        ...(notification.post_author_name !== undefined ? { author_name: notification.post_author_name } : {}),
-        ...(notification.post_author_handle !== undefined ? { author_handle: notification.post_author_handle } : {}),
-        ...(notification.post_like_count !== undefined ? { like_count: notification.post_like_count } : {}),
-        ...(notification.post_reply_count !== undefined ? { reply_count: notification.post_reply_count } : {}),
-      }, apiBase)
-    : undefined;
-  const accountHandle = notification.post_author_handle ?? notification.post_author_id ?? 'unknown';
-  const mappedType = (() => {
-    switch (notification.notification_type) {
-      case 'reply':
-        return 'reply';
-      case 'mention':
-        return 'mention';
-      default:
-        return 'other';
-    }
-  })();
-
-  return {
-    id: notification.notification_id,
-    type: mappedType,
-    createdAt: notification.notification_created_at,
-    accountId: notification.post_author_id ?? accountHandle,
-    accountName: notification.post_author_name ?? accountHandle,
-    accountHandle,
-    ...(post != null ? { post } : {}),
-  };
+function mapNotificationType(type: string): SnsNotification['type'] {
+  switch (type) {
+    case 'post.reply_received':
+      return 'reply';
+    case 'post.mention_received':
+      return 'mention';
+    case 'relationship.follow_started':
+      return 'follow';
+    default:
+      return 'other';
+  }
 }
 
 export class ElythProvider implements SnsProvider {
@@ -288,60 +260,48 @@ export class ElythProvider implements SnsProvider {
       throw new ElythNotSupportedError('quote posts');
     }
 
-    const response = await this.requestJson<ElythPostResponse>('POST', 'api/mcp/posts', {
-      content: params.text,
-      ...(params.replyToId != null ? { reply_to_id: params.replyToId } : {}),
+    const path = params.replyToId != null
+      ? `posts/${encodeURIComponent(params.replyToId)}/replies`
+      : 'posts';
+    const data = await this.requestJson<ElythPostData>('POST', path, { content: params.text }, undefined, {
+      // v2 は投稿系 POST に Idempotency-Key が必須。呼び出し側から供給されない
+      // 場合はコール単位で生成する（provider 内に再試行ループは無い）。
+      idempotencyKey: params.idempotencyKey ?? randomUUID(),
     });
-    if (response.error != null || response.success === false || response.post == null) {
-      throw new ElythApiError(400, response.error ?? 'post_failed', response);
+    if (data.post == null) {
+      throw new ElythApiError(502, 'post_response_missing_post', data);
     }
-    return mapPost(response.post, this.apiBase);
+    return mapPost(data.post, this.apiBase);
   }
 
   async getPost(postId: string): Promise<SnsPost> {
-    // TODO(#73): ELYTH に GET /api/mcp/posts/:id が追加されたら thread fallback を削除する
-    const response = await this.getThreadResponse(postId);
-    if (response.error != null) {
-      throw new ElythApiError(400, response.error, response);
+    const data = await this.requestJson<ElythPostData>('GET', `posts/${encodeURIComponent(postId)}`);
+    if (data.post == null) {
+      throw new ElythApiError(502, 'post_response_missing_post', data);
     }
-    if (response.posts == null) {
-      throw new ElythApiError(502, 'thread_api_does_not_include_target', response);
-    }
-    const target = response.posts.find((post) => post.id === postId);
-    if (target == null) {
-      throw new ElythApiError(404, 'post_not_found', response);
-    }
-    return mapPost(target, this.apiBase);
+    return mapPost(data.post, this.apiBase);
   }
 
   async getTimeline(params: TimelineParams = {}): Promise<SnsPost[]> {
-    const response = await this.requestJson<ElythInformationResponse>('GET', 'api/mcp/information', undefined, {
-      include: 'timeline',
-      timeline_limit: String(params.limit ?? 20),
+    const data = await this.requestJson<ElythPostListData>('GET', 'timeline', undefined, {
+      limit: String(clampPageLimit(params.limit ?? 20)),
     });
-    if (response.error != null) {
-      throw new ElythApiError(400, response.error, response);
-    }
-    return (response.timeline ?? []).map((post) => mapPost(post, this.apiBase));
+    return (data.items ?? []).map((post) => mapPost(post, this.apiBase));
   }
 
   async search(_params: SearchParams): Promise<SearchResult> {
+    // v2 にはハッシュタグ検索（GET /posts/search?hashtag=）があるが、
+    // SearchParams.query は自由文なのでセマンティクスが合わない。従来どおり非対応。
     throw new ElythNotSupportedError('search');
   }
 
   async like(postId: string): Promise<SnsPost> {
-    const response = await this.requestJson<ElythLikeResponse>('POST', `api/mcp/posts/${encodeURIComponent(postId)}/like`);
-    if (response.error != null || response.success === false || response.data == null) {
-      throw new ElythApiError(400, response.error ?? 'like_failed', response);
-    }
+    await this.requestJson<unknown>('PUT', `posts/${encodeURIComponent(postId)}/like`);
     return this.getPost(postId);
   }
 
   async unlike(postId: string): Promise<SnsPost> {
-    const response = await this.requestJson<ElythLikeResponse>('DELETE', `api/mcp/posts/${encodeURIComponent(postId)}/like`);
-    if (response.error != null || response.success === false || response.data == null) {
-      throw new ElythApiError(400, response.error ?? 'unlike_failed', response);
-    }
+    await this.requestJson<unknown>('DELETE', `posts/${encodeURIComponent(postId)}/like`);
     return this.getPost(postId);
   }
 
@@ -350,110 +310,114 @@ export class ElythProvider implements SnsProvider {
   }
 
   async follow(handle: string): Promise<void> {
-    const normalized = normalizeHandle(handle);
-    const response = await this.requestJson<ElythFollowResponse>('POST', `api/mcp/aitubers/${encodeURIComponent(normalized)}/follow`);
-    if (response.error != null || response.success === false || response.data == null) {
-      throw new ElythApiError(400, response.error ?? 'follow_failed', response);
-    }
+    await this.requestJson<unknown>('PUT', `profiles/${encodeURIComponent(normalizeHandle(handle))}/follow`);
   }
 
   async unfollow(handle: string): Promise<void> {
-    const normalized = normalizeHandle(handle);
-    const response = await this.requestJson<ElythFollowResponse>('DELETE', `api/mcp/aitubers/${encodeURIComponent(normalized)}/follow`);
-    if (response.error != null || response.success === false || response.data == null) {
-      throw new ElythApiError(400, response.error ?? 'unfollow_failed', response);
-    }
+    await this.requestJson<unknown>('DELETE', `profiles/${encodeURIComponent(normalizeHandle(handle))}/follow`);
   }
 
   async getUserProfile(handle: string): Promise<SnsUserProfile> {
-    const response = await this.getAituber(normalizeHandle(handle));
-    if (response.error != null || response.profile == null) {
-      throw new ElythApiError(404, response.error ?? 'profile_not_found', response);
+    const data = await this.requestJson<ElythProfileData>('GET', `profiles/${encodeURIComponent(normalizeHandle(handle))}`);
+    if (data.profile == null) {
+      throw new ElythApiError(502, 'profile_response_missing_profile', data);
     }
-    const profile = response.profile;
+    const profile = data.profile;
     return {
-      id: profile.handle,
+      id: firstNonEmpty(profile.id, profile.handle) ?? profile.handle,
       name: profile.display_name,
       handle: profile.handle,
       url: `${this.apiBase}/aitubers/${encodeURIComponent(profile.handle)}`,
       ...(profile.bio != null ? { bio: profile.bio } : {}),
-      followerCount: profile.follower_count,
-      followingCount: profile.following_count,
-      postCount: profile.post_count,
-      ...(profile.followed_by_me != null ? { followedByMe: profile.followed_by_me } : {}),
+      followerCount: profile.stats?.follower_count ?? 0,
+      followingCount: profile.stats?.following_count ?? 0,
+      postCount: profile.stats?.post_count ?? 0,
+      // relationship は自分自身のプロフィールでは null（不明扱いで省略）。
+      ...(profile.relationship?.following != null ? { followedByMe: profile.relationship.following } : {}),
     };
   }
 
   async getMyMetrics(): Promise<SnsMyMetrics> {
-    const response = await this.requestJson<ElythInformationResponse>('GET', 'api/mcp/information', undefined, {
-      include: 'my_metrics',
-    });
-    if (response.error != null || response.my_metrics == null) {
-      throw new ElythApiError(400, response.error ?? 'my_metrics_unavailable', response);
-    }
+    const profile = await this.getMyProfile();
     return {
-      followerCount: response.my_metrics.follower_count,
-      followingCount: response.my_metrics.following_count,
-      postCount: response.my_metrics.post_count,
+      followerCount: profile.stats?.follower_count ?? 0,
+      followingCount: profile.stats?.following_count ?? 0,
+      postCount: profile.stats?.post_count ?? 0,
     };
   }
 
   async markNotificationsRead(notificationIds: string[]): Promise<void> {
-    if (notificationIds.length === 0) {
-      return;
-    }
-    const response = await this.requestJson<ElythMarkNotificationsReadResponse>('POST', 'api/mcp/notifications/read', {
-      notification_ids: notificationIds,
-    });
-    if (response.error != null || response.success === false) {
-      throw new ElythApiError(400, response.error ?? 'mark_notifications_read_failed', response);
+    for (let index = 0; index < notificationIds.length; index += MARK_READ_CHUNK_SIZE) {
+      const chunk = notificationIds.slice(index, index + MARK_READ_CHUNK_SIZE);
+      await this.requestJson<ElythMarkReadData>('POST', 'notifications/read', {
+        notification_ids: chunk,
+      });
     }
   }
 
   async getNotifications(params: NotificationParams = {}): Promise<NotificationFetchResult> {
     const requestedLimit = params.limit ?? 5;
     try {
-      const response = await this.requestJson<ElythInformationResponse>('GET', 'api/mcp/information', undefined, {
-        include: 'notifications',
-        notifications_limit: String(requestedLimit),
-      });
-      if (response.error != null) {
-        throw new ElythApiError(400, response.error, response);
+      // v2 の /notifications は未読のみ・新しい順・カーソルページネーション。
+      // sinceId（前回処理済み id）が見つかるまでページを追い、見つかったら
+      // そこで切って complete:true。未読を全部読み切っても見つからない場合は
+      // 「取得可能な通知はすべて返した」ので complete:true（それ以前はまとめて
+      // 既読扱いのセマンティクス — 旧 API の恒久停滞問題は v2 で解消）。
+      // ページ上限で打ち切った場合のみ complete:false でカーソルを進めさせない。
+      const collected: ElythNotification[] = [];
+      let cursor: string | undefined;
+      let exhausted = false;
+      let foundSinceId = false;
+      for (let page = 0; page < MAX_NOTIFICATION_PAGES; page++) {
+        const data = await this.requestJson<ElythNotificationListData>('GET', 'notifications', undefined, {
+          limit: String(clampPageLimit(Math.max(requestedLimit, 20))),
+          ...(cursor != null ? { cursor } : {}),
+        });
+        const items = data.items ?? [];
+        collected.push(...items);
+        if (params.sinceId != null && items.some((item) => item.id === params.sinceId)) {
+          foundSinceId = true;
+          break;
+        }
+        if (data.page?.has_more !== true || data.page.next_cursor == null) {
+          exhausted = true;
+          break;
+        }
+        cursor = data.page.next_cursor;
       }
-      const rawNotifications = response.notifications ?? [];
-      // サーバが limit と同数返してきた場合、ELYTH には次ページ取得手段がないため
-      // それ以前の通知を取りこぼしうる。complete:false にして cursor を進めない。
-      let complete = rawNotifications.length < requestedLimit;
-      const requestedTypes = params.types != null ? new Set(params.types) : null;
-      let notifications = rawNotifications.map((notification) => mapNotification(notification, this.apiBase));
+
+      let complete = foundSinceId || exhausted;
+      let sliced = collected;
       if (params.sinceId != null) {
-        const cursorIndex = notifications.findIndex((notification) => notification.id === params.sinceId);
+        const cursorIndex = sliced.findIndex((notification) => notification.id === params.sinceId);
         if (cursorIndex >= 0) {
-          notifications = notifications.slice(0, cursorIndex);
-          complete = true;
-        } else {
-          // sinceId がページ内に無いと「sinceId 以降の通知だけ返す」契約を満たせない。
-          logger.warn('ELYTH sinceId not found in current notifications page', { sinceId: params.sinceId });
-          complete = false;
+          sliced = sliced.slice(0, cursorIndex);
+        } else if (!exhausted) {
+          logger.warn('ELYTH sinceId not found within paged notifications', { sinceId: params.sinceId });
         }
       }
       if (params.maxId != null) {
-        const cursorIndex = notifications.findIndex((notification) => notification.id === params.maxId);
+        const cursorIndex = sliced.findIndex((notification) => notification.id === params.maxId);
         if (cursorIndex >= 0) {
-          notifications = notifications.slice(cursorIndex + 1);
+          sliced = sliced.slice(cursorIndex + 1);
         } else {
-          logger.warn('ELYTH maxId not found in current notifications page', { maxId: params.maxId });
+          logger.warn('ELYTH maxId not found within paged notifications', { maxId: params.maxId });
           complete = false;
         }
       }
-      notifications = notifications
-        .filter((notification) => requestedTypes == null || requestedTypes.has(notification.type))
+
+      const requestedTypes = params.types != null ? new Set(params.types) : null;
+      const selected = sliced
+        .map((notification) => ({ raw: notification, type: mapNotificationType(notification.type) }))
+        .filter(({ type }) => requestedTypes == null || requestedTypes.has(type))
         .slice(0, requestedLimit);
+
+      const notifications = await this.hydrateNotifications(selected);
       return { notifications, complete };
     } catch (error) {
       if (error instanceof ElythApiError && error.status === 429) {
-        const retryAfter = isRecord(error.details) && typeof error.details.retryAfter === 'string'
-          ? error.details.retryAfter
+        const retryAfter = isRecord(error.details) && error.details.retryAfter != null
+          ? String(error.details.retryAfter)
           : undefined;
         logger.warn(`ELYTH notification fetch rate limited${retryAfter != null ? `; retry-after=${retryAfter}` : ''}`);
         return { notifications: [], complete: false };
@@ -467,11 +431,30 @@ export class ElythProvider implements SnsProvider {
   }
 
   async getThread(postId: string): Promise<ThreadResult> {
-    const response = await this.getThreadResponse(postId);
-    if (response.error != null) {
-      throw new ElythApiError(400, response.error, response);
+    // v2 の thread は root + replies（古い順・ページネーション）を返す。
+    let root: ElythPost | undefined;
+    const replies: ElythPost[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_THREAD_PAGES; page++) {
+      const data = await this.requestJson<ElythThreadData>('GET', `posts/${encodeURIComponent(postId)}/thread`, undefined, {
+        limit: String(MAX_PAGE_LIMIT),
+        ...(cursor != null ? { cursor } : {}),
+      });
+      root ??= data.thread?.root;
+      replies.push(...(data.thread?.replies ?? []));
+      if (data.page?.has_more !== true || data.page.next_cursor == null) {
+        break;
+      }
+      cursor = data.page.next_cursor;
+      if (page === MAX_THREAD_PAGES - 1) {
+        logger.warn('ELYTH thread pagination truncated at page cap', { postId, pages: MAX_THREAD_PAGES });
+      }
     }
-    const posts = response.posts ?? [];
+    if (root == null) {
+      throw new ElythApiError(502, 'thread_response_missing_root', undefined);
+    }
+
+    const posts = [root, ...replies];
     const target = posts.find((post) => post.id === postId);
     if (target == null) {
       return { ancestors: [], descendants: [] };
@@ -535,25 +518,15 @@ export class ElythProvider implements SnsProvider {
   async getUserPosts(params: UserPostsParams): Promise<SnsPost[]> {
     const normalized = normalizeHandle(params.userHandle);
     const currentHandle = await this.getCurrentAccountHandle();
-    if (normalized === currentHandle) {
-      const response = await this.requestJson<ElythPostsResponse>('GET', 'api/mcp/posts/mine', undefined, {
-        limit: String(params.limit ?? 20),
-      });
-      if (response.error != null) {
-        throw new ElythApiError(400, response.error, response);
-      }
-      return (response.posts ?? [])
-        .filter((post) => params.excludeReplies !== true || post.reply_to_id == null)
-        .map((post) => mapPost(post, this.apiBase));
-    }
-
-    const response = await this.getAituber(normalized, params.limit ?? 20);
-    if (response.error != null) {
-      throw new ElythApiError(404, response.error, response);
-    }
-    return (response.posts ?? [])
+    const path = normalized === currentHandle
+      ? 'me/posts'
+      : `profiles/${encodeURIComponent(normalized)}/posts`;
+    const data = await this.requestJson<ElythPostListData>('GET', path, undefined, {
+      limit: String(clampPageLimit(params.limit ?? 20)),
+    });
+    return (data.items ?? [])
       .filter((post) => params.excludeReplies !== true || post.reply_to_id == null)
-      .map((post) => mapAituberProfilePost(post, response.profile, normalized, this.apiBase));
+      .map((post) => mapPost(post, this.apiBase));
   }
 
   async getTrends(_limit = 5): Promise<SnsPost[]> {
@@ -564,25 +537,76 @@ export class ElythProvider implements SnsProvider {
     return [];
   }
 
-  private async getThreadResponse(postId: string): Promise<ElythPostsResponse> {
-    return this.requestJson<ElythPostsResponse>('GET', `api/mcp/posts/${encodeURIComponent(postId)}/thread`);
+  /** 選別済み通知に post 本文を付ける。preview は切り詰め済みのため、post 資源は個別取得で全文化する。 */
+  private async hydrateNotifications(
+    selected: Array<{ raw: ElythNotification; type: SnsNotification['type'] }>,
+  ): Promise<SnsNotification[]> {
+    let postFetches = 0;
+    const notifications: SnsNotification[] = [];
+    for (const { raw, type } of selected) {
+      const actorHandle = firstNonEmpty(raw.actor?.handle, raw.actor?.id) ?? 'unknown';
+      const base: SnsNotification = {
+        id: raw.id,
+        type,
+        createdAt: raw.created_at,
+        accountId: firstNonEmpty(raw.actor?.id, raw.actor?.handle) ?? actorHandle,
+        accountName: firstNonEmpty(raw.actor?.display_name) ?? actorHandle,
+        accountHandle: actorHandle,
+      };
+      const postId = raw.resource?.type === 'post' ? raw.resource.id : undefined;
+      if (postId == null || postId.length === 0) {
+        notifications.push(base);
+        continue;
+      }
+      if (postFetches < MAX_NOTIFICATION_POST_FETCHES) {
+        postFetches++;
+        try {
+          notifications.push({ ...base, post: await this.getPost(postId) });
+          continue;
+        } catch (error) {
+          // 削除済み投稿などは preview へフォールバック（通知自体は失わない）
+          logger.warn('ELYTH notification post fetch failed; falling back to preview', {
+            notificationId: raw.id,
+            postId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      const previewText = raw.preview?.text;
+      notifications.push({
+        ...base,
+        post: {
+          id: postId,
+          text: previewText != null ? `${previewText}${raw.preview?.truncated === true ? '…' : ''}` : '',
+          authorId: base.accountId,
+          authorName: base.accountName,
+          authorHandle: base.accountHandle,
+          createdAt: raw.created_at,
+          url: `${this.apiBase}/posts/${encodeURIComponent(postId)}`,
+          visibility: 'public',
+          repostCount: 0,
+          likeCount: 0,
+          replyCount: 0,
+        },
+      });
+    }
+    return notifications;
   }
 
-  private async getAituber(handle: string, limit = 10): Promise<ElythAituberResponse> {
-    return this.requestJson<ElythAituberResponse>('GET', `api/mcp/aitubers/${encodeURIComponent(handle)}/profile`, undefined, {
-      limit: String(limit),
-    });
+  private async getMyProfile(): Promise<ElythProfile> {
+    const data = await this.requestJson<ElythProfileData>('GET', 'me/profile');
+    if (data.profile == null) {
+      throw new ElythApiError(502, 'me_profile_response_missing_profile', data);
+    }
+    return data.profile;
   }
 
   private async getCurrentAccountHandle(): Promise<string> {
-    this.currentAccountHandlePromise ??= this.requestJson<ElythPostsResponse>('GET', 'api/mcp/posts/mine', undefined, { limit: '1' })
-      .then((response) => {
-        if (response.error != null) {
-          throw new ElythApiError(400, response.error, response);
-        }
-        const handle = response.posts?.at(0)?.author_handle;
-        if (handle == null || handle.trim().length === 0) {
-          throw new Error('Unable to determine current ELYTH account handle from /api/mcp/posts/mine');
+    this.currentAccountHandlePromise ??= this.getMyProfile()
+      .then((profile) => {
+        const handle = firstNonEmpty(profile.handle);
+        if (handle == null) {
+          throw new Error('Unable to determine current ELYTH account handle from /me/profile');
         }
         return normalizeHandle(handle);
       })
@@ -594,7 +618,7 @@ export class ElythProvider implements SnsProvider {
   }
 
   private buildUrl(path: string, query?: URLSearchParams | Record<string, string>): string {
-    const url = new URL(path, ensureTrailingSlash(this.apiBase));
+    const url = new URL(`api/agent/v2/${path}`, ensureTrailingSlash(this.apiBase));
     if (query != null) {
       const entries = query instanceof URLSearchParams ? query.entries() : Object.entries(query);
       for (const [key, value] of entries) {
@@ -604,24 +628,26 @@ export class ElythProvider implements SnsProvider {
     return url.toString();
   }
 
-  private async requestJson<TResponse>(
-    method: 'GET' | 'POST' | 'DELETE',
+  private async requestJson<TData>(
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body?: Record<string, unknown>,
     query?: URLSearchParams | Record<string, string>,
-  ): Promise<TResponse> {
+    options?: { idempotencyKey?: string },
+  ): Promise<TData> {
     const response = await this.fetchImpl(this.buildUrl(path, query), {
       method,
       headers: {
         Accept: 'application/json',
-        'x-api-key': this.apiKey,
+        Authorization: `Bearer ${this.apiKey}`,
         ...(body != null ? { 'Content-Type': 'application/json' } : {}),
+        ...(options?.idempotencyKey != null ? { 'Idempotency-Key': options.idempotencyKey } : {}),
       },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       ...(body != null ? { body: JSON.stringify(body) } : {}),
     });
     const responseBody = await readResponseBody(response);
-    if (!response.ok) {
+    if (!response.ok || (isRecord(responseBody) && isRecord(responseBody.error))) {
       throw this.toApiError(response, responseBody);
     }
     if (responseBody == null) {
@@ -630,23 +656,33 @@ export class ElythProvider implements SnsProvider {
     if (typeof responseBody === 'string') {
       throw new Error(`ELYTH API returned non-JSON response for ${method} ${path}: ${responseBody.slice(0, 200)}`);
     }
-    return responseBody as TResponse;
+    if (!isRecord(responseBody) || !('data' in responseBody)) {
+      throw new ElythApiError(502, 'response_missing_data_envelope', responseBody);
+    }
+    return responseBody.data as TData;
   }
 
   private toApiError(response: Response, responseBody: unknown): ElythApiError {
-    const retryAfter = response.headers.get('retry-after') ?? undefined;
-    if (isRecord(responseBody)) {
-      const message = typeof responseBody.error === 'string'
-        ? responseBody.error
-        : response.statusText || 'Request failed';
-      return new ElythApiError(response.status, message, { ...responseBody, ...(retryAfter != null ? { retryAfter } : {}) });
+    const retryAfterHeader = response.headers.get('retry-after') ?? undefined;
+    if (isRecord(responseBody) && isRecord(responseBody.error)) {
+      const errorEnvelope = responseBody.error;
+      const message = typeof errorEnvelope.message === 'string' && errorEnvelope.message.length > 0
+        ? (typeof errorEnvelope.code === 'string' ? `${errorEnvelope.code}: ${errorEnvelope.message}` : errorEnvelope.message)
+        : (typeof errorEnvelope.code === 'string' ? errorEnvelope.code : response.statusText || 'Request failed');
+      const retryAfter = errorEnvelope.retry_after_seconds != null
+        ? String(errorEnvelope.retry_after_seconds)
+        : retryAfterHeader;
+      return new ElythApiError(response.status, message, {
+        ...errorEnvelope,
+        ...(retryAfter != null ? { retryAfter } : {}),
+      });
     }
     return new ElythApiError(
       response.status,
       typeof responseBody === 'string' && responseBody.length > 0
-        ? responseBody
+        ? responseBody.slice(0, 200)
         : (response.statusText || 'Request failed'),
-      { body: responseBody, ...(retryAfter != null ? { retryAfter } : {}) },
+      { body: responseBody, ...(retryAfterHeader != null ? { retryAfter: retryAfterHeader } : {}) },
     );
   }
 }
